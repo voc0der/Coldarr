@@ -9,19 +9,20 @@ import (
 )
 
 type tierRow struct {
-	TierName      string
-	Role          model.TierRole
-	Path          string
-	Available     bool
-	UsedBytes     int64
-	FreeBytes     int64
-	TotalBytes    int64
-	UsedPercent   float64
-	HasThresholds bool // false for hot tiers - not steered toward a usage level
-	TargetPercent float64
-	MaxPercent    float64
-	StatusMsg     string
-	StatusClass   string
+	TierName         string
+	Role             model.TierRole
+	Path             string
+	Available        bool
+	UsedBytes        int64
+	FreeBytes        int64
+	TotalBytes       int64
+	UsedPercent      float64
+	HasThresholds    bool // false for hot tiers - not steered toward a usage level
+	TargetPercent    float64
+	MaxPercent       float64
+	StatusMsg        string
+	StatusClass      string
+	SharesVolumeWith []string
 }
 
 type dashboardData struct {
@@ -81,6 +82,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				row.UsedPercent = status.Usage.UsedPercent
 				row.StatusMsg = "ok"
 				row.StatusClass = "ok"
+				row.SharesVolumeWith = inv.SharedVolumePaths(path)
 			}
 			data.Rows = append(data.Rows, row)
 		}

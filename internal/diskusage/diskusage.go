@@ -46,6 +46,23 @@ func Stat(path string) (Usage, error) {
 	}, nil
 }
 
+// DeviceID returns the identifier of the filesystem path resides on -
+// the same underlying value tools like `du -x`/`find -xdev` use to detect
+// filesystem boundaries. Two paths with the same DeviceID are on the same
+// physical volume (or partition/dataset), and therefore share the same
+// capacity, no matter how differently they're named or nested.
+func DeviceID(path string) (uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("cannot determine device for %s on this platform", path)
+	}
+	return uint64(stat.Dev), nil
+}
+
 // IsMountPoint reports whether path is a distinct mount point from its
 // parent directory, i.e. crossing from the parent into path changes
 // filesystem device. A path that fails this check but is expected to be a
@@ -53,26 +70,15 @@ func Stat(path string) (Usage, error) {
 // directory sitting on the root filesystem - writing to it would silently
 // fill the root disk instead of the intended drive.
 func IsMountPoint(path string) (bool, error) {
-	info, err := os.Stat(path)
+	dev, err := DeviceID(path)
 	if err != nil {
-		return false, fmt.Errorf("stat %s: %w", path, err)
+		return false, err
 	}
-	parent := filepath.Dir(path)
-	parentInfo, err := os.Stat(parent)
+	parentDev, err := DeviceID(filepath.Dir(path))
 	if err != nil {
-		return false, fmt.Errorf("stat %s: %w", parent, err)
+		return false, err
 	}
-
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false, fmt.Errorf("cannot determine device for %s on this platform", path)
-	}
-	parentStat, ok := parentInfo.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false, fmt.Errorf("cannot determine device for %s on this platform", parent)
-	}
-
-	return stat.Dev != parentStat.Dev, nil
+	return dev != parentDev, nil
 }
 
 // CheckPath verifies path exists and, if requireMount is true, that it is a

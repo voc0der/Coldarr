@@ -252,6 +252,80 @@ func TestBuild_RespectsCooldown(t *testing.T) {
 	}
 }
 
+func TestBuild_TreatsSameVolumePathsAsSharedCapacity(t *testing.T) {
+	tiers := []model.Tier{
+		{
+			Name:  "hot",
+			Role:  model.RoleHot,
+			Paths: []string{"/hot"},
+			Media: []model.MediaType{model.Movie},
+		},
+		{
+			Name:              "cold-a",
+			Role:              model.RoleCold,
+			Paths:             []string{"/cold1"},
+			Media:             []model.MediaType{model.Movie},
+			TargetUsedPercent: 92,
+			MaxUsedPercent:    95,
+		},
+		{
+			Name:              "cold-b",
+			Role:              model.RoleCold,
+			Paths:             []string{"/cold-shared"},
+			Media:             []model.MediaType{model.Movie},
+			TargetUsedPercent: 92,
+			MaxUsedPercent:    95,
+		},
+	}
+
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot":         usage(1000*gib, 500*gib),
+			"/cold1":       usage(100*gib, 50*gib),
+			"/cold-shared": usage(100*gib, 50*gib),
+		},
+		// /cold1 and /cold-shared are different tiers/paths but the same
+		// physical volume - moving into one must reduce the other's room
+		// too, or the planner would double-count 50 GB of free space as
+		// 100 GB.
+		VolumeOf: map[string]uint64{
+			"/cold1":       42,
+			"/cold-shared": 42,
+		},
+		Items: []ItemEval{
+			coldItem(1, "Movie A", 40*gib),
+			coldItem(2, "Movie B", 40*gib),
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// The shared disk only has 50 GB free - enough for one 40 GB item,
+	// not two, even though each path's tier looks independently roomy.
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected exactly 1 move (shared volume only has room for one), got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatalf("expected a warning that the second item found no room")
+	}
+
+	final := plan.FinalUsage["/cold1"]
+	finalShared := plan.FinalUsage["/cold-shared"]
+	if final.UsedPercent > 95 {
+		t.Fatalf("/cold1 exceeded its max: %.2f%%", final.UsedPercent)
+	}
+	if final.UsedPercent != finalShared.UsedPercent {
+		t.Fatalf("expected /cold1 and /cold-shared (same volume) to report identical usage, got %.2f%% vs %.2f%%", final.UsedPercent, finalShared.UsedPercent)
+	}
+}
+
 func TestBuild_UnavailablePathIsSkippedNotAssumedEmpty(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),

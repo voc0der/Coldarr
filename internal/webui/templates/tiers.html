@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Tiers</h1>
-<p class="muted">A tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it.</p>
+<p class="muted">A tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it. If two paths (even across different tiers) turn out to be the same physical volume, Coldarr detects that automatically and treats their capacity as shared - see "Shares volume with" below.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
@@ -24,7 +24,7 @@
     {{if .Tier.RequireMount}}requires real mount point{{else}}no mount check{{end}}
   </p>
   <table>
-  <thead><tr><th>Path</th><th>Used %</th><th>Status</th></tr></thead>
+  <thead><tr><th>Path</th><th>Used %</th><th>Status</th><th>Shares volume with</th></tr></thead>
   <tbody>
   {{range .Paths}}
   <tr>
@@ -35,6 +35,11 @@
     {{else}}
     <td class="muted">-</td>
     <td><span class="badge badge-danger">{{.Err}}</span></td>
+    {{end}}
+    {{if .SharesVolumeWith}}
+    <td><span class="badge badge-warn">shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span></td>
+    {{else}}
+    <td class="muted">-</td>
     {{end}}
   </tr>
   {{end}}

@@ -27,12 +27,19 @@ type ItemEval struct {
 // - the planner treats a missing entry as "unusable," never as "assume
 // empty and write there anyway."
 type Input struct {
-	Tiers   []model.Tier
-	Usage   map[string]diskusage.Usage
-	Items   []ItemEval
-	History *history.Store
-	Policy  config.PolicyConfig
-	Now     time.Time
+	Tiers []model.Tier
+	Usage map[string]diskusage.Usage
+	// VolumeOf maps a path to a device identifier, for paths where it's
+	// known. Two paths with the same value are really the same physical
+	// volume (however differently named or nested) and share the same
+	// capacity - moving something onto one must be reflected on the
+	// other too, or the planner would double-count the same disk's free
+	// space as if it were two independent pools.
+	VolumeOf map[string]uint64
+	Items    []ItemEval
+	History  *history.Store
+	Policy   config.PolicyConfig
+	Now      time.Time
 }
 
 type MoveEntry struct {
@@ -61,6 +68,7 @@ func Build(in Input) (*Plan, error) {
 	for k, v := range in.Usage {
 		working[k] = v
 	}
+	volumeGroups := groupByVolume(in.VolumeOf)
 
 	minMoveBytes := int64(in.Policy.MinMoveSizeGB * (1 << 30))
 	cooldown := time.Duration(in.Policy.CooldownDays) * 24 * time.Hour
@@ -101,8 +109,8 @@ func Build(in Input) (*Plan, error) {
 			Reasons:  c.Eval.Reasons,
 		})
 
-		working[c.Item.RootFolderPath] = applyDelta(working[c.Item.RootFolderPath], -c.Item.SizeBytes)
-		working[destPath] = applyDelta(working[destPath], c.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
 	}
 
 	plan.FinalUsage = working
@@ -190,6 +198,38 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 	}
 
 	return bestTier, bestPath, found
+}
+
+// groupByVolume builds, for every path with a known device ID, the full
+// set of configured paths (including itself) sharing that device.
+func groupByVolume(volumeOf map[string]uint64) map[string][]string {
+	byDevice := map[uint64][]string{}
+	for path, dev := range volumeOf {
+		byDevice[dev] = append(byDevice[dev], path)
+	}
+
+	groups := make(map[string][]string, len(volumeOf))
+	for _, paths := range byDevice {
+		for _, p := range paths {
+			groups[p] = paths
+		}
+	}
+	return groups
+}
+
+// applyDeltaToVolume applies deltaBytes to path's usage and to every other
+// path sharing its physical volume, since they're really one capacity
+// pool - a move affecting one must be reflected on all of them.
+func applyDeltaToVolume(working map[string]diskusage.Usage, groups map[string][]string, path string, deltaBytes int64) {
+	siblings, ok := groups[path]
+	if !ok {
+		siblings = []string{path}
+	}
+	for _, p := range siblings {
+		if u, ok := working[p]; ok {
+			working[p] = applyDelta(u, deltaBytes)
+		}
+	}
 }
 
 func applyDelta(u diskusage.Usage, deltaBytes int64) diskusage.Usage {
