@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,6 +66,9 @@ type Store struct {
 func LoadOrCreate(dir string) (*Store, error) {
 	keyPath := filepath.Join(dir, ".coldarr.key")
 	dataPath := filepath.Join(dir, "connections.enc.json")
+	if abs, err := filepath.Abs(dir); err == nil {
+		log.Printf("secrets: using connection store directory %s (resolved from %q)", abs, dir)
+	}
 
 	key, err := loadOrGenerateKey(keyPath)
 	if err != nil {
@@ -76,11 +80,13 @@ func LoadOrCreate(dir string) (*Store, error) {
 	raw, err := os.ReadFile(dataPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			log.Printf("secrets: no connection store found at %s (nothing saved yet)", dataPath)
 			return s, nil
 		}
 		return nil, fmt.Errorf("reading %s: %w", dataPath, err)
 	}
 	if len(raw) == 0 {
+		log.Printf("secrets: connection store at %s is empty", dataPath)
 		return s, nil
 	}
 
@@ -97,7 +103,17 @@ func LoadOrCreate(dir string) (*Store, error) {
 		s.conns[app] = conn
 	}
 
+	log.Printf("secrets: loaded %d stored connection(s) from %s: %v", len(s.conns), dataPath, appNames(s.conns))
+
 	return s, nil
+}
+
+func appNames(conns map[string]Connection) []string {
+	names := make([]string, 0, len(conns))
+	for app := range conns {
+		names = append(names, app)
+	}
+	return names
 }
 
 func loadOrGenerateKey(path string) ([]byte, error) {
@@ -106,6 +122,7 @@ func loadOrGenerateKey(path string) ([]byte, error) {
 		if len(raw) != 32 {
 			return nil, fmt.Errorf("encryption key at %s is not 32 bytes - it looks corrupt", path)
 		}
+		log.Printf("secrets: loaded existing encryption key from %s", path)
 		return raw, nil
 	}
 	if !os.IsNotExist(err) {
@@ -124,6 +141,7 @@ func loadOrGenerateKey(path string) ([]byte, error) {
 	if err := os.WriteFile(path, key, 0o600); err != nil {
 		return nil, fmt.Errorf("writing encryption key %s: %w", path, err)
 	}
+	log.Printf("secrets: generated a new encryption key at %s (any connections encrypted under a previous key are now unreadable - expected only on first run)", path)
 	return key, nil
 }
 
