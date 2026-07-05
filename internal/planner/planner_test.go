@@ -351,3 +351,47 @@ func TestBuild_UnavailablePathIsSkippedNotAssumedEmpty(t *testing.T) {
 		t.Fatalf("expected a warning about no destination having room")
 	}
 }
+
+// TestBuild_RespectsRealFreeSpaceNotRawTotal reproduces a real incident: a
+// filesystem with a reserved-blocks margin (e.g. ext4's default 5%
+// root-reserved blocks) reports FreeBytes (Bavail-based, what a writer can
+// actually use) smaller than TotalBytes-UsedBytes would suggest. If the
+// ceiling check divides by raw TotalBytes instead of Used+Free, it can
+// accept an item that looks like it fits by nominal-capacity math but
+// doesn't actually fit in the space a writer can reach - which is exactly
+// what let a prior plan overshoot its configured max_used_percent and run
+// a cold drive to `df -h` 100% while Coldarr's own projection still showed
+// headroom.
+func TestBuild_RespectsRealFreeSpaceNotRawTotal(t *testing.T) {
+	in := Input{
+		Tiers: testTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot": usage(1000*gib, 500*gib),
+			// Raw total says 10 GB "free" (100-90), but only 5 GB of that
+			// is actually writable (Bavail) - 5 GB is reserved and
+			// invisible to df's Use% and to any unprivileged writer.
+			"/cold1": {TotalBytes: 100 * gib, UsedBytes: 90 * gib, FreeBytes: 5 * gib, UsedPercent: 90.0 / 95.0 * 100},
+			"/cold2": usage(1000*gib, 100*gib),
+		},
+		Items: []ItemEval{
+			// Bigger than the real 5 GB free, but old total-based math
+			// (90+6)/100=96% would have looked fine under a 97% ceiling.
+			coldItem(1, "Movie A", 6*gib),
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+	in.Tiers[1].MaxUsedPercent = 97
+	in.Tiers[1].TargetUsedPercent = 97
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, e := range plan.Entries {
+		if e.ToPath == "/cold1" {
+			t.Fatalf("expected /cold1 to be rejected (only 5 GB actually free for a 6 GB item), got it picked: %+v", e)
+		}
+	}
+}

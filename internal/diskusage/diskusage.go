@@ -32,18 +32,29 @@ func Stat(path string) (Usage, error) {
 	free := stat.Bavail * bsize
 	used := total - stat.Bfree*bsize
 
-	var usedPercent float64
-	if total > 0 {
-		usedPercent = float64(used) / float64(total) * 100
-	}
-
 	return Usage{
 		Path:        path,
 		TotalBytes:  total,
 		FreeBytes:   free,
 		UsedBytes:   used,
-		UsedPercent: usedPercent,
+		UsedPercent: PercentUsed(used, free),
 	}, nil
+}
+
+// PercentUsed computes usage the way `df` does: used / (used + avail),
+// not used / raw-total. Filesystems like ext4 reserve a slice of blocks
+// (Bfree) that only root can write into, which Bavail already excludes;
+// dividing by the raw total instead would count that reserved slice as
+// headroom Coldarr could still pack into, so the planner would keep
+// filling a tier past the point where its own writes actually start
+// failing with ENOSPC - and df would already be reporting 100% used
+// while Coldarr still thought there was room.
+func PercentUsed(usedBytes, freeBytes uint64) float64 {
+	denom := usedBytes + freeBytes
+	if denom == 0 {
+		return 0
+	}
+	return float64(usedBytes) / float64(denom) * 100
 }
 
 // DeviceID returns the identifier of the filesystem path resides on -
