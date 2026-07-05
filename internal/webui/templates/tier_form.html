@@ -36,13 +36,21 @@
   </div>
 
   <div>
-    <label for="target">Target used % <span class="hint">(steady-state Coldarr aims for)</span></label>
-    <input type="number" id="target" name="target_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.TargetUsedPercent}}" required>
+    <label for="max">Max used %</label>
+    <input type="number" id="max" name="max_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.MaxUsedPercent}}" required>
+    <div class="hint">
+      Hot: the trigger - once usage climbs above this, Coldarr looks for cold-eligible items to move off.
+      Cold: the hard ceiling a destination is never pushed past (no built-in cap - 100 is allowed).
+    </div>
   </div>
 
   <div>
-    <label for="max">Max used % <span class="hint">(hard ceiling - no built-in cap, 100 is allowed)</span></label>
-    <input type="number" id="max" name="max_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.MaxUsedPercent}}" required>
+    <label for="target">Target used %</label>
+    <input type="number" id="target" name="target_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.TargetUsedPercent}}" required>
+    <div class="hint">
+      Hot: how far usage drops back down once triggered - keep this below max, or every new file will
+      immediately re-trigger another move. Cold: informational only right now (not used to pick destinations).
+    </div>
   </div>
 
   <div class="checkbox-row">
