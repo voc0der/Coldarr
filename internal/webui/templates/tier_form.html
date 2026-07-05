@@ -68,6 +68,12 @@
   function coldarrToggleColdFields() {
     var isCold = document.getElementById("role").value === "cold";
     document.getElementById("coldarr-cold-fields").style.display = isCold ? "flex" : "none";
+    // Disabled (not just hidden) so these fields are excluded from
+    // constraint validation and aren't submitted at all for hot tiers -
+    // a display:none field can still fail its min/max constraint with no
+    // visible way to show the validation error, silently blocking submit.
+    document.getElementById("target").disabled = !isCold;
+    document.getElementById("max").disabled = !isCold;
   }
   coldarrToggleColdFields();
 </script>
