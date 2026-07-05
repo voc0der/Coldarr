@@ -28,33 +28,45 @@ func fmtGBu(b uint64) string {
 }
 
 // TierUsage prints one row per configured path: role, tier, target/max
-// thresholds, and current usage - or the reason a path is being skipped.
+// thresholds (cold tiers only - hot storage isn't steered toward a usage
+// level), and current usage, or the reason a path is being skipped.
 func TierUsage(w io.Writer, inv *engine.Inventory) {
 	tw := newTabwriter(w)
 	fmt.Fprintln(tw, "TIER\tROLE\tPATH\tUSED\tFREE\tTOTAL\tUSED%\tTARGET%\tMAX%\tSTATUS")
 
 	// Stable order: tiers as configured, paths as configured.
 	for _, tier := range inv.Tiers {
+		targetCol, maxCol := "-", "-"
+		if tier.Role == model.RoleCold {
+			targetCol = fmt.Sprintf("%.0f", tier.TargetUsedPercent)
+			maxCol = fmt.Sprintf("%.0f", tier.MaxUsedPercent)
+		}
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]
 			if status.Err != nil {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\t%.0f\t%.0f\tUNAVAILABLE: %v\n",
-					tier.Name, tier.Role, path, tier.TargetUsedPercent, tier.MaxUsedPercent, status.Err)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\t%s\t%s\tUNAVAILABLE: %v\n",
+					tier.Name, tier.Role, path, targetCol, maxCol, status.Err)
 				continue
 			}
 			u := status.Usage
-			marker := ""
-			if tier.Role == model.RoleHot && u.UsedPercent > tier.MaxUsedPercent {
-				marker = "OVER PRESSURE"
-			} else {
-				marker = "ok"
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%.0f\t%.0f\t%s\n",
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\tok\n",
 				tier.Name, tier.Role, path, fmtGBu(u.UsedBytes), fmtGBu(u.FreeBytes), fmtGBu(u.TotalBytes),
-				u.UsedPercent, tier.TargetUsedPercent, tier.MaxUsedPercent, marker)
+				u.UsedPercent, targetCol, maxCol)
 		}
 	}
 	tw.Flush()
+}
+
+// Warnings prints non-fatal problems encountered while building the
+// inventory (e.g. Jellyfin favorites couldn't be fetched).
+func Warnings(w io.Writer, warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nWarnings:")
+	for _, warn := range warnings {
+		fmt.Fprintf(w, "  - %s\n", warn)
+	}
 }
 
 // Summary prints decision counts plus the top cold candidates and any
@@ -89,7 +101,7 @@ func Summary(w io.Writer, inv *engine.Inventory, topN int) {
 		len(inv.Items), protected, hot, cold)
 
 	sort.Slice(coldOnHot, func(i, j int) bool { return coldOnHot[i].Eval.Score > coldOnHot[j].Eval.Score })
-	fmt.Fprintf(w, "\nTop cold candidates currently on hot storage (would move first if that tier comes under pressure):\n")
+	fmt.Fprintf(w, "\nTop cold candidates currently on hot storage (move first, cold destination room permitting):\n")
 	tw := newTabwriter(w)
 	fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tSCORE\tWHY")
 	for i, ie := range coldOnHot {
@@ -125,7 +137,7 @@ func firstReason(reasons []string) string {
 // changes - callers decide separately whether to execute it.
 func Plan(w io.Writer, plan *planner.Plan) {
 	if len(plan.Entries) == 0 {
-		fmt.Fprintln(w, "\nNo moves needed - every hot path is within its usage target.")
+		fmt.Fprintln(w, "\nNo moves needed - no cold-eligible items found on hot storage with room to accept them.")
 	} else {
 		var total int64
 		tw := newTabwriter(w)

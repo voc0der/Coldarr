@@ -141,7 +141,7 @@ func applyDefaults(cfg *Config) {
 	}
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
-		if t.TargetUsedPercent == 0 {
+		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {
 			t.TargetUsedPercent = t.MaxUsedPercent
 		}
 	}
@@ -202,11 +202,15 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 			}
 		}
 
-		if t.MaxUsedPercent <= 0 || t.MaxUsedPercent > 100 {
-			return fmt.Errorf("tier %q: max_used_percent must be in (0, 100], got %v", t.Name, t.MaxUsedPercent)
-		}
-		if t.TargetUsedPercent <= 0 || t.TargetUsedPercent > t.MaxUsedPercent {
-			return fmt.Errorf("tier %q: target_used_percent must be in (0, max_used_percent], got %v", t.Name, t.TargetUsedPercent)
+		// target/max are only meaningful for cold tiers - hot storage is
+		// runoff, not something Coldarr steers toward a usage level.
+		if t.Role == model.RoleCold {
+			if t.MaxUsedPercent <= 0 || t.MaxUsedPercent > 100 {
+				return fmt.Errorf("tier %q: max_used_percent must be in (0, 100], got %v", t.Name, t.MaxUsedPercent)
+			}
+			if t.TargetUsedPercent <= 0 || t.TargetUsedPercent > t.MaxUsedPercent {
+				return fmt.Errorf("tier %q: target_used_percent must be in (0, max_used_percent], got %v", t.Name, t.TargetUsedPercent)
+			}
 		}
 	}
 

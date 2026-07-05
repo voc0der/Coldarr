@@ -17,6 +17,7 @@ type tierRow struct {
 	FreeBytes     int64
 	TotalBytes    int64
 	UsedPercent   float64
+	HasThresholds bool // false for hot tiers - not steered toward a usage level
 	TargetPercent float64
 	MaxPercent    float64
 	StatusMsg     string
@@ -26,6 +27,7 @@ type tierRow struct {
 type dashboardData struct {
 	Title              string
 	Error              string
+	Warnings           []string
 	RadarrConfigured   bool
 	SonarrConfigured   bool
 	JellyfinConfigured bool
@@ -64,6 +66,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				TierName:      tier.Name,
 				Role:          tier.Role,
 				Path:          path,
+				HasThresholds: tier.Role == model.RoleCold,
 				TargetPercent: tier.TargetUsedPercent,
 				MaxPercent:    tier.MaxUsedPercent,
 			}
@@ -76,18 +79,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				row.FreeBytes = int64(status.Usage.FreeBytes)
 				row.TotalBytes = int64(status.Usage.TotalBytes)
 				row.UsedPercent = status.Usage.UsedPercent
-				if tier.Role == model.RoleHot && status.Usage.UsedPercent > tier.MaxUsedPercent {
-					row.StatusMsg = "over pressure"
-					row.StatusClass = "warn"
-				} else {
-					row.StatusMsg = "ok"
-					row.StatusClass = "ok"
-				}
+				row.StatusMsg = "ok"
+				row.StatusClass = "ok"
 			}
 			data.Rows = append(data.Rows, row)
 		}
 	}
 
+	data.Warnings = inv.Warnings
 	data.TotalItems = len(inv.Items)
 	for _, it := range inv.Items {
 		switch it.Eval.Decision {

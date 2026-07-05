@@ -25,12 +25,10 @@ func usage(total, used uint64) diskusage.Usage {
 func testTiers() []model.Tier {
 	return []model.Tier{
 		{
-			Name:              "hot",
-			Role:              model.RoleHot,
-			Paths:             []string{"/hot"},
-			Media:             []model.MediaType{model.Movie, model.TV},
-			TargetUsedPercent: 75,
-			MaxUsedPercent:    80,
+			Name:  "hot",
+			Role:  model.RoleHot,
+			Paths: []string{"/hot"},
+			Media: []model.MediaType{model.Movie, model.TV},
 		},
 		{
 			Name:              "cold-movies",
@@ -66,15 +64,20 @@ func coldItem(id int, title string, sizeBytes int64) ItemEval {
 	}
 }
 
-func TestBuild_NoMoveWhenUnderThreshold(t *testing.T) {
+func TestBuild_NoMoveWhenNoColdCandidates(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot":   usage(1000*gib, 700*gib), // 70%, under max of 80%
+			"/hot":   usage(1000*gib, 950*gib), // hot near-full is fine, not a trigger
 			"/cold1": usage(1000*gib, 100*gib),
 			"/cold2": usage(1000*gib, 100*gib),
 		},
-		Items:   []ItemEval{coldItem(1, "Movie A", 50*gib)},
+		Items: []ItemEval{
+			{
+				Item: model.MediaItem{ArrApp: "radarr", ID: 1, Type: model.Movie, Title: "Hot Movie", RootFolderPath: "/hot", SizeBytes: 20 * gib},
+				Eval: scoring.Evaluation{Decision: scoring.Hot},
+			},
+		},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
@@ -89,11 +92,11 @@ func TestBuild_NoMoveWhenUnderThreshold(t *testing.T) {
 	}
 }
 
-func TestBuild_MovesColdItemsWhenHotOverPressure(t *testing.T) {
+func TestBuild_MovesColdItemsRegardlessOfHotUsage(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot":   usage(1000*gib, 850*gib), // 85%, over max of 80%, target 75%
+			"/hot":   usage(1000*gib, 100*gib), // hot barely used - old model would never trigger here
 			"/cold1": usage(1000*gib, 100*gib),
 			"/cold2": usage(1000*gib, 100*gib),
 		},
@@ -110,12 +113,11 @@ func TestBuild_MovesColdItemsWhenHotOverPressure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	// Need to free 10% of 1000GB = 100GB. Both items should move
-	// (highest score first) since one alone isn't enough.
+	// Every cold-eligible item on hot storage moves whenever cold has
+	// room - there's no hot-side pressure gate anymore.
 	if len(plan.Entries) != 2 {
 		t.Fatalf("expected 2 moves, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
-	// Item 2 has the higher score (52 vs 51) so it should be picked first.
 	if plan.Entries[0].Item.Title != "Movie B" {
 		t.Fatalf("expected coldest item first, got %q", plan.Entries[0].Item.Title)
 	}
@@ -126,16 +128,47 @@ func TestBuild_MovesColdItemsWhenHotOverPressure(t *testing.T) {
 	}
 }
 
-func TestBuild_NeverExceedsDestinationCeiling(t *testing.T) {
+func TestBuild_PrefersTargetOverMaxFallback(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot":   usage(1000*gib, 900*gib), // way over pressure
-			"/cold1": usage(100*gib, 94*gib),   // almost at its 95% ceiling
-			"/cold2": usage(100*gib, 10*gib),   // plenty of room
+			"/hot":   usage(1000*gib, 500*gib),
+			"/cold1": usage(100*gib, 50*gib), // well under its 92% target
+			"/cold2": usage(100*gib, 93*gib), // over target, but still under its 95% max
 		},
 		Items: []ItemEval{
-			coldItem(1, "Big Movie", 50*gib), // would push cold1 past 95% if placed there
+			coldItem(1, "Movie A", 1*gib),
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 0.5},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected 1 move, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	// /cold2 would also technically fit under its max, but /cold1 has
+	// room under target - target-eligible destinations always win over a
+	// max-only fallback, regardless of relative fullness.
+	if plan.Entries[0].ToPath != "/cold1" {
+		t.Fatalf("expected destination /cold1 (has target room), got %s", plan.Entries[0].ToPath)
+	}
+}
+
+func TestBuild_FallsBackToMaxWhenNoTargetRoomExists(t *testing.T) {
+	in := Input{
+		Tiers: testTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 500*gib),
+			"/cold1": usage(100*gib, 93*gib), // past its 92% target, 2 GB of room left under its 95% max
+			"/cold2": usage(100*gib, 94*gib), // past its 92% target, only 1 GB of room left under its 95% max
+		},
+		Items: []ItemEval{
+			coldItem(1, "Movie A", 1500*(1<<20)), // 1.5 GB - fits /cold1's max headroom but not /cold2's
 		},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
@@ -147,14 +180,42 @@ func TestBuild_NeverExceedsDestinationCeiling(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	if len(plan.Entries) != 1 {
-		t.Fatalf("expected 1 move, got %d", len(plan.Entries))
+		t.Fatalf("expected 1 move, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
-	if plan.Entries[0].ToPath != "/cold2" {
-		t.Fatalf("expected item routed to /cold2 (only path with room), got %s", plan.Entries[0].ToPath)
+	if plan.Entries[0].ToPath != "/cold1" {
+		t.Fatalf("expected destination /cold1 (only one with max headroom), got %s", plan.Entries[0].ToPath)
 	}
-	final := plan.FinalUsage["/cold2"]
+	final := plan.FinalUsage["/cold1"]
 	if final.UsedPercent > 95 {
-		t.Fatalf("destination exceeded its ceiling: %.1f%%", final.UsedPercent)
+		t.Fatalf("destination exceeded its max ceiling: %.2f%%", final.UsedPercent)
+	}
+}
+
+func TestBuild_NeverExceedsMaxEvenAsFallback(t *testing.T) {
+	in := Input{
+		Tiers: testTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 500*gib),
+			"/cold1": usage(100*gib, 94*gib), // almost at its 95% max already
+			"/cold2": usage(100*gib, 94*gib),
+		},
+		Items: []ItemEval{
+			coldItem(1, "Big Movie", 50*gib), // would push either past 95% max
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no moves when every destination would exceed its max, got %d", len(plan.Entries))
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatalf("expected a warning that no destination has room")
 	}
 }
 
@@ -172,7 +233,7 @@ func TestBuild_RespectsCooldown(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot":   usage(1000*gib, 850*gib),
+			"/hot":   usage(1000*gib, 500*gib),
 			"/cold1": usage(1000*gib, 100*gib),
 			"/cold2": usage(1000*gib, 100*gib),
 		},
@@ -189,16 +250,13 @@ func TestBuild_RespectsCooldown(t *testing.T) {
 	if len(plan.Entries) != 0 {
 		t.Fatalf("expected item in cooldown to be skipped, got %d moves", len(plan.Entries))
 	}
-	if len(plan.Warnings) == 0 {
-		t.Fatalf("expected a warning that target could not be reached")
-	}
 }
 
 func TestBuild_UnavailablePathIsSkippedNotAssumedEmpty(t *testing.T) {
 	in := Input{
 		Tiers: testTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot": usage(1000*gib, 850*gib),
+			"/hot": usage(1000*gib, 500*gib),
 			// /cold1 and /cold2 deliberately absent, simulating failed
 			// mount checks.
 		},

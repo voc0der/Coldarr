@@ -26,6 +26,7 @@ func newPlanCmd() *cobra.Command {
 			}
 
 			report.TierUsage(os.Stdout, inv)
+			report.Warnings(os.Stdout, inv.Warnings)
 
 			plan, err := e.BuildPlan(inv, now)
 			if err != nil {

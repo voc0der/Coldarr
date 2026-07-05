@@ -14,16 +14,18 @@
 # ${SOME_VAR}, for anything below.
 
 # Tiers are named storage policies applied to one or more physical paths.
-# Every path in a tier is checked independently against the same
-# target/max thresholds - a tier is a shared policy, not a pooled volume.
+# Every path in a tier is checked independently - a tier is a shared
+# policy, not a pooled volume.
 #
-# - role: hot   -> primary storage. If a path's usage climbs above
-#                  max_used_percent, Coldarr looks for cold candidates to
-#                  move off of it, aiming to bring usage back down to
-#                  target_used_percent.
-# - role: cold  -> overflow storage. Coldarr packs cold candidates onto
-#                  the fullest-but-not-full path first, never pushing any
-#                  path past its max_used_percent.
+# - role: hot   -> primary storage. Coldarr never steers this toward any
+#                  usage level - it's runoff, not a control variable. Every
+#                  cold-eligible item sitting on a hot path is a move
+#                  candidate, whenever cold tiers have room to accept it.
+#                  No target_used_percent/max_used_percent here.
+# - role: cold  -> overflow storage. Coldarr actively packs cold-eligible
+#                  items toward target_used_percent (the fill goal),
+#                  falling back to max_used_percent (the hard ceiling,
+#                  never crossed) only when nothing has room under target.
 #
 # max_used_percent has no built-in ceiling - if you want a satellite
 # drive packed to 100%, set it to 100. Coldarr will respect that.
@@ -34,8 +36,6 @@ tiers:
       - /data/media/movies
       - /data/media/tv
     media_types: [movie, tv]
-    target_used_percent: 75
-    max_used_percent: 80
     require_mount: false # the primary NAS mount is expected to always be present
 
   - name: cold-movies

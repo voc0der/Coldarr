@@ -5,7 +5,7 @@
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 {{if .Empty}}
-<div class="card muted">No moves needed - every hot path is within its usage target.</div>
+<div class="card muted">No moves needed - no cold-eligible items found on hot storage with room to accept them.</div>
 {{else}}
 <div class="card overflow-table">
 <table>

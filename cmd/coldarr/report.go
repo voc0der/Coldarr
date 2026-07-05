@@ -26,6 +26,7 @@ func newReportCmd() *cobra.Command {
 
 			report.TierUsage(os.Stdout, inv)
 			report.Summary(os.Stdout, inv, 20)
+			report.Warnings(os.Stdout, inv.Warnings)
 			return nil
 		},
 	}

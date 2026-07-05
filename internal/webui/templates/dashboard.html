@@ -2,6 +2,7 @@
 <h1>Dashboard</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{range .Warnings}}<div class="alert alert-error">{{.}}</div>{{end}}
 
 <div class="card">
   <div class="stat-row">
@@ -33,7 +34,11 @@
   <td>{{gb .FreeBytes}}</td>
   <td>{{gb .TotalBytes}}</td>
   <td>{{pct .UsedPercent}}</td>
+  {{if .HasThresholds}}
   <td class="muted">{{pct .TargetPercent}} / {{pct .MaxPercent}}</td>
+  {{else}}
+  <td class="muted">-</td>
+  {{end}}
   <td><span class="badge badge-{{.StatusClass}}">{{.StatusMsg}}</span></td>
   {{else}}
   <td colspan="5" class="muted">unavailable</td>
