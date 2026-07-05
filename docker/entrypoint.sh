@@ -17,4 +17,15 @@ if ! getent passwd "$PUID" >/dev/null 2>&1; then
 fi
 USER_NAME="$(getent passwd "$PUID" | cut -d: -f1)"
 
+# Docker creates a bind-mounted /config as root:root if the host directory
+# doesn't already exist, which leaves the unprivileged user below unable to
+# write coldarr.yaml, the encrypted connection store, or its key. /config
+# is small (a handful of config/state files) and exclusively Coldarr's, so
+# reclaiming it here is cheap and safe - unlike the media tier mounts,
+# which are owned by Radarr/Sonarr/etc. and are never touched.
+mkdir -p /config
+if ! chown -R "$PUID:$PGID" /config; then
+  echo "warning: could not chown /config to $PUID:$PGID - expect permission errors if its ownership doesn't already match" >&2
+fi
+
 exec su-exec "${USER_NAME}:${GROUP_NAME}" /usr/local/bin/coldarr "$@"
