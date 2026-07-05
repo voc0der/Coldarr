@@ -237,15 +237,13 @@ func applyDelta(u diskusage.Usage, deltaBytes int64) diskusage.Usage {
 	if used < 0 {
 		used = 0
 	}
+	free := int64(u.FreeBytes) - deltaBytes
+	if free < 0 {
+		free = 0
+	}
 	u.UsedBytes = uint64(used)
-	if u.TotalBytes > u.UsedBytes {
-		u.FreeBytes = u.TotalBytes - u.UsedBytes
-	} else {
-		u.FreeBytes = 0
-	}
-	if u.TotalBytes > 0 {
-		u.UsedPercent = float64(u.UsedBytes) / float64(u.TotalBytes) * 100
-	}
+	u.FreeBytes = uint64(free)
+	u.UsedPercent = diskusage.PercentUsed(u.UsedBytes, u.FreeBytes)
 	return u
 }
 
