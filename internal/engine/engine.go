@@ -6,7 +6,9 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/arrapi"
@@ -222,8 +224,44 @@ func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error)
 	})
 }
 
+// Movers returns a mover.Movers configured with production settle-timing
+// defaults, unless overridden via COLDARR_SETTLE_CHECK_INTERVAL /
+// COLDARR_SETTLE_STABLE_CHECKS / COLDARR_SETTLE_MAX_WAIT (Go duration
+// strings like "5s", "6h") - useful for storage that settles much faster
+// or slower than the defaults assume.
 func (e *Engine) Movers() *mover.Movers {
-	return &mover.Movers{Radarr: e.Radarr, Sonarr: e.Sonarr, History: e.History}
+	return &mover.Movers{
+		Radarr:              e.Radarr,
+		Sonarr:              e.Sonarr,
+		History:             e.History,
+		SettleCheckInterval: envDuration("COLDARR_SETTLE_CHECK_INTERVAL"),
+		SettleStableChecks:  envInt("COLDARR_SETTLE_STABLE_CHECKS"),
+		SettleMaxWait:       envDuration("COLDARR_SETTLE_MAX_WAIT"),
+	}
+}
+
+func envDuration(name string) time.Duration {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
+func envInt(name string) int {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // JellyfinClient returns a client for the configured Jellyfin instance, or

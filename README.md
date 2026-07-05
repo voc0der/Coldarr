@@ -62,16 +62,32 @@ scheduled mode, torrent client awareness, and GUI authentication.
    way). Among viable destinations it prefers the fullest-but-not-full
    one, so satellites get packed one at a time instead of spread thin.
    Items moved within `cooldown_days` are skipped.
-4. **Apply** - moves are grouped by destination path and sent to
-   Radarr/Sonarr's bulk editor endpoint (`moveFiles: true`), which
-   relocates files on disk and keeps the folder name intact. Every
-   successful move is logged to the history file immediately (used for
-   cooldown on future runs), then Jellyfin is asked to refresh, if
-   configured.
+4. **Apply** - runs in the background and returns a live-updating status
+   page/log immediately; the moves themselves are serialized **one at a
+   time per destination physical volume** (never more than one write in
+   flight against the same disk), while different volumes proceed in
+   parallel. Hot storage, a read source, isn't throttled. After asking
+   Radarr/Sonarr to relocate an item (`moveFiles: true`), Coldarr watches
+   the destination's disk usage until the transfer has actually landed
+   before starting the next item queued for that same volume - the move
+   API returns once the operation is queued, not once the bytes are on
+   disk, so trusting it alone isn't enough. Only one apply can run at a
+   time, system-wide, enforced by a crash-safe lock. Every completed move
+   is logged to the history file with its real completion time, then
+   Jellyfin is asked to refresh once the whole run finishes.
 
 Nothing above ever happens without `report`/`plan` (or the GUI's dashboard
 and plan page) being read-only, or without confirming before an apply
 executes - a `--yes` flag on the CLI, a JS confirm dialog in the GUI.
+
+**Why one destination volume at a time:** firing every move in a plan at
+once - many large simultaneous writes across several files/drives - is a
+very different load profile than steady, one-at-a-time movement, and can
+saturate a storage subsystem badly enough to make a whole host
+unresponsive. This isn't hypothetical; it happened during testing. The
+serialization is keyed by physical device, not tier name, so it also
+catches two differently-named tier paths that turn out to be the same
+disk (see [Shared volumes](#shared-volumes)).
 
 ## Setup
 
@@ -133,6 +149,8 @@ Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
   usage shown right in the list.
 - **Plan** - the same dry-run preview as the CLI's `plan`, with an Apply
   button (confirm dialog, then executes through Radarr/Sonarr).
+- **Apply status** - live progress of the current (or most recent) apply
+  run, per item, auto-refreshing until it finishes.
 - **History** - every move Coldarr has executed.
 
 **The GUI has no built-in authentication.** It can view connection status
@@ -179,6 +197,7 @@ docker compose run --rm coldarr apply --yes
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
 | `RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`) | connection overrides - see [Connections](#connections). |
+| `COLDARR_SETTLE_CHECK_INTERVAL` / `COLDARR_SETTLE_STABLE_CHECKS` / `COLDARR_SETTLE_MAX_WAIT` | tune how long `apply` waits for a move to actually land on disk before starting the next one queued for the same volume (Go duration strings, e.g. `5s`/`6h`). Defaults suit typical local disks; raise `MAX_WAIT` for very large files on slow/network storage. |
 
 **Everything else** (tiers, tags, thresholds) goes through `coldarr.yaml`,
 which supports `${VAR}` substitution against whatever environment

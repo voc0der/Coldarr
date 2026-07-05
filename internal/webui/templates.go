@@ -24,7 +24,7 @@ var pageNames = []string{
 	"tiers",
 	"tier_form",
 	"plan",
-	"apply_result",
+	"apply_status",
 	"history",
 }
 

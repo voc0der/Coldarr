@@ -74,18 +74,9 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		profileByID[p.ID] = p.Name
 	}
 
-	q := url.Values{}
-	q.Set("pageSize", "1000")
-	q.Set("includeUnknownSeriesItems", "true")
-	var queue sonarrQueuePage
-	if err := s.c.get("/api/v3/queue", q, &queue); err != nil {
+	busy, err := s.BusySeriesIDs()
+	if err != nil {
 		return nil, err
-	}
-	busy := make(map[int]bool, len(queue.Records))
-	for _, rec := range queue.Records {
-		if rec.SeriesID != 0 {
-			busy[rec.SeriesID] = true
-		}
 	}
 
 	items := make([]model.MediaItem, 0, len(series))
@@ -110,6 +101,25 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// BusySeriesIDs returns the set of series IDs Sonarr currently has an
+// active download, import, or move in progress for.
+func (s *SonarrClient) BusySeriesIDs() (map[int]bool, error) {
+	q := url.Values{}
+	q.Set("pageSize", "1000")
+	q.Set("includeUnknownSeriesItems", "true")
+	var queue sonarrQueuePage
+	if err := s.c.get("/api/v3/queue", q, &queue); err != nil {
+		return nil, err
+	}
+	busy := make(map[int]bool, len(queue.Records))
+	for _, rec := range queue.Records {
+		if rec.SeriesID != 0 {
+			busy[rec.SeriesID] = true
+		}
+	}
+	return busy, nil
 }
 
 type seriesEditorRequest struct {
