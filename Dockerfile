@@ -34,13 +34,13 @@ WORKDIR /config
 ENV PUID=1000
 ENV PGID=1000
 
-EXPOSE 8080
+EXPOSE 8478
 
 # Only meaningful while running `serve` (the default CMD) - a one-shot
 # `report`/`plan`/`apply` invocation just exits before this has a chance
 # to matter.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O- "http://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8080}" | sed 's/.*://')/healthz" >/dev/null || exit 1
+  CMD wget -q -O- "http://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8478}" | sed 's/.*://')/healthz" >/dev/null || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["serve"]

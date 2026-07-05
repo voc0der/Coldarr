@@ -119,7 +119,7 @@ coldarr serve    # run the web GUI
 All commands take `--config path/to/coldarr.yaml` (default
 `./coldarr.yaml`, overridable via the `COLDARR_CONFIG` env var).
 
-Web GUI (`coldarr serve`, default `:8080`, override with `--listen` or
+Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
 `COLDARR_LISTEN_ADDR`):
 
 - **Dashboard** - tier usage/space allotment, library item counts by
@@ -144,7 +144,7 @@ cp docker-compose.example.yml docker-compose.yml   # edit tier paths, ports
 cp .env.example .env                                # only if using env-var connections
 
 docker compose up -d
-# then open http://localhost:8080 and use the Connections/Tiers pages,
+# then open http://localhost:8478 and use the Connections/Tiers pages,
 # or configure everything via env vars / a mounted coldarr.yaml instead
 ```
 
@@ -173,7 +173,7 @@ docker compose run --rm coldarr apply --yes
 | `PUID` / `PGID`        | uid/gid the process runs as, so it can read your bind mounts. Same convention as Radarr/Sonarr/Jellyfin images. Default `1000`/`1000`. |
 | `TZ`                   | container timezone, mostly cosmetic for log timestamps.           |
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
-| `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8080`.                      |
+| `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
 | `RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`) | connection overrides - see [Connections](#connections). |
 
 **Everything else** (tiers, tags, thresholds) goes through `coldarr.yaml`,

@@ -1,6 +1,6 @@
 # Example Coldarr deployment. Copy to docker-compose.yml and adjust paths.
 #
-# Coldarr's default command is `serve` - a persistent web GUI at :8080 for
+# Coldarr's default command is `serve` - a persistent web GUI at :8478 for
 # configuring connections/tiers, previewing plans, and applying them by
 # hand. It is NOT a scheduler: nothing moves automatically. If you'd
 # rather script it, override `command` to a one-shot CLI call instead
@@ -11,7 +11,7 @@
 # The GUI has no built-in authentication - it can view connection status
 # and trigger real moves. Put it behind your own reverse proxy/auth
 # (Authelia, Traefik forward-auth, etc.) or keep it off any network you
-# don't trust, rather than publishing :8080 directly.
+# don't trust, rather than publishing :8478 directly.
 #
 # Connections (Radarr/Sonarr/Jellyfin URL + API key) can be configured
 # either through the GUI (stored encrypted in ./config) or via env vars
@@ -22,7 +22,7 @@ services:
     image: ghcr.io/voc0der/coldarr:latest
     container_name: coldarr
     ports:
-      - "8080:8080"
+      - "8478:8478"
     environment:
       PUID: "1000"
       PGID: "1000"
