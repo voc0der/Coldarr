@@ -67,18 +67,9 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 		profileByID[p.ID] = p.Name
 	}
 
-	q := url.Values{}
-	q.Set("pageSize", "1000")
-	q.Set("includeUnknownMovieItems", "true")
-	var queue radarrQueuePage
-	if err := r.c.get("/api/v3/queue", q, &queue); err != nil {
+	busy, err := r.BusyMovieIDs()
+	if err != nil {
 		return nil, err
-	}
-	busy := make(map[int]bool, len(queue.Records))
-	for _, rec := range queue.Records {
-		if rec.MovieID != 0 {
-			busy[rec.MovieID] = true
-		}
 	}
 
 	items := make([]model.MediaItem, 0, len(movies))
@@ -100,6 +91,27 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// BusyMovieIDs returns the set of movie IDs Radarr currently has an active
+// download, import, or move in progress for - used both to protect items
+// from being planned for a move, and to confirm a move Coldarr just
+// requested has actually finished before starting the next one.
+func (r *RadarrClient) BusyMovieIDs() (map[int]bool, error) {
+	q := url.Values{}
+	q.Set("pageSize", "1000")
+	q.Set("includeUnknownMovieItems", "true")
+	var queue radarrQueuePage
+	if err := r.c.get("/api/v3/queue", q, &queue); err != nil {
+		return nil, err
+	}
+	busy := make(map[int]bool, len(queue.Records))
+	for _, rec := range queue.Records {
+		if rec.MovieID != 0 {
+			busy[rec.MovieID] = true
+		}
+	}
+	return busy, nil
 }
 
 type movieEditorRequest struct {

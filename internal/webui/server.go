@@ -5,6 +5,7 @@
 package webui
 
 import (
+	"bytes"
 	"html/template"
 	"io/fs"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/engine"
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
@@ -24,6 +26,17 @@ type Server struct {
 
 	mu  sync.RWMutex
 	cfg *config.Config
+
+	// applyMu guards currentRun - only one apply can be in flight at a
+	// time, tracked here so the status page can be polled across
+	// separate requests while it runs in the background.
+	applyMu    sync.Mutex
+	currentRun *applyRun
+}
+
+type applyRun struct {
+	progress *mover.Progress
+	lock     *mover.Lock
 }
 
 func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server, error) {
@@ -58,7 +71,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /tiers/{name}/delete", s.handleTierDelete)
 
 	mux.HandleFunc("GET /plan", s.handlePlanPage)
-	mux.HandleFunc("POST /plan/apply", s.handleApply)
+	mux.HandleFunc("POST /plan/apply", s.handleApplyStart)
+	mux.HandleFunc("GET /plan/apply/status", s.handleApplyStatus)
+	mux.HandleFunc("GET /plan/apply/status/partial", s.handleApplyStatusPartial)
 
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 
@@ -113,16 +128,28 @@ func (s *Server) updateTiers(fn func([]model.Tier) ([]model.Tier, error)) error 
 	return nil
 }
 
+// render executes the template into a buffer first, not directly into w -
+// html/template writes incrementally as it executes, so writing straight
+// to the ResponseWriter means a template error partway through has
+// already sent a 200 and some bytes, and the subsequent http.Error ends
+// up trying to send a second status header ("superfluous
+// response.WriteHeader call"), producing a garbled response. Buffering
+// means a failed render never reaches the client at all - just a clean
+// 500.
 func (s *Server) render(w http.ResponseWriter, page string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.pages[page].ExecuteTemplate(w, "layout", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	s.renderTemplate(w, page, "layout", data)
 }
 
 func (s *Server) renderPartial(w http.ResponseWriter, page, partial string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.pages[page].ExecuteTemplate(w, partial, data); err != nil {
+	s.renderTemplate(w, page, partial, data)
+}
+
+func (s *Server) renderTemplate(w http.ResponseWriter, page, name string, data any) {
+	var buf bytes.Buffer
+	if err := s.pages[page].ExecuteTemplate(&buf, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }

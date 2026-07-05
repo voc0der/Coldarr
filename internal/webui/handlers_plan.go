@@ -2,8 +2,12 @@ package webui
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+	"path/filepath"
 	"time"
+
+	"github.com/vocoder/coldarr/internal/mover"
 )
 
 type planEntryView struct {
@@ -99,60 +103,121 @@ func (s *Server) handlePlanPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "plan", s.buildPlanData())
 }
 
-type failedMoveView struct {
-	Title string
-	Err   string
-}
+// handleApplyStart builds a fresh plan and starts executing it in the
+// background (one move at a time per destination volume - see
+// internal/mover), then redirects to the live status page. It never
+// blocks on the moves themselves.
+func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
+	s.applyMu.Lock()
+	if s.currentRun != nil && !s.currentRun.progress.Snapshot().Done {
+		s.applyMu.Unlock()
+		http.Redirect(w, r, "/plan/apply/status", http.StatusSeeOther)
+		return
+	}
+	s.applyMu.Unlock()
 
-type applyResultView struct {
-	Title             string
-	Error             string
-	Moved             int
-	Failed            []failedMoveView
-	JellyfinRefreshed bool
-	JellyfinError     string
-}
-
-func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	eng, err := s.newEngine()
 	if err != nil {
-		s.render(w, "apply_result", applyResultView{Title: "Apply result", Error: err.Error()})
+		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
 		return
 	}
 
 	now := time.Now()
 	inv, err := eng.BuildInventory(now)
 	if err != nil {
-		s.render(w, "apply_result", applyResultView{Title: "Apply result", Error: err.Error()})
+		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
 		return
 	}
 
 	plan, err := eng.BuildPlan(inv, now)
 	if err != nil {
-		s.render(w, "apply_result", applyResultView{Title: "Apply result", Error: err.Error()})
+		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
 		return
 	}
 
-	result, err := eng.Movers().Apply(plan, now)
+	if len(plan.Entries) == 0 {
+		http.Redirect(w, r, "/plan", http.StatusSeeOther)
+		return
+	}
+
+	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))
 	if err != nil {
-		s.render(w, "apply_result", applyResultView{Title: "Apply result", Error: err.Error()})
+		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
 		return
 	}
 
-	view := applyResultView{Title: "Apply result", Moved: len(result.Moved)}
-	for _, f := range result.Failed {
-		view.Failed = append(view.Failed, failedMoveView{Title: f.Entry.Item.Title, Err: f.Err.Error()})
+	progress := eng.Movers().Apply(plan, inv.VolumeOf())
+
+	s.applyMu.Lock()
+	s.currentRun = &applyRun{progress: progress, lock: lock}
+	s.applyMu.Unlock()
+
+	go func() {
+		defer lock.Release()
+		progress.Wait()
+
+		if len(progress.Snapshot().Moved()) > 0 {
+			if jf := eng.JellyfinClient(); jf != nil {
+				if err := jf.RefreshLibrary(); err != nil {
+					log.Printf("webui: jellyfin refresh after apply failed: %v", err)
+				}
+			}
+		}
+	}()
+
+	http.Redirect(w, r, "/plan/apply/status", http.StatusSeeOther)
+}
+
+type applyStatusEntryView struct {
+	Title  string
+	To     string
+	Status string
+	Err    string
+}
+
+type applyStatusData struct {
+	Title       string
+	NoRun       bool
+	Running     bool
+	MovedCount  int
+	FailedCount int
+	Entries     []applyStatusEntryView
+}
+
+func (s *Server) currentApplyStatus() applyStatusData {
+	s.applyMu.Lock()
+	run := s.currentRun
+	s.applyMu.Unlock()
+
+	if run == nil {
+		return applyStatusData{Title: "Apply status", NoRun: true}
 	}
 
-	if len(result.Moved) > 0 {
-		if jf := eng.JellyfinClient(); jf != nil {
-			if err := jf.RefreshLibrary(); err != nil {
-				view.JellyfinError = err.Error()
-			} else {
-				view.JellyfinRefreshed = true
-			}
+	snap := run.progress.Snapshot()
+	data := applyStatusData{Title: "Apply status", Running: !snap.Done}
+
+	for _, e := range snap.Entries {
+		data.Entries = append(data.Entries, applyStatusEntryView{
+			Title:  e.Entry.Item.Title,
+			To:     fmt.Sprintf("%s (%s)", e.Entry.ToTier, e.Entry.ToPath),
+			Status: string(e.Status),
+			Err:    e.Err,
+		})
+		switch e.Status {
+		case mover.StatusDone:
+			data.MovedCount++
+		case mover.StatusFailed:
+			data.FailedCount++
 		}
 	}
 
-	s.render(w, "apply_result", view)
+	return data
+}
+
+func (s *Server) handleApplyStatus(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "apply_status", s.currentApplyStatus())
+}
+
+func (s *Server) handleApplyStatusPartial(w http.ResponseWriter, r *http.Request) {
+	s.renderPartial(w, "apply_status", "apply_status_table", s.currentApplyStatus())
 }

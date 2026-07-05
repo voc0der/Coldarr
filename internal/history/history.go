@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -26,11 +27,15 @@ type Record struct {
 	MovedAt   time.Time `json:"moved_at"`
 }
 
-// Store is an append-only, file-backed log of past moves. It is not safe
-// for concurrent use across processes; Coldarr is expected to run as a
-// single short-lived CLI invocation at a time.
+// Store is an append-only, file-backed log of past moves. It is safe for
+// concurrent use within one process (the mover runs multiple volumes'
+// moves in parallel, each recording history as it completes) but not
+// across separate processes; the CLI and the web GUI each run their own
+// apply at a time thanks to mover.Lock.
 type Store struct {
-	path    string
+	path string
+
+	mu      sync.Mutex
 	records []Record
 }
 
@@ -61,10 +66,13 @@ func Load(path string) (*Store, error) {
 // disk, so a crash mid-run doesn't lose already-completed moves from the
 // cooldown ledger.
 func (s *Store) Append(rec Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.records = append(s.records, rec)
 	return s.save()
 }
 
+// save must be called with mu held.
 func (s *Store) save() error {
 	data, err := json.MarshalIndent(s.records, "", "  ")
 	if err != nil {
@@ -89,6 +97,9 @@ func (s *Store) save() error {
 
 // LastMoved returns the most recent time the given item was moved, if ever.
 func (s *Store) LastMoved(key model.Key) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var latest time.Time
 	found := false
 	for _, r := range s.records {
@@ -116,6 +127,9 @@ func (s *Store) InCooldown(key model.Key, cooldown time.Duration, now time.Time)
 // history view. The returned slice is a copy - callers cannot mutate the
 // store's internal state through it.
 func (s *Store) All() []Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	out := make([]Record, len(s.records))
 	copy(out, s.records)
 	sort.Slice(out, func(i, j int) bool { return out[i].MovedAt.After(out[j].MovedAt) })

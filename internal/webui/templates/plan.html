@@ -19,7 +19,7 @@
 <p><strong>{{len .Entries}} item(s), {{.TotalSize}} total</strong></p>
 </div>
 
-<form method="post" action="/plan/apply" onsubmit="return confirm('Proceed with {{len .Entries}} move(s)? Coldarr will ask Radarr/Sonarr to relocate these items now.')">
+<form method="post" action="/plan/apply" onsubmit="return confirm('Proceed with {{len .Entries}} move(s)? Coldarr will ask Radarr/Sonarr to relocate these items now - one at a time per destination drive, so this can take a while for large plans.')">
   <button type="submit" class="btn btn-primary">Apply this plan</button>
 </form>
 {{end}}

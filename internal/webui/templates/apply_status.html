@@ -1,0 +1,39 @@
+{{define "content"}}
+<h1>Apply status</h1>
+
+{{if .NoRun}}
+<div class="card muted">No apply has been run yet. Go to <a href="/plan">Plan</a> to start one.</div>
+{{else}}
+{{template "apply_status_table" .}}
+{{end}}
+{{end}}
+
+{{define "apply_status_table"}}
+<div id="apply-status" {{if .Running}}hx-get="/plan/apply/status/partial" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+<div class="card">
+<p>
+  {{if .Running}}<span class="badge badge-warn">running - one move at a time per destination volume</span>{{else}}<span class="badge badge-ok">finished</span>{{end}}
+  &nbsp; {{.MovedCount}} moved, {{.FailedCount}} failed
+</p>
+</div>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Title</th><th>Destination</th><th>Status</th></tr></thead>
+<tbody>
+{{range .Entries}}
+<tr>
+  <td>{{.Title}}</td>
+  <td class="mono">{{.To}}</td>
+  <td>
+    {{if eq .Status "pending"}}<span class="badge badge-muted">pending</span>{{end}}
+    {{if eq .Status "moving"}}<span class="badge badge-warn">moving</span>{{end}}
+    {{if eq .Status "done"}}<span class="badge badge-ok">done</span>{{end}}
+    {{if eq .Status "failed"}}<span class="badge badge-danger">failed: {{.Err}}</span>{{end}}
+  </td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</div>
+{{end}}
