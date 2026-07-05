@@ -6,6 +6,7 @@ package engine
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/arrapi"
@@ -72,6 +73,10 @@ type Inventory struct {
 	Tiers      []model.Tier
 	PathStatus map[string]PathStatus
 	Items      []planner.ItemEval
+	// Warnings surfaces non-fatal problems encountered while building the
+	// inventory (e.g. Jellyfin favorites couldn't be fetched) that the
+	// operator should see but that shouldn't block report/plan/apply.
+	Warnings []string
 }
 
 // UsableUsage returns usage for only the paths that passed their
@@ -138,7 +143,20 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 		items = append(items, series...)
 	}
 
+	var favorites map[string]bool
+	if jf := e.JellyfinClient(); jf != nil {
+		paths, err := jf.FavoritePaths()
+		if err != nil {
+			inv.Warnings = append(inv.Warnings, fmt.Sprintf("could not fetch Jellyfin favorites, favorited items are NOT protected this run: %v", err))
+		} else {
+			favorites = paths
+		}
+	}
+
 	for _, it := range items {
+		if favorites[filepath.Clean(it.Path)] {
+			it.JellyfinFavorite = true
+		}
 		eval := scoring.Evaluate(it, e.Cfg.Policy, now)
 		inv.Items = append(inv.Items, planner.ItemEval{Item: it, Eval: eval})
 	}

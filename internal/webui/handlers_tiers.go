@@ -116,14 +116,12 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 		media = append(media, model.TV)
 	}
 
-	target, err := strconv.ParseFloat(r.FormValue("target_used_percent"), 64)
-	if err != nil {
-		return model.Tier{}, fmt.Errorf("target used %% must be a number")
-	}
-	max, err := strconv.ParseFloat(r.FormValue("max_used_percent"), 64)
-	if err != nil {
-		return model.Tier{}, fmt.Errorf("max used %% must be a number")
-	}
+	// target/max only apply to cold tiers; the hot-role form leaves these
+	// fields hidden and blank, so an empty value just means "not set"
+	// rather than a parse error. A genuinely malformed cold-tier value
+	// still gets caught by config.ValidateTiers's range check below.
+	target := parseFloatOrZero(r.FormValue("target_used_percent"))
+	max := parseFloatOrZero(r.FormValue("max_used_percent"))
 
 	return model.Tier{
 		Name:              name,
@@ -134,6 +132,14 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 		MaxUsedPercent:    max,
 		RequireMount:      r.FormValue("require_mount") == "on",
 	}, nil
+}
+
+func parseFloatOrZero(s string) float64 {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func tierFormFromRequest(title string, editing bool, origName string, r *http.Request, tier model.Tier, errMsg string) tierFormData {

@@ -18,10 +18,11 @@ Implemented:
 
 - Radarr + Sonarr inventory (tags, quality profile, monitored/queue state)
 - Disk usage per configured path, with mount-point safety checks
-- A transparent, tunable scoring engine (protected / hot / cold)
-- A planner that only moves cold items off hot paths that are actually
-  over their configured threshold, packing cold destinations
-  fullest-first
+- A transparent, tunable scoring engine (protected / hot / cold), including
+  Jellyfin Favorites (any user) as a protection signal
+- A planner that packs cold tiers toward their target usage by moving every
+  cold-eligible item off hot storage, limited only by cold destination
+  room - hot storage is runoff, never steered toward a usage level
 - Cooldown tracking so nothing gets moved twice in a short window
 - Connections (Radarr/Sonarr/Jellyfin) stored encrypted at rest, with
   per-app environment-variable overrides that always take precedence
@@ -33,9 +34,9 @@ Implemented:
 - Optional Jellyfin library refresh trigger after a successful apply
 
 Deliberately out of scope for this pass (see the bottom of this file):
-Plex, Seerr/Overseerr request history, watch-history scoring, a
-fully-automatic scheduled mode, torrent client awareness, and GUI
-authentication.
+Plex, Seerr/Overseerr request history, Jellyfin play-history/watch-count
+scoring (Favorites are in, play counts aren't - yet), a fully-automatic
+scheduled mode, torrent client awareness, and GUI authentication.
 
 ## How a run works
 
@@ -44,20 +45,23 @@ authentication.
    and every series from Sonarr, including tags, quality profile, and
    whether an active download/import is in progress for it.
 2. **Score** - each item is evaluated into one of three buckets:
-   - `protected` - tagged `never-move`/`keep-hot`/etc, or has an active
-     download/import. Never touched.
+   - `protected` - tagged `never-move`/`keep-hot`/etc, marked Favorite by
+     any Jellyfin user, or has an active download/import. Never touched.
    - `hot` - should stay on primary storage (recently added, a
      currently-airing series, or just didn't score high enough to be
      cold).
    - `cold` - safe to relocate to overflow storage, with a score used to
      rank *which* cold items move first.
-3. **Plan** - for each hot path over its configured `max_used_percent`,
-   Coldarr picks cold-scored items stored on that exact path (coldest and
-   largest first) and assigns each one to whichever cold-tier path has
-   the most room to spare without crossing *its* `max_used_percent`. It
-   prefers the fullest-but-not-full destination, so satellites get
-   packed one at a time instead of spread thin. Items moved within
-   `cooldown_days` are skipped.
+3. **Plan** - Coldarr does not steer hot storage toward any usage level -
+   it's runoff, not a control variable, and it's fine for it to sit
+   however full it ends up. Every cold-scored item currently on a hot
+   path is a move candidate (coldest and largest first), assigned to
+   whichever cold-tier path has room under its `target_used_percent` (the
+   fill goal); if nothing has target room, it falls back to whatever has
+   room under `max_used_percent` (the hard ceiling, never crossed either
+   way). Among viable destinations it prefers the fullest-but-not-full
+   one, so satellites get packed one at a time instead of spread thin.
+   Items moved within `cooldown_days` are skipped.
 4. **Apply** - moves are grouped by destination path and sent to
    Radarr/Sonarr's bulk editor endpoint (`moveFiles: true`), which
    relocates files on disk and keeps the folder name intact. Every
@@ -187,18 +191,26 @@ like a misplaced or unavailable path.
 
 ## Tiers
 
-A tier is a named policy (target/max usage, allowed media types, whether
-paths must be real mount points) applied to one or more physical paths.
-Each path is checked independently - a tier is a shared policy across
-drives, not a pooled volume. See `coldarr.example.yaml` for a worked
-example with one hot tier (the primary NAS) and two cold tiers (movies
-and TV split across satellite drives) - or just add them through the
-GUI's Tiers page, which writes the same file.
+A tier is a named policy (allowed media types, whether paths must be real
+mount points, and for cold tiers, target/max usage) applied to one or more
+physical paths. Each path is checked independently - a tier is a shared
+policy across drives, not a pooled volume. See `coldarr.example.yaml` for
+a worked example with one hot tier (the primary NAS) and two cold tiers
+(movies and TV split across satellite drives) - or just add them through
+the GUI's Tiers page, which writes the same file.
 
-`max_used_percent` has no built-in ceiling. The conventional advice for
-overflow storage is 90-95%, so imports and metadata writes don't choke on
-a completely full filesystem - but if you want a drive packed to 100%,
-set it to 100. Coldarr won't stop you.
+**Hot tiers have no `target_used_percent`/`max_used_percent`.** Coldarr
+doesn't steer primary storage toward any usage level - it's runoff. In
+the ideal case your cold drives sit at 99% and hot sits at whatever's left
+over, and that's fine. If you want to know how full hot currently is,
+the dashboard/`report` still show it - it just isn't a control variable.
+
+**Cold tiers use both fields as a two-step packing goal:**
+`target_used_percent` is what Coldarr actively packs toward; if nothing
+has room under target, it falls back to `max_used_percent` - the hard
+ceiling, never crossed. `max_used_percent` has no built-in cap - if you
+want a satellite drive packed to 100%, set it to 100. Coldarr will
+respect that.
 
 Note: saving tiers through the GUI rewrites the whole `coldarr.yaml` file,
 so hand-added comments won't survive a GUI save.
@@ -217,13 +229,23 @@ this check is reported as unavailable and excluded from planning entirely
 ## Scoring
 
 See [internal/scoring/scoring.go](internal/scoring/scoring.go) for the
-full, small set of rules. In short: tags and active downloads can force
-`protected` or `hot` outright; otherwise items accumulate a score from
-age, size, a series having ended, time since last aired, a low-priority
-quality profile, and unmonitored/missing state. Items at or above
-`cold_score_threshold` are cold candidates, ranked by that score. (Policy
-thresholds like these are still YAML-only for now - not yet exposed in
-the GUI.)
+full, small set of rules. In short: tags, an active download, or a
+Jellyfin Favorite mark can force `protected` or `hot` outright; otherwise
+items accumulate a score from age, size, a series having ended, time
+since last aired, a low-priority quality profile, and unmonitored/missing
+state. Items at or above `cold_score_threshold` are cold candidates,
+ranked by that score. (Policy thresholds like these are still YAML-only
+for now - not yet exposed in the GUI.)
+
+**Jellyfin Favorites:** if Jellyfin is connected and enabled, Coldarr
+fetches every user's favorited movies/series and matches them back to
+Radarr/Sonarr items by path - anything favorited by anyone is protected,
+same as a `never-move` tag. Matching is by path, so this only works
+correctly if Jellyfin sees the same paths Radarr/Sonarr do (see
+[Docker's path note](#docker) below). If the favorites fetch fails for
+any reason, Coldarr proceeds without that protection for the run and
+surfaces a warning in `report`/`plan`/the dashboard rather than failing
+outright or silently skipping it.
 
 ## CI/CD
 
@@ -244,8 +266,8 @@ automatically from there.
 ## Roadmap (not in this pass)
 
 - Plex support alongside Jellyfin
-- Watch-history and request-history (Jellyseerr/Overseerr) as scoring
-  inputs
+- Jellyfin play-history/play-count and request-history (Jellyseerr/
+  Overseerr) as scoring inputs (Favorites are already in)
 - An automatic scheduled mode (report/plan/apply are all you get for now
   - on purpose, until the policy engine has proven itself)
 - Torrent client / seeding-state awareness

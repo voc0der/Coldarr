@@ -56,7 +56,7 @@ func (s *Server) buildPlanData() planData {
 	}
 
 	data.Empty = len(plan.Entries) == 0
-	data.Warnings = plan.Warnings
+	data.Warnings = append(append([]string{}, inv.Warnings...), plan.Warnings...)
 
 	var total int64
 	for _, e := range plan.Entries {

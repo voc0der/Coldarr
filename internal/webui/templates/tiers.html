@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Tiers</h1>
-<p class="muted">A tier is a named policy applied to one or more physical paths. Hot tiers get relieved when over their max; cold tiers get packed toward their target without crossing their max.</p>
+<p class="muted">A tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
@@ -20,7 +20,7 @@
   </div>
   <p class="hint">
     media: {{range .Tier.Media}}{{.}} {{end}} &middot;
-    target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}} &middot;
+    {{if eq (print .Tier.Role) "cold"}}target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}} &middot;{{end}}
     {{if .Tier.RequireMount}}requires real mount point{{else}}no mount check{{end}}
   </p>
   <table>

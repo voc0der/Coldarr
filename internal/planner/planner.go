@@ -1,6 +1,8 @@
-// Package planner turns a scored inventory into a concrete move plan: which
-// items move from which over-pressure hot path to which cold path, without
-// ever pushing a destination past its configured ceiling.
+// Package planner turns a scored inventory into a concrete move plan.
+// Coldarr does not steer hot storage toward any usage level - hot is
+// runoff. The actual goal is to pack cold tiers toward their target usage
+// by moving every cold-eligible item currently on hot storage, limited
+// only by how much room cold destinations have.
 package planner
 
 import (
@@ -65,73 +67,55 @@ func Build(in Input) (*Plan, error) {
 
 	plan := &Plan{}
 
+	hotPaths := map[string]model.Tier{}
 	for _, tier := range in.Tiers {
 		if tier.Role != model.RoleHot {
 			continue
 		}
 		for _, path := range tier.Paths {
-			usage, ok := working[path]
-			if !ok {
+			hotPaths[path] = tier
+			if _, ok := working[path]; !ok {
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("skipping hot path %s: not available (failed existence/mount check)", path))
-				continue
-			}
-			if usage.UsedPercent <= tier.MaxUsedPercent {
-				continue
-			}
-
-			bytesToFree := int64(float64(usage.TotalBytes) * (usage.UsedPercent - tier.TargetUsedPercent) / 100)
-			if bytesToFree <= 0 {
-				continue
-			}
-
-			candidates := candidatesForPath(in.Items, path, in.History, cooldown, minMoveBytes, in.Now)
-
-			var freed int64
-			for _, c := range candidates {
-				if freed >= bytesToFree {
-					break
-				}
-
-				destTier, destPath, ok := pickDestination(in.Tiers, working, c.Item.Type, c.Item.SizeBytes)
-				if !ok {
-					plan.Warnings = append(plan.Warnings, fmt.Sprintf("no cold destination has room for %q (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
-					continue
-				}
-
-				plan.Entries = append(plan.Entries, MoveEntry{
-					Item:     c.Item,
-					FromTier: tier.Name,
-					FromPath: path,
-					ToTier:   destTier.Name,
-					ToPath:   destPath,
-					Score:    c.Eval.Score,
-					Reasons:  c.Eval.Reasons,
-				})
-
-				working[path] = applyDelta(working[path], -c.Item.SizeBytes)
-				working[destPath] = applyDelta(working[destPath], c.Item.SizeBytes)
-				freed += c.Item.SizeBytes
-			}
-
-			if freed < bytesToFree {
-				plan.Warnings = append(plan.Warnings, fmt.Sprintf(
-					"%s is at %.1f%% (target %.1f%%) but only found %.2f GB of the %.2f GB needed to reach target",
-					path, usage.UsedPercent, tier.TargetUsedPercent, gb(freed), gb(bytesToFree)))
 			}
 		}
+	}
+
+	candidates := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
+
+	for _, c := range candidates {
+		fromTier := hotPaths[c.Item.RootFolderPath]
+
+		destTier, destPath, ok := pickDestination(in.Tiers, working, c.Item.Type, c.Item.SizeBytes)
+		if !ok {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no cold destination has room for %q (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
+			continue
+		}
+
+		plan.Entries = append(plan.Entries, MoveEntry{
+			Item:     c.Item,
+			FromTier: fromTier.Name,
+			FromPath: c.Item.RootFolderPath,
+			ToTier:   destTier.Name,
+			ToPath:   destPath,
+			Score:    c.Eval.Score,
+			Reasons:  c.Eval.Reasons,
+		})
+
+		working[c.Item.RootFolderPath] = applyDelta(working[c.Item.RootFolderPath], -c.Item.SizeBytes)
+		working[destPath] = applyDelta(working[destPath], c.Item.SizeBytes)
 	}
 
 	plan.FinalUsage = working
 	return plan, nil
 }
 
-// candidatesForPath returns cold-eligible items currently stored at path,
-// sorted coldest-and-biggest first so a handful of large moves are
+// coldCandidates returns every cold-scored item currently sitting on a hot
+// path, sorted coldest-and-biggest first so a handful of large moves are
 // preferred over many small ones.
-func candidatesForPath(items []ItemEval, path string, h *history.Store, cooldown time.Duration, minMoveBytes int64, now time.Time) []ItemEval {
+func coldCandidates(items []ItemEval, hotPaths map[string]model.Tier, h *history.Store, cooldown time.Duration, minMoveBytes int64, now time.Time) []ItemEval {
 	var out []ItemEval
 	for _, it := range items {
-		if it.Item.RootFolderPath != path {
+		if _, onHotPath := hotPaths[it.Item.RootFolderPath]; !onHotPath {
 			continue
 		}
 		if it.Eval.Decision != scoring.Cold {
@@ -155,11 +139,23 @@ func candidatesForPath(items []ItemEval, path string, h *history.Store, cooldown
 	return out
 }
 
-// pickDestination finds the cold-tier path with the most room to spare that
-// can still accept sizeBytes without crossing its tier's max usage ceiling.
-// Among viable paths it prefers the one that is already fullest, so
-// satellites are packed one at a time rather than spread thin.
+// pickDestination finds the best cold-tier path to accept sizeBytes. It
+// first tries to find room under each cold tier's target (the fill goal
+// Coldarr actively packs toward); if nothing has room there, it falls back
+// to room under max (the hard ceiling, used as a last resort so an item
+// isn't stranded on hot storage just because every tier is already past
+// its preferred fill level). Either way, the destination's max is never
+// crossed. Among viable paths on a given pass, it prefers the one that is
+// already fullest, so satellites are packed one at a time rather than
+// spread thin.
 func pickDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) (model.Tier, string, bool) {
+	if tier, path, ok := bestDestination(tiers, usage, mt, sizeBytes, func(t model.Tier) float64 { return t.TargetUsedPercent }); ok {
+		return tier, path, true
+	}
+	return bestDestination(tiers, usage, mt, sizeBytes, func(t model.Tier) float64 { return t.MaxUsedPercent })
+}
+
+func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64, ceiling func(model.Tier) float64) (model.Tier, string, bool) {
 	var bestTier model.Tier
 	var bestPath string
 	var bestUsedPercent float64 = -1
@@ -178,7 +174,7 @@ func pickDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 				continue
 			}
 			projected := applyDelta(u, sizeBytes)
-			if projected.UsedPercent > tier.MaxUsedPercent {
+			if projected.UsedPercent > ceiling(tier) {
 				continue
 			}
 			if projected.UsedBytes > u.TotalBytes {

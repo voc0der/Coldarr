@@ -12,9 +12,9 @@ const (
 	TV    MediaType = "tv"
 )
 
-// TierRole distinguishes primary ("hot") storage from overflow ("cold")
-// storage. Hot tiers are monitored for pressure (usage above their max);
-// cold tiers are packing targets (filled toward their target/max usage).
+// TierRole distinguishes primary ("hot") storage, which Coldarr never
+// steers toward any particular usage level, from overflow ("cold")
+// storage, which Coldarr actively packs toward its target usage.
 type TierRole string
 
 const (
@@ -23,21 +23,23 @@ const (
 )
 
 // Tier is a named storage policy applied to one or more physical paths.
-// Each path is evaluated independently against the same target/max usage
-// thresholds - a tier is a policy shared by a set of mount points, not a
-// single pooled volume.
+// Each path is evaluated independently against the same thresholds - a
+// tier is a policy shared by a set of mount points, not a single pooled
+// volume.
 type Tier struct {
 	Name  string      `yaml:"name"`
 	Role  TierRole    `yaml:"role"`
 	Paths []string    `yaml:"paths"`
 	Media []MediaType `yaml:"media_types"`
-	// TargetUsedPercent is the steady-state usage Coldarr tries to
-	// restore (hot) or pack toward (cold).
+	// TargetUsedPercent and MaxUsedPercent are only meaningful for cold
+	// tiers - hot tiers are runoff, not a control variable, and leave
+	// these at zero. For cold tiers: TargetUsedPercent is the fill goal
+	// Coldarr actively packs toward; MaxUsedPercent is the hard ceiling
+	// used as a fallback destination when no tier has room under its
+	// target, and is never crossed even then. Coldarr does not clamp
+	// either value - set max to 100 if that's what you want.
 	TargetUsedPercent float64 `yaml:"target_used_percent"`
-	// MaxUsedPercent is the ceiling that triggers offloading (hot) or
-	// that a destination must never be pushed past (cold). Coldarr does
-	// not clamp this value - set it to 100 if that's what you want.
-	MaxUsedPercent float64 `yaml:"max_used_percent"`
+	MaxUsedPercent    float64 `yaml:"max_used_percent"`
 	// RequireMount, when true, makes Coldarr refuse to treat a path as
 	// usable storage unless it is a distinct mount point from its
 	// parent directory. This guards against a satellite drive being
@@ -91,6 +93,11 @@ type MediaItem struct {
 	// download, import, or upgrade in progress for this item. Items in
 	// this state must never be moved.
 	InActiveQueue bool
+
+	// JellyfinFavorite is true if this item is marked as a Favorite in
+	// Jellyfin (matched by path), only ever set when Jellyfin is
+	// configured. Favorited items are never moved.
+	JellyfinFavorite bool
 }
 
 // Key uniquely identifies an item across app restarts, for history/cooldown

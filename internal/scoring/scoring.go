@@ -56,6 +56,9 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 	if item.InActiveQueue {
 		return Evaluation{Decision: Protected, Reasons: []string{"active download/import in progress"}}
 	}
+	if item.JellyfinFavorite {
+		return Evaluation{Decision: Protected, Reasons: []string{"marked Favorite in Jellyfin"}}
+	}
 
 	age := now.Sub(item.Added)
 	graceCutoff := time.Duration(policy.HotGraceDays) * dayHours * time.Hour
