@@ -1,41 +1,57 @@
 # Example Coldarr deployment. Copy to docker-compose.yml and adjust paths.
 #
-# Coldarr is a one-shot CLI, not a daemon - this service exits after each
-# command. Run it ad hoc (`docker compose run --rm coldarr plan`) or drive
-# it from the host's own scheduler (cron/systemd timer), e.g.:
+# Coldarr's default command is `serve` - a persistent web GUI at :8080 for
+# configuring connections/tiers, previewing plans, and applying them by
+# hand. It is NOT a scheduler: nothing moves automatically. If you'd
+# rather script it, override `command` to a one-shot CLI call instead
+# (see the commented block below) and drive it from the host's own
+# scheduler (cron/systemd timer):
 #   0 4 * * * docker compose run --rm coldarr apply --yes
 #
-# Secrets (the *_API_KEY values) are read from a .env file next to this
-# compose file - see .env.example. They flow: .env -> compose environment
-# -> container env var -> substituted into coldarr.yaml's ${VAR}
-# placeholders by Coldarr itself at startup.
+# The GUI has no built-in authentication - it can view connection status
+# and trigger real moves. Put it behind your own reverse proxy/auth
+# (Authelia, Traefik forward-auth, etc.) or keep it off any network you
+# don't trust, rather than publishing :8080 directly.
+#
+# Connections (Radarr/Sonarr/Jellyfin URL + API key) can be configured
+# either through the GUI (stored encrypted in ./config) or via env vars
+# below - env vars always win if both are set. Secrets here come from a
+# .env file next to this compose file - see .env.example.
 services:
   coldarr:
     image: ghcr.io/voc0der/coldarr:latest
     container_name: coldarr
+    ports:
+      - "8080:8080"
     environment:
       PUID: "1000"
       PGID: "1000"
       TZ: ${TZ:-Etc/UTC}
-      RADARR_URL: http://radarr:7878
-      RADARR_API_KEY: ${RADARR_API_KEY}
-      SONARR_URL: http://sonarr:8989
-      SONARR_API_KEY: ${SONARR_API_KEY}
-      JELLYFIN_URL: http://jellyfin:8096
-      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      # Optional - omit these and use the GUI's Connections page instead.
+      # RADARR_URL: http://radarr:7878
+      # RADARR_API_KEY: ${RADARR_API_KEY}
+      # SONARR_URL: http://sonarr:8989
+      # SONARR_API_KEY: ${SONARR_API_KEY}
+      # JELLYFIN_URL: http://jellyfin:8096
+      # JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
     volumes:
-      # coldarr.yaml and the move-history log.
-      - ./coldarr.yaml:/config/coldarr.yaml:ro
-      - ./coldarr-history.json:/config/coldarr-history.json
+      # Everything Coldarr persists lives here: coldarr.yaml, the
+      # encrypted connection store + its key, and the move-history log.
+      - ./config:/config
       # Tier paths: mount at the SAME path Radarr/Sonarr use internally,
       # not just the same host path - Coldarr matches Arr API root folder
       # paths against these mounts literally.
       - /data/media:/data/media
       - /mnt/sat1:/mnt/sat1
       - /mnt/sat2:/mnt/sat2
-    command: ["report"]
+    restart: unless-stopped
     # If radarr/sonarr/jellyfin are containers in this same compose
-    # project, put coldarr on their network instead of using host ports:
+    # project, put coldarr on their network instead of using service
+    # names that only resolve there:
     # networks:
     #   - arr-stack
-    restart: "no"
+
+    # To run Coldarr as a one-shot CLI instead of the GUI, override the
+    # command (and drop `ports`/`restart` above, or leave them - they're
+    # harmless on a short-lived `run`):
+    # command: ["apply", "--yes"]

@@ -1,0 +1,47 @@
+{{define "content"}}
+<h1>Tiers</h1>
+<p class="muted">A tier is a named policy applied to one or more physical paths. Hot tiers get relieved when over their max; cold tiers get packed toward their target without crossing their max.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+<p><a class="btn btn-primary" href="/tiers/new">+ Add tier</a></p>
+
+{{range .Tiers}}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between">
+    <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{.Tier.Role}}</span></h2>
+    <div class="btn-row">
+      <a class="btn" href="/tiers/{{.Tier.Name}}/edit">Edit</a>
+      <form method="post" action="/tiers/{{.Tier.Name}}/delete" onsubmit="return confirm('Delete tier {{.Tier.Name}}? This does not delete any media.')">
+        <button type="submit" class="btn btn-danger">Delete</button>
+      </form>
+    </div>
+  </div>
+  <p class="hint">
+    media: {{range .Tier.Media}}{{.}} {{end}} &middot;
+    target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}} &middot;
+    {{if .Tier.RequireMount}}requires real mount point{{else}}no mount check{{end}}
+  </p>
+  <table>
+  <thead><tr><th>Path</th><th>Used %</th><th>Status</th></tr></thead>
+  <tbody>
+  {{range .Paths}}
+  <tr>
+    <td class="mono">{{.Path}}</td>
+    {{if .Available}}
+    <td>{{pct .UsedPercent}}</td>
+    <td><span class="badge badge-ok">available</span></td>
+    {{else}}
+    <td class="muted">-</td>
+    <td><span class="badge badge-danger">{{.Err}}</span></td>
+    {{end}}
+  </tr>
+  {{end}}
+  </tbody>
+  </table>
+</div>
+{{else}}
+<div class="card muted">No tiers configured yet.</div>
+{{end}}
+{{end}}

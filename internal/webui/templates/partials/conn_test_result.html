@@ -1,0 +1,7 @@
+{{define "conn_test_result"}}
+{{if .Error}}
+<p class="badge badge-danger">Failed: {{.Error}}</p>
+{{else}}
+<p class="badge badge-ok">Connected - version {{.Version}}</p>
+{{end}}
+{{end}}

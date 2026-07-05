@@ -17,23 +17,36 @@ import (
 	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/planner"
 	"github.com/vocoder/coldarr/internal/scoring"
+	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 type Engine struct {
-	Cfg     *config.Config
-	Radarr  *arrapi.RadarrClient
-	Sonarr  *arrapi.SonarrClient
-	History *history.Store
+	Cfg          *config.Config
+	Radarr       *arrapi.RadarrClient
+	Sonarr       *arrapi.SonarrClient
+	History      *history.Store
+	jellyfinConn secrets.Connection
+	jellyfinOK   bool
 }
 
-func New(cfg *config.Config) (*Engine, error) {
+// New builds an Engine from a parsed config and the resolved connection
+// store. It does not require any app to actually be configured - the web
+// GUI needs to construct an Engine even on a completely fresh install so
+// it can render the (empty) dashboard and let the operator add
+// connections. Callers that need at least one library source (the CLI)
+// should check e.Radarr == nil && e.Sonarr == nil themselves.
+func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 	e := &Engine{Cfg: cfg}
 
-	if cfg.RadarrEnabled() {
-		e.Radarr = arrapi.NewRadarrClient(cfg.Radarr.URL, cfg.Radarr.APIKey)
+	if conn, source := connStore.Effective("radarr"); source != secrets.SourceNone {
+		e.Radarr = arrapi.NewRadarrClient(conn.URL, conn.APIKey)
 	}
-	if cfg.SonarrEnabled() {
-		e.Sonarr = arrapi.NewSonarrClient(cfg.Sonarr.URL, cfg.Sonarr.APIKey)
+	if conn, source := connStore.Effective("sonarr"); source != secrets.SourceNone {
+		e.Sonarr = arrapi.NewSonarrClient(conn.URL, conn.APIKey)
+	}
+	if conn, source := connStore.Effective("jellyfin"); source != secrets.SourceNone && conn.Enabled {
+		e.jellyfinConn = conn
+		e.jellyfinOK = true
 	}
 
 	hist, err := history.Load(cfg.History.Path)
@@ -152,8 +165,8 @@ func (e *Engine) Movers() *mover.Movers {
 // JellyfinClient returns a client for the configured Jellyfin instance, or
 // nil if Jellyfin rescan-on-move isn't configured.
 func (e *Engine) JellyfinClient() *jellyfin.Client {
-	if !e.Cfg.JellyfinEnabled() {
+	if !e.jellyfinOK {
 		return nil
 	}
-	return jellyfin.NewClient(e.Cfg.Jellyfin.URL, e.Cfg.Jellyfin.APIKey)
+	return jellyfin.NewClient(e.jellyfinConn.URL, e.jellyfinConn.APIKey)
 }

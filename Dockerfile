@@ -20,11 +20,12 @@ COPY --from=builder /out/coldarr /usr/local/bin/coldarr
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# /config holds coldarr.yaml and the move-history JSON. Media tier paths
-# (hot/cold root folders) are separate bind mounts the operator adds at
-# `docker run` / compose time - they must be mounted at the same paths
-# Radarr/Sonarr see internally, or Coldarr's disk checks and path matching
-# against Arr API data will disagree with reality.
+# /config holds coldarr.yaml, the encrypted connection store, its
+# encryption key, and the move-history JSON. Media tier paths (hot/cold
+# root folders) are separate bind mounts the operator adds at `docker run`
+# / compose time - they must be mounted at the same paths Radarr/Sonarr
+# see internally, or Coldarr's disk checks and path matching against Arr
+# API data will disagree with reality.
 VOLUME ["/config"]
 WORKDIR /config
 
@@ -33,5 +34,13 @@ WORKDIR /config
 ENV PUID=1000
 ENV PGID=1000
 
+EXPOSE 8080
+
+# Only meaningful while running `serve` (the default CMD) - a one-shot
+# `report`/`plan`/`apply` invocation just exits before this has a chance
+# to matter.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -q -O- "http://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8080}" | sed 's/.*://')/healthz" >/dev/null || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["report"]
+CMD ["serve"]

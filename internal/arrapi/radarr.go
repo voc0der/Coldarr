@@ -15,6 +15,11 @@ func NewRadarrClient(baseURL, apiKey string) *RadarrClient {
 	return &RadarrClient{c: newClient(baseURL, apiKey)}
 }
 
+// Ping confirms the connection works and returns Radarr's reported version.
+func (r *RadarrClient) Ping() (version string, err error) {
+	return r.c.ping()
+}
+
 type radarrMovie struct {
 	ID               int       `json:"id"`
 	Title            string    `json:"title"`

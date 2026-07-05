@@ -1,0 +1,49 @@
+{{define "content"}}
+<h1>Plan</h1>
+<p class="muted">This is a dry run - nothing moves until you click Apply.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+{{if .Empty}}
+<div class="card muted">No moves needed - every hot path is within its usage target.</div>
+{{else}}
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Title</th><th>Type</th><th>Size</th><th>From</th><th>To</th><th>Score</th><th>Why</th></tr></thead>
+<tbody>
+{{range .Entries}}
+<tr><td>{{.Title}}</td><td>{{.Type}}</td><td>{{.Size}}</td><td class="mono">{{.From}}</td><td class="mono">{{.To}}</td><td>{{printf "%.1f" .Score}}</td><td class="muted">{{.Why}}</td></tr>
+{{end}}
+</tbody>
+</table>
+<p><strong>{{len .Entries}} item(s), {{.TotalSize}} total</strong></p>
+</div>
+
+<form method="post" action="/plan/apply" onsubmit="return confirm('Proceed with {{len .Entries}} move(s)? Coldarr will ask Radarr/Sonarr to relocate these items now.')">
+  <button type="submit" class="btn btn-primary">Apply this plan</button>
+</form>
+{{end}}
+
+{{if .Usage}}
+<h2>Projected usage</h2>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Tier</th><th>Path</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+{{range .Usage}}
+<tr><td>{{.Tier}}</td><td class="mono">{{.Path}}</td><td>{{pct .Before}}</td><td>{{pct .After}}</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{end}}
+
+{{if .Warnings}}
+<h2>Warnings</h2>
+<div class="card">
+<ul>
+{{range .Warnings}}<li>{{.}}</li>{{end}}
+</ul>
+</div>
+{{end}}
+{{end}}

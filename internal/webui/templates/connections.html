@@ -1,0 +1,50 @@
+{{define "content"}}
+<h1>Connections</h1>
+<p class="muted">Coldarr never touches media files directly - it asks Radarr/Sonarr to relocate items, and asks Jellyfin to refresh afterward.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+{{range .Rows}}
+<div class="card">
+  <h2 style="margin-top:0">{{.App}}</h2>
+
+  {{if .Locked}}
+  <p class="hint">This connection is set via the <code>{{.EnvURLVar}}</code> / <code>{{.EnvKeyVar}}</code> environment variable{{if eq .App "jellyfin"}} (and <code>JELLYFIN_ENABLED</code>){{end}} and can't be edited here while those are set. You can still test it below.</p>
+  <p>URL: <span class="mono">{{.URL}}</span> &nbsp; API key: {{if .APIKeySet}}<span class="badge badge-ok">set</span>{{else}}<span class="badge badge-muted">not set</span>{{end}}</p>
+  <div class="btn-row">
+    <button class="btn" hx-post="/connections/{{.App}}/test" hx-target="#test-{{.App}}" hx-swap="innerHTML">Test connection</button>
+  </div>
+  <div id="test-{{.App}}"></div>
+
+  {{else}}
+  <form class="stacked" method="post" action="/connections/{{.App}}">
+    <div>
+      <label for="url-{{.App}}">URL</label>
+      <input type="url" id="url-{{.App}}" name="url" placeholder="{{.URLPlaceholder}}" value="{{.URL}}">
+    </div>
+    <div>
+      <label for="key-{{.App}}">API key</label>
+      <input type="password" id="key-{{.App}}" name="api_key" placeholder="{{if .APIKeySet}}(unchanged - leave blank to keep it){{else}}API key{{end}}">
+    </div>
+    {{if eq .App "jellyfin"}}
+    <div class="checkbox-row">
+      <input type="checkbox" id="enabled-{{.App}}" name="enabled" {{if .Enabled}}checked{{end}}>
+      <label for="enabled-{{.App}}" style="font-weight:400">Enabled (trigger a library refresh after moves)</label>
+    </div>
+    {{end}}
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+      <button type="button" class="btn" hx-post="/connections/{{.App}}/test" hx-include="closest form" hx-target="#test-{{.App}}" hx-swap="innerHTML">Test connection</button>
+    </div>
+  </form>
+  {{if or .URL .APIKeySet}}
+  <form method="post" action="/connections/{{.App}}/delete" onsubmit="return confirm('Remove the stored {{.App}} connection?')" style="margin-top:0.5rem">
+    <button type="submit" class="btn btn-danger">Remove</button>
+  </form>
+  {{end}}
+  <div id="test-{{.App}}"></div>
+  {{end}}
+</div>
+{{end}}
+{{end}}

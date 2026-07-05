@@ -1,6 +1,9 @@
 /coldarr
 coldarr.yaml
 coldarr-history.json
+connections.enc.json
+.coldarr.key
+/config/
 docker-compose.yml
 .env
 *.tmp

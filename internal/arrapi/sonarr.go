@@ -15,6 +15,11 @@ func NewSonarrClient(baseURL, apiKey string) *SonarrClient {
 	return &SonarrClient{c: newClient(baseURL, apiKey)}
 }
 
+// Ping confirms the connection works and returns Sonarr's reported version.
+func (s *SonarrClient) Ping() (version string, err error) {
+	return s.c.ping()
+}
+
 type sonarrSeriesStatistics struct {
 	SizeOnDisk       int64 `json:"sizeOnDisk"`
 	EpisodeFileCount int   `json:"episodeFileCount"`

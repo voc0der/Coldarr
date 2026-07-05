@@ -1,29 +1,17 @@
-// Package config loads and validates Coldarr's YAML configuration.
+// Package config loads, validates, and saves Coldarr's coldarr.yaml -
+// tiers and policy only. Radarr/Sonarr/Jellyfin connection info lives
+// separately, encrypted, in internal/secrets - see that package for why.
 package config
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/model"
 	"gopkg.in/yaml.v3"
 )
-
-type ArrConfig struct {
-	URL    string `yaml:"url"`
-	APIKey string `yaml:"api_key"`
-}
-
-func (a *ArrConfig) enabled() bool {
-	return a != nil && a.URL != "" && a.APIKey != ""
-}
-
-type JellyfinConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	URL     string `yaml:"url"`
-	APIKey  string `yaml:"api_key"`
-}
 
 type PolicyConfig struct {
 	// CooldownDays is how long an item is left alone after being moved,
@@ -54,25 +42,49 @@ type HistoryConfig struct {
 }
 
 type Config struct {
-	Radarr   *ArrConfig      `yaml:"radarr"`
-	Sonarr   *ArrConfig      `yaml:"sonarr"`
-	Jellyfin *JellyfinConfig `yaml:"jellyfin"`
-
-	Tiers []model.Tier `yaml:"tiers"`
-
+	Tiers   []model.Tier  `yaml:"tiers"`
 	Policy  PolicyConfig  `yaml:"policy"`
 	History HistoryConfig `yaml:"history"`
 }
 
-func (c *Config) RadarrEnabled() bool { return c.Radarr.enabled() }
-func (c *Config) SonarrEnabled() bool { return c.Sonarr.enabled() }
-func (c *Config) JellyfinEnabled() bool {
-	return c.Jellyfin != nil && c.Jellyfin.Enabled && c.Jellyfin.URL != "" && c.Jellyfin.APIKey != ""
+// Load reads, parses, and strictly validates the config file at path -
+// used by the report/plan/apply CLI commands, which should fail fast and
+// clearly if the config isn't ready to plan against. Values may reference
+// environment variables via ${VAR}.
+func Load(path string) (*Config, error) {
+	cfg, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTiers(cfg.Tiers, true); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	return cfg, nil
 }
 
-// Load reads, expands environment variables in, parses, and validates the
-// config file at path.
-func Load(path string) (*Config, error) {
+// LoadForServer reads and parses the config file at path like Load, but
+// tolerates a missing file (returning an empty default config so a fresh
+// /config volume can be configured for the first time through the web
+// GUI) and does not require at least one hot and one cold tier to already
+// exist - the GUI's job includes getting a new install to that state.
+func LoadForServer(path string) (*Config, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		cfg := &Config{}
+		applyDefaults(cfg)
+		return cfg, nil
+	}
+
+	cfg, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTiers(cfg.Tiers, false); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func readFile(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
@@ -86,12 +98,32 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyDefaults(&cfg)
+	return &cfg, nil
+}
 
-	if err := validate(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+// Save writes cfg back to path as YAML, atomically. Note this rewrites the
+// whole file - hand-added comments will not survive a save made through
+// the web GUI.
+func Save(path string, cfg *Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("encoding config: %w", err)
 	}
 
-	return &cfg, nil
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("saving %s: %w", path, err)
+	}
+	return nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -115,12 +147,14 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
-func validate(cfg *Config) error {
-	if !cfg.RadarrEnabled() && !cfg.SonarrEnabled() {
-		return fmt.Errorf("at least one of radarr or sonarr must be configured with url + api_key")
-	}
-
-	if len(cfg.Tiers) == 0 {
+// ValidateTiers checks tiers for structural correctness (unique names,
+// absolute non-overlapping paths, valid roles/media types/thresholds). If
+// requireHotAndCold is true, it also requires at least one tier of each
+// role - appropriate when about to build a plan, not appropriate while a
+// fresh install is still being configured one tier at a time through the
+// GUI.
+func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
+	if requireHotAndCold && len(tiers) == 0 {
 		return fmt.Errorf("at least one tier must be configured")
 	}
 
@@ -128,7 +162,7 @@ func validate(cfg *Config) error {
 	seenNames := map[string]bool{}
 	seenPaths := map[string]string{}
 
-	for _, t := range cfg.Tiers {
+	for _, t := range tiers {
 		if t.Name == "" {
 			return fmt.Errorf("tier missing name")
 		}
@@ -176,11 +210,13 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	if !haveHot {
-		return fmt.Errorf("at least one tier with role %q is required", model.RoleHot)
-	}
-	if !haveCold {
-		return fmt.Errorf("at least one tier with role %q is required", model.RoleCold)
+	if requireHotAndCold {
+		if !haveHot {
+			return fmt.Errorf("at least one tier with role %q is required", model.RoleHot)
+		}
+		if !haveCold {
+			return fmt.Errorf("at least one tier with role %q is required", model.RoleCold)
+		}
 	}
 
 	return nil

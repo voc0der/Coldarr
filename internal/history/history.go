@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -109,4 +110,14 @@ func (s *Store) InCooldown(key model.Key, cooldown time.Duration, now time.Time)
 		return false
 	}
 	return now.Sub(last) < cooldown
+}
+
+// All returns every recorded move, most recent first, for the audit/
+// history view. The returned slice is a copy - callers cannot mutate the
+// store's internal state through it.
+func (s *Store) All() []Record {
+	out := make([]Record, len(s.records))
+	copy(out, s.records)
+	sort.Slice(out, func(i, j int) bool { return out[i].MovedAt.After(out[j].MovedAt) })
+	return out
 }

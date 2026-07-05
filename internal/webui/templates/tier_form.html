@@ -1,0 +1,58 @@
+{{define "content"}}
+<h1>{{.Title}}</h1>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<form class="stacked" method="post" action="{{if .Editing}}/tiers/{{.OrigName}}{{else}}/tiers{{end}}">
+  <div>
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" value="{{.Tier.Name}}" required>
+  </div>
+
+  <div>
+    <label for="role">Role</label>
+    <select id="role" name="role">
+      <option value="hot" {{if eq (print .Tier.Role) "hot"}}selected{{end}}>hot (primary storage)</option>
+      <option value="cold" {{if eq (print .Tier.Role) "cold"}}selected{{end}}>cold (overflow storage)</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="paths">Paths (one per line)</label>
+    <textarea id="paths" name="paths" placeholder="/data/media/movies">{{.PathsText}}</textarea>
+    <div class="hint">Must be absolute paths, and must match what Radarr/Sonarr see internally.</div>
+  </div>
+
+  <div>
+    <label>Media types</label>
+    <div class="checkbox-row">
+      <input type="checkbox" id="media_movie" name="media_movie" {{if .HasMovie}}checked{{end}}>
+      <label for="media_movie" style="font-weight:400">Movies</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="media_tv" name="media_tv" {{if .HasTV}}checked{{end}}>
+      <label for="media_tv" style="font-weight:400">TV</label>
+    </div>
+  </div>
+
+  <div>
+    <label for="target">Target used % <span class="hint">(steady-state Coldarr aims for)</span></label>
+    <input type="number" id="target" name="target_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.TargetUsedPercent}}" required>
+  </div>
+
+  <div>
+    <label for="max">Max used % <span class="hint">(hard ceiling - no built-in cap, 100 is allowed)</span></label>
+    <input type="number" id="max" name="max_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.MaxUsedPercent}}" required>
+  </div>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="require_mount" name="require_mount" {{if .Tier.RequireMount}}checked{{end}}>
+    <label for="require_mount" style="font-weight:400">Require these paths to be real mount points</label>
+  </div>
+
+  <div class="btn-row">
+    <button type="submit" class="btn btn-primary">{{if .Editing}}Save changes{{else}}Add tier{{end}}</button>
+    <a class="btn" href="/tiers">Cancel</a>
+  </div>
+</form>
+{{end}}

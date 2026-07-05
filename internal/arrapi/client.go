@@ -91,6 +91,21 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+type systemStatusResource struct {
+	Version string `json:"version"`
+}
+
+// ping hits the Servarr system status endpoint, common to both Radarr and
+// Sonarr, and returns the reported version - used to confirm a connection
+// actually works before saving it.
+func (c *client) ping() (version string, err error) {
+	var status systemStatusResource
+	if err := c.get("/api/v3/system/status", nil, &status); err != nil {
+		return "", err
+	}
+	return status.Version, nil
+}
+
 type tagResource struct {
 	ID    int    `json:"id"`
 	Label string `json:"label"`

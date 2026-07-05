@@ -6,11 +6,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/engine"
+	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 // version is set at build time via -ldflags "-X main.version=...". Docker
@@ -40,6 +42,8 @@ func main() {
 	root.AddCommand(newPlanCmd())
 	root.AddCommand(newApplyCmd())
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newServeCmd())
+	root.AddCommand(newConnectionsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -58,10 +62,32 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
+// connectionsStore opens the encrypted connection store living alongside
+// the config file (same directory).
+func connectionsStore() (*secrets.Store, error) {
+	dir := filepath.Dir(configPath)
+	return secrets.LoadOrCreate(dir)
+}
+
 func loadEngine() (*engine.Engine, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, err
 	}
-	return engine.New(cfg)
+
+	connStore, err := connectionsStore()
+	if err != nil {
+		return nil, err
+	}
+
+	e, err := engine.New(cfg, connStore)
+	if err != nil {
+		return nil, err
+	}
+
+	if e.Radarr == nil && e.Sonarr == nil {
+		return nil, fmt.Errorf("no Radarr or Sonarr connection is configured - set one via `coldarr connections set`, the web GUI, or RADARR_URL/RADARR_API_KEY (or SONARR_*) env vars")
+	}
+
+	return e, nil
 }
