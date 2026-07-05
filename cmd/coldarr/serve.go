@@ -10,7 +10,7 @@ import (
 )
 
 func newServeCmd() *cobra.Command {
-	defaultAddr := ":8080"
+	defaultAddr := ":8478"
 	if v := os.Getenv("COLDARR_LISTEN_ADDR"); v != "" {
 		defaultAddr = v
 	}
