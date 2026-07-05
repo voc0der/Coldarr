@@ -1,0 +1,6 @@
+/coldarr
+coldarr.yaml
+coldarr-history.json
+docker-compose.yml
+.env
+*.tmp

@@ -1,0 +1,98 @@
+# Coldarr example configuration.
+#
+# Copy this to coldarr.yaml and edit for your setup. Values below can
+# reference environment variables, e.g. api_key: ${RADARR_API_KEY}.
+
+radarr:
+  url: http://localhost:7878
+  api_key: ${RADARR_API_KEY}
+
+sonarr:
+  url: http://localhost:8989
+  api_key: ${SONARR_API_KEY}
+
+# Optional. If set, Coldarr triggers a library refresh after every apply
+# that actually moved something. Jellyfin is a consumer here, never a mover.
+jellyfin:
+  enabled: false
+  url: http://localhost:8096
+  api_key: ${JELLYFIN_API_KEY}
+
+# Tiers are named storage policies applied to one or more physical paths.
+# Every path in a tier is checked independently against the same
+# target/max thresholds - a tier is a shared policy, not a pooled volume.
+#
+# - role: hot   -> primary storage. If a path's usage climbs above
+#                  max_used_percent, Coldarr looks for cold candidates to
+#                  move off of it, aiming to bring usage back down to
+#                  target_used_percent.
+# - role: cold  -> overflow storage. Coldarr packs cold candidates onto
+#                  the fullest-but-not-full path first, never pushing any
+#                  path past its max_used_percent.
+#
+# max_used_percent has no built-in ceiling - if you want a satellite
+# drive packed to 100%, set it to 100. Coldarr will respect that.
+tiers:
+  - name: hot
+    role: hot
+    paths:
+      - /data/media/movies
+      - /data/media/tv
+    media_types: [movie, tv]
+    target_used_percent: 75
+    max_used_percent: 80
+    require_mount: false # the primary NAS mount is expected to always be present
+
+  - name: cold-movies
+    role: cold
+    paths:
+      - /mnt/sat1/movies
+      - /mnt/sat2/movies
+    media_types: [movie]
+    target_used_percent: 92
+    max_used_percent: 95
+    require_mount: true # refuse to use these paths if the drive isn't actually mounted
+
+  - name: cold-tv
+    role: cold
+    paths:
+      - /mnt/sat1/tv
+    media_types: [tv]
+    target_used_percent: 92
+    max_used_percent: 95
+    require_mount: true
+
+policy:
+  # Don't touch anything moved within the last N days.
+  cooldown_days: 30
+
+  # Don't bother moving items smaller than this - not worth the risk for
+  # a couple of GB.
+  min_move_size_gb: 1
+
+  # Newly added items stay on hot storage for at least this long,
+  # regardless of score.
+  hot_grace_days: 14
+
+  # Tags that make an item completely untouchable.
+  never_move_tags: [never-move]
+  protected_tags: [keep-hot, favorite]
+
+  # Tag that pushes an item strongly toward cold storage.
+  cold_ok_tags: [cold-ok]
+
+  # A continuing/currently-airing series is always kept hot, regardless
+  # of score, when this is true.
+  protect_continuing_series: true
+
+  # Quality profiles considered lower priority - a small scoring bump
+  # toward cold storage.
+  low_priority_quality_profiles: []
+
+  # Minimum score (see internal/scoring) an item needs to be considered
+  # a cold candidate. Raise this to be more conservative about what
+  # moves, lower it to move things more aggressively.
+  cold_score_threshold: 40
+
+history:
+  path: ./coldarr-history.json

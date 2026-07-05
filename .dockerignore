@@ -1,0 +1,8 @@
+coldarr
+coldarr.yaml
+coldarr-history.json
+*.md
+.git
+.github
+docker-compose*.yml
+.env

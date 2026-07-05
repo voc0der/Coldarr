@@ -1,0 +1,41 @@
+# Example Coldarr deployment. Copy to docker-compose.yml and adjust paths.
+#
+# Coldarr is a one-shot CLI, not a daemon - this service exits after each
+# command. Run it ad hoc (`docker compose run --rm coldarr plan`) or drive
+# it from the host's own scheduler (cron/systemd timer), e.g.:
+#   0 4 * * * docker compose run --rm coldarr apply --yes
+#
+# Secrets (the *_API_KEY values) are read from a .env file next to this
+# compose file - see .env.example. They flow: .env -> compose environment
+# -> container env var -> substituted into coldarr.yaml's ${VAR}
+# placeholders by Coldarr itself at startup.
+services:
+  coldarr:
+    image: ghcr.io/voc0der/coldarr:latest
+    container_name: coldarr
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-Etc/UTC}
+      RADARR_URL: http://radarr:7878
+      RADARR_API_KEY: ${RADARR_API_KEY}
+      SONARR_URL: http://sonarr:8989
+      SONARR_API_KEY: ${SONARR_API_KEY}
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+    volumes:
+      # coldarr.yaml and the move-history log.
+      - ./coldarr.yaml:/config/coldarr.yaml:ro
+      - ./coldarr-history.json:/config/coldarr-history.json
+      # Tier paths: mount at the SAME path Radarr/Sonarr use internally,
+      # not just the same host path - Coldarr matches Arr API root folder
+      # paths against these mounts literally.
+      - /data/media:/data/media
+      - /mnt/sat1:/mnt/sat1
+      - /mnt/sat2:/mnt/sat2
+    command: ["report"]
+    # If radarr/sonarr/jellyfin are containers in this same compose
+    # project, put coldarr on their network instead of using host ports:
+    # networks:
+    #   - arr-stack
+    restart: "no"
