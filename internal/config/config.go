@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,12 @@ func Load(path string) (*Config, error) {
 // GUI) and does not require at least one hot and one cold tier to already
 // exist - the GUI's job includes getting a new install to that state.
 func LoadForServer(path string) (*Config, error) {
+	if abs, err := filepath.Abs(path); err == nil {
+		log.Printf("config: using config file %s (resolved from %q)", abs, path)
+	}
+
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		log.Printf("config: no config file found at %s (fresh install, or none saved yet)", path)
 		cfg := &Config{}
 		applyDefaults(cfg)
 		return cfg, nil
@@ -81,7 +87,16 @@ func LoadForServer(path string) (*Config, error) {
 	if err := ValidateTiers(cfg.Tiers, false); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	log.Printf("config: loaded %d tier(s) from %s: %v", len(cfg.Tiers), path, tierNames(cfg.Tiers))
 	return cfg, nil
+}
+
+func tierNames(tiers []model.Tier) []string {
+	names := make([]string, len(tiers))
+	for i, t := range tiers {
+		names[i] = t.Name
+	}
+	return names
 }
 
 func readFile(path string) (*Config, error) {
@@ -101,9 +116,11 @@ func readFile(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes cfg back to path as YAML, atomically. Note this rewrites the
-// whole file - hand-added comments will not survive a save made through
-// the web GUI.
+// Save writes cfg back to path as YAML, atomically, keeping a copy of
+// whatever was there before as path+".bak" - a cheap recovery path if a
+// save turns out to be wrong for any reason. Note this rewrites the whole
+// file - hand-added comments will not survive a save made through the web
+// GUI.
 func Save(path string, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -116,6 +133,14 @@ func Save(path string, cfg *Config) error {
 		}
 	}
 
+	if existing, err := os.ReadFile(path); err == nil {
+		if err := os.WriteFile(path+".bak", existing, 0o644); err != nil {
+			return fmt.Errorf("backing up %s: %w", path, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("reading %s to back it up: %w", path, err)
+	}
+
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
@@ -123,6 +148,12 @@ func Save(path string, cfg *Config) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("saving %s: %w", path, err)
 	}
+
+	abs, absErr := filepath.Abs(path)
+	if absErr != nil {
+		abs = path
+	}
+	log.Printf("config: saved %d tier(s) to %s: %v", len(cfg.Tiers), abs, tierNames(cfg.Tiers))
 	return nil
 }
 
