@@ -67,6 +67,15 @@ type PathStatus struct {
 	Path  string
 	Usage diskusage.Usage
 	Err   error
+
+	// DeviceID identifies the underlying filesystem, so paths that are
+	// really the same physical volume (however differently named or
+	// nested) can be treated as one shared capacity pool instead of
+	// independent ones. Only meaningful when DeviceIDKnown is true - a
+	// failure here degrades to "don't group," not an error, since it's
+	// not essential to using the path.
+	DeviceID      uint64
+	DeviceIDKnown bool
 }
 
 type Inventory struct {
@@ -101,6 +110,38 @@ func (inv *Inventory) TierOf(path string) (model.Tier, bool) {
 	return status.Tier, true
 }
 
+// VolumeOf returns, for every path with a known device ID, that device ID
+// - for grouping paths that share a physical volume so the planner treats
+// their capacity as one shared pool instead of independent ones.
+func (inv *Inventory) VolumeOf() map[string]uint64 {
+	out := make(map[string]uint64, len(inv.PathStatus))
+	for path, status := range inv.PathStatus {
+		if status.DeviceIDKnown {
+			out[path] = status.DeviceID
+		}
+	}
+	return out
+}
+
+// SharedVolumePaths returns every other configured path that is on the
+// same physical volume as path, for surfacing in the UI.
+func (inv *Inventory) SharedVolumePaths(path string) []string {
+	status, ok := inv.PathStatus[path]
+	if !ok || !status.DeviceIDKnown {
+		return nil
+	}
+	var siblings []string
+	for other, otherStatus := range inv.PathStatus {
+		if other == path || !otherStatus.DeviceIDKnown {
+			continue
+		}
+		if otherStatus.DeviceID == status.DeviceID {
+			siblings = append(siblings, other)
+		}
+	}
+	return siblings
+}
+
 // BuildInventory checks every configured path, fetches the library from
 // every enabled Arr app, and scores each item. It performs no writes.
 func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
@@ -119,6 +160,10 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 				status.Err = err
 			} else {
 				status.Usage = u
+				if dev, err := diskusage.DeviceID(path); err == nil {
+					status.DeviceID = dev
+					status.DeviceIDKnown = true
+				}
 			}
 
 			inv.PathStatus[path] = status
@@ -167,12 +212,13 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 // BuildPlan runs the planner over an inventory. It performs no writes.
 func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error) {
 	return planner.Build(planner.Input{
-		Tiers:   inv.Tiers,
-		Usage:   inv.UsableUsage(),
-		Items:   inv.Items,
-		History: e.History,
-		Policy:  e.Cfg.Policy,
-		Now:     now,
+		Tiers:    inv.Tiers,
+		Usage:    inv.UsableUsage(),
+		VolumeOf: inv.VolumeOf(),
+		Items:    inv.Items,
+		History:  e.History,
+		Policy:   e.Cfg.Policy,
+		Now:      now,
 	})
 }
 

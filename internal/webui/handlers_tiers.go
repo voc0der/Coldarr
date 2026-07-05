@@ -15,6 +15,12 @@ type tierPathStatus struct {
 	Available   bool
 	UsedPercent float64
 	Err         string
+	// SharesVolumeWith lists other configured paths (possibly in other
+	// tiers) that are on the same physical volume, detected by device ID
+	// - so it's never stale even if the underlying mounts change. These
+	// paths share capacity: filling one affects how much room the
+	// others actually have, no matter how independent they look.
+	SharesVolumeWith []string
 }
 
 type tierListRow struct {
@@ -31,20 +37,61 @@ type tiersData struct {
 
 func (s *Server) tierListRows() []tierListRow {
 	cfg := s.currentConfig()
+
+	type entry struct {
+		tierName string
+		status   tierPathStatus
+		device   uint64
+		deviceOK bool
+	}
+
+	var entries []entry
+	for _, t := range cfg.Tiers {
+		for _, p := range t.Paths {
+			e := entry{tierName: t.Name, status: tierPathStatus{Path: p}}
+			if err := diskusage.CheckPath(p, t.RequireMount); err != nil {
+				e.status.Err = err.Error()
+			} else if u, err := diskusage.Stat(p); err != nil {
+				e.status.Err = err.Error()
+			} else {
+				e.status.Available = true
+				e.status.UsedPercent = u.UsedPercent
+				if dev, err := diskusage.DeviceID(p); err == nil {
+					e.device, e.deviceOK = dev, true
+				}
+			}
+			entries = append(entries, e)
+		}
+	}
+
+	byDevice := map[uint64][]int{}
+	for i, e := range entries {
+		if e.deviceOK {
+			byDevice[e.device] = append(byDevice[e.device], i)
+		}
+	}
+	for _, idxs := range byDevice {
+		if len(idxs) < 2 {
+			continue
+		}
+		for _, i := range idxs {
+			for _, j := range idxs {
+				if i == j {
+					continue
+				}
+				entries[i].status.SharesVolumeWith = append(entries[i].status.SharesVolumeWith,
+					fmt.Sprintf("%s (%s)", entries[j].status.Path, entries[j].tierName))
+			}
+		}
+	}
+
 	rows := make([]tierListRow, 0, len(cfg.Tiers))
+	i := 0
 	for _, t := range cfg.Tiers {
 		row := tierListRow{Tier: t}
-		for _, p := range t.Paths {
-			ps := tierPathStatus{Path: p}
-			if err := diskusage.CheckPath(p, t.RequireMount); err != nil {
-				ps.Err = err.Error()
-			} else if u, err := diskusage.Stat(p); err != nil {
-				ps.Err = err.Error()
-			} else {
-				ps.Available = true
-				ps.UsedPercent = u.UsedPercent
-			}
-			row.Paths = append(row.Paths, ps)
+		for range t.Paths {
+			row.Paths = append(row.Paths, entries[i].status)
+			i++
 		}
 		rows = append(rows, row)
 	}

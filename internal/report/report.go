@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/vocoder/coldarr/internal/diskusage"
@@ -29,7 +30,10 @@ func fmtGBu(b uint64) string {
 
 // TierUsage prints one row per configured path: role, tier, target/max
 // thresholds (cold tiers only - hot storage isn't steered toward a usage
-// level), and current usage, or the reason a path is being skipped.
+// level), and current usage, or the reason a path is being skipped. A path
+// that's the same physical volume as another configured path (however
+// differently named) is flagged - Coldarr treats their capacity as
+// shared, and moving into one affects how much room the other has.
 func TierUsage(w io.Writer, inv *engine.Inventory) {
 	tw := newTabwriter(w)
 	fmt.Fprintln(tw, "TIER\tROLE\tPATH\tUSED\tFREE\tTOTAL\tUSED%\tTARGET%\tMAX%\tSTATUS")
@@ -49,9 +53,13 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 				continue
 			}
 			u := status.Usage
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\tok\n",
+			statusCol := "ok"
+			if siblings := inv.SharedVolumePaths(path); len(siblings) > 0 {
+				statusCol = fmt.Sprintf("ok (shares a disk with %s)", strings.Join(siblings, ", "))
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\t%s\n",
 				tier.Name, tier.Role, path, fmtGBu(u.UsedBytes), fmtGBu(u.FreeBytes), fmtGBu(u.TotalBytes),
-				u.UsedPercent, targetCol, maxCol)
+				u.UsedPercent, targetCol, maxCol, statusCol)
 		}
 	}
 	tw.Flush()

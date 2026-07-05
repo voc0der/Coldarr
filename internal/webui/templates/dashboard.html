@@ -39,7 +39,10 @@
   {{else}}
   <td class="muted">-</td>
   {{end}}
-  <td><span class="badge badge-{{.StatusClass}}">{{.StatusMsg}}</span></td>
+  <td>
+    <span class="badge badge-{{.StatusClass}}">{{.StatusMsg}}</span>
+    {{if .SharesVolumeWith}}<br><span class="badge badge-warn">shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span>{{end}}
+  </td>
   {{else}}
   <td colspan="5" class="muted">unavailable</td>
   <td><span class="badge badge-danger">{{.StatusMsg}}</span></td>

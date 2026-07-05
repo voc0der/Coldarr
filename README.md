@@ -226,6 +226,23 @@ empty directory left behind on the root filesystem. A path that fails
 this check is reported as unavailable and excluded from planning entirely
 - Coldarr never falls back to using it anyway.
 
+### Shared volumes
+
+Sometimes two configured paths - even across different tiers, like
+`Movies (Hot)` and `TV (Hot)` - are actually the same physical volume or
+cluster storage, just different subdirectories. Optimizing between them
+independently would be nonsense: filling one eats into the exact same
+free space the other reports having.
+
+Coldarr detects this **automatically**, by comparing each path's device
+ID (the same technique `du -x`/`find -xdev` use to detect filesystem
+boundaries) - there's nothing to configure, and it can't drift out of
+sync the way a manually-declared grouping could if a mount changes later.
+Paths sharing a volume show up flagged as such in `report` and the
+dashboard/Tiers page, and the planner treats their capacity as one shared
+pool: moving into one is reflected on the other, so it can never
+double-commit the same disk across two differently-named destinations.
+
 ## Scoring
 
 See [internal/scoring/scoring.go](internal/scoring/scoring.go) for the
