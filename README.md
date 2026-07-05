@@ -1,4 +1,8 @@
-# Coldarr
+<p align="center">
+  <img src="assets/icon-512.png" width="120" alt="Coldarr icon">
+</p>
+
+<h1 align="center">Coldarr</h1>
 
 A policy-based storage-tiering balancer for Radarr/Sonarr libraries.
 
