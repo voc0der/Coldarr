@@ -26,6 +26,7 @@ var pageNames = []string{
 	"plan",
 	"apply_status",
 	"history",
+	"verify_status",
 }
 
 func parseTemplates() (map[string]*template.Template, error) {
