@@ -64,7 +64,7 @@
 <div id="apply-status" {{if .Running}}hx-get="/plan/apply/status/partial" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
 <div class="card">
 <p>
-  {{if .Running}}<span class="badge badge-warn">{{template "icon-loader"}} running - one move at a time per destination volume</span>{{else}}<span class="badge badge-ok">{{template "icon-check-circle"}} finished</span>{{end}}
+  {{if .Running}}<span class="badge badge-warn">{{template "icon-loader"}} running - one move at a time per destination volume</span>{{else}}<span class="badge badge-ok">{{template "icon-check-circle"}} finished{{if .Finished}} at {{.Finished}}{{end}}</span>{{end}}
   &nbsp; {{.MovedCount}} moved, {{.FailedCount}} failed
 </p>
 </div>
