@@ -1,36 +1,47 @@
 {{define "content"}}
 <h1>Plan</h1>
+
+{{if not .Run.NoRun}}
+<h2>{{if .Run.Running}}Applying{{else}}Last apply result{{end}}</h2>
+{{template "apply_status_table" .Run}}
+{{end}}
+
+{{if not .Run.Running}}
 <p class="muted">This is a dry run - nothing moves until you click Apply.</p>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Plan.Error}}<div class="alert alert-error">{{.Plan.Error}}</div>{{end}}
 
-{{if .Empty}}
-<div class="card muted">No moves needed - no cold-eligible items found on hot storage with room to accept them.</div>
+{{if .Plan.Empty}}
+<div class="card empty-state">
+  {{template "icon-check-circle"}}
+  <div class="title">Nothing to move</div>
+  <p class="muted">No cold-eligible items found on hot storage with room to accept them.</p>
+</div>
 {{else}}
 <div class="card overflow-table">
 <table>
 <thead><tr><th>Title</th><th>Type</th><th>Size</th><th>From</th><th>To</th><th>Score</th><th>Why</th></tr></thead>
 <tbody>
-{{range .Entries}}
+{{range .Plan.Entries}}
 <tr><td>{{.Title}}</td><td>{{.Type}}</td><td>{{.Size}}</td><td class="mono">{{.From}}</td><td class="mono">{{.To}}</td><td>{{printf "%.1f" .Score}}</td><td class="muted">{{.Why}}</td></tr>
 {{end}}
 </tbody>
 </table>
-<p><strong>{{len .Entries}} item(s), {{.TotalSize}} total</strong></p>
+<p><strong>{{len .Plan.Entries}} item(s), {{.Plan.TotalSize}} total</strong></p>
 </div>
 
-<form method="post" action="/plan/apply" onsubmit="return confirm('Proceed with {{len .Entries}} move(s)? Coldarr will ask Radarr/Sonarr to relocate these items now - one at a time per destination drive, so this can take a while for large plans.')">
-  <button type="submit" class="btn btn-primary">Apply this plan</button>
+<form method="post" action="/plan/apply" onsubmit="return confirm('Proceed with {{len .Plan.Entries}} move(s)? Coldarr will ask Radarr/Sonarr to relocate these items now - one at a time per destination drive, so this can take a while for large plans.')">
+  <button type="submit" class="btn btn-primary">{{template "icon-play"}} Apply this plan</button>
 </form>
 {{end}}
 
-{{if .Usage}}
+{{if .Plan.Usage}}
 <h2>Projected usage</h2>
 <div class="card overflow-table">
 <table>
 <thead><tr><th>Tier</th><th>Path</th><th>Before</th><th>After</th></tr></thead>
 <tbody>
-{{range .Usage}}
+{{range .Plan.Usage}}
 <tr><td>{{.Tier}}</td><td class="mono">{{.Path}}</td><td>{{pct .Before}}</td><td>{{pct .After}}</td></tr>
 {{end}}
 </tbody>
@@ -38,12 +49,43 @@
 </div>
 {{end}}
 
-{{if .Warnings}}
+{{if .Plan.Warnings}}
 <h2>Warnings</h2>
 <div class="card">
 <ul>
-{{range .Warnings}}<li>{{.}}</li>{{end}}
+{{range .Plan.Warnings}}<li>{{.}}</li>{{end}}
 </ul>
 </div>
 {{end}}
+{{end}}
+{{end}}
+
+{{define "apply_status_table"}}
+<div id="apply-status" {{if .Running}}hx-get="/plan/apply/status/partial" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+<div class="card">
+<p>
+  {{if .Running}}<span class="badge badge-warn">{{template "icon-loader"}} running - one move at a time per destination volume</span>{{else}}<span class="badge badge-ok">{{template "icon-check-circle"}} finished</span>{{end}}
+  &nbsp; {{.MovedCount}} moved, {{.FailedCount}} failed
+</p>
+</div>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Title</th><th>Destination</th><th>Status</th></tr></thead>
+<tbody>
+{{range .Entries}}
+<tr>
+  <td>{{.Title}}</td>
+  <td class="mono">{{.To}}</td>
+  <td>
+    {{if eq .Status "pending"}}<span class="badge badge-muted">{{template "icon-minus-circle"}} pending</span>{{end}}
+    {{if eq .Status "moving"}}<span class="badge badge-warn">{{template "icon-loader"}} moving</span>{{end}}
+    {{if eq .Status "done"}}<span class="badge badge-ok">{{template "icon-check-circle"}} done</span>{{end}}
+    {{if eq .Status "failed"}}<span class="badge badge-danger">{{template "icon-x-circle"}} failed: {{.Err}}</span>{{end}}
+  </td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</div>
 {{end}}

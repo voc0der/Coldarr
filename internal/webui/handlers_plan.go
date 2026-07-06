@@ -28,7 +28,6 @@ type usageRowView struct {
 }
 
 type planData struct {
-	Title     string
 	Error     string
 	Empty     bool
 	Entries   []planEntryView
@@ -38,7 +37,7 @@ type planData struct {
 }
 
 func (s *Server) buildPlanData() planData {
-	data := planData{Title: "Plan"}
+	var data planData
 
 	eng, err := s.newEngine()
 	if err != nil {
@@ -99,8 +98,36 @@ func (s *Server) buildPlanData() planData {
 	return data
 }
 
+// planPageData is the single /plan page's view model. Run is always
+// computed; Plan is only populated when no apply is currently in flight -
+// showing a dry-run preview next to live apply progress would be actively
+// misleading, since the numbers wouldn't match what's really happening.
+type planPageData struct {
+	Title string
+	Run   applyStatusData
+	Plan  planData
+}
+
+func (s *Server) buildPlanPageData() planPageData {
+	data := planPageData{Title: "Plan", Run: s.currentApplyStatus()}
+	if !data.Run.Running {
+		data.Plan = s.buildPlanData()
+	}
+	return data
+}
+
 func (s *Server) handlePlanPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "plan", s.buildPlanData())
+	s.render(w, "plan", s.buildPlanPageData())
+}
+
+// renderPlanError re-renders /plan with an error slotted into the dry-run
+// section, preserving whatever the current apply run's status is.
+func (s *Server) renderPlanError(w http.ResponseWriter, err error) {
+	s.render(w, "plan", planPageData{
+		Title: "Plan",
+		Run:   s.currentApplyStatus(),
+		Plan:  planData{Error: err.Error()},
+	})
 }
 
 // handleApplyStart builds a fresh plan and starts executing it in the
@@ -111,27 +138,27 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 	s.applyMu.Lock()
 	if s.currentRun != nil && !s.currentRun.progress.Snapshot().Done {
 		s.applyMu.Unlock()
-		http.Redirect(w, r, "/plan/apply/status", http.StatusSeeOther)
+		http.Redirect(w, r, "/plan", http.StatusSeeOther)
 		return
 	}
 	s.applyMu.Unlock()
 
 	eng, err := s.newEngine()
 	if err != nil {
-		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
+		s.renderPlanError(w, err)
 		return
 	}
 
 	now := time.Now()
 	inv, err := eng.BuildInventory(now)
 	if err != nil {
-		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
+		s.renderPlanError(w, err)
 		return
 	}
 
 	plan, err := eng.BuildPlan(inv, now)
 	if err != nil {
-		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
+		s.renderPlanError(w, err)
 		return
 	}
 
@@ -142,7 +169,7 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 
 	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))
 	if err != nil {
-		s.render(w, "plan", planData{Title: "Plan", Error: err.Error()})
+		s.renderPlanError(w, err)
 		return
 	}
 
@@ -165,7 +192,7 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	http.Redirect(w, r, "/plan/apply/status", http.StatusSeeOther)
+	http.Redirect(w, r, "/plan", http.StatusSeeOther)
 }
 
 type applyStatusEntryView struct {
@@ -176,7 +203,6 @@ type applyStatusEntryView struct {
 }
 
 type applyStatusData struct {
-	Title       string
 	NoRun       bool
 	Running     bool
 	MovedCount  int
@@ -190,11 +216,11 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	s.applyMu.Unlock()
 
 	if run == nil {
-		return applyStatusData{Title: "Apply status", NoRun: true}
+		return applyStatusData{NoRun: true}
 	}
 
 	snap := run.progress.Snapshot()
-	data := applyStatusData{Title: "Apply status", Running: !snap.Done}
+	data := applyStatusData{Running: !snap.Done}
 
 	for _, e := range snap.Entries {
 		data.Entries = append(data.Entries, applyStatusEntryView{
@@ -214,10 +240,18 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	return data
 }
 
-func (s *Server) handleApplyStatus(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "apply_status", s.currentApplyStatus())
-}
-
+// handleApplyStatusPartial serves the htmx-polled apply-status fragment.
+// Once the run is no longer active, it tells htmx to reload the whole
+// page instead of swapping just this fragment - hx-swap="outerHTML" only
+// ever replaces the #apply-status div, so without this an operator
+// watching the live page would see the status freeze at "finished" but
+// never see the fresh dry-run preview section appear until a manual
+// reload. HX-Refresh makes the server the single source of truth for
+// what the merged /plan page looks like in every state.
 func (s *Server) handleApplyStatusPartial(w http.ResponseWriter, r *http.Request) {
-	s.renderPartial(w, "apply_status", "apply_status_table", s.currentApplyStatus())
+	data := s.currentApplyStatus()
+	if !data.Running {
+		w.Header().Set("HX-Refresh", "true")
+	}
+	s.renderPartial(w, "plan", "apply_status_table", data)
 }
