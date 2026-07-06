@@ -20,10 +20,10 @@
 {{else}}
 <div class="card overflow-table">
 <table>
-<thead><tr><th>Title</th><th>Type</th><th>Size</th><th>From</th><th>To</th><th>Score</th><th>Why</th></tr></thead>
+<thead><tr><th>Title</th><th>Links</th><th>Type</th><th>Size</th><th>From</th><th>To</th><th>Score</th><th>Why</th></tr></thead>
 <tbody>
 {{range .Plan.Entries}}
-<tr><td>{{.Title}}</td><td>{{.Type}}</td><td>{{.Size}}</td><td class="mono">{{.From}}</td><td class="mono">{{.To}}</td><td>{{printf "%.1f" .Score}}</td><td class="muted">{{.Why}}</td></tr>
+<tr><td>{{.Title}}</td><td>{{template "links_cell" .Links}}</td><td>{{.Type}}</td><td>{{.Size}}</td><td class="mono">{{.From}}</td><td class="mono">{{.To}}</td><td>{{printf "%.1f" .Score}}</td><td class="muted">{{.Why}}</td></tr>
 {{end}}
 </tbody>
 </table>

@@ -68,6 +68,10 @@ type MediaItem struct {
 	ID     int
 	Type   MediaType
 	Title  string
+	// TitleSlug is Radarr/Sonarr's own URL-safe identifier for this item
+	// (their web UI routes by this, not by ID) - used to build a deep
+	// link into the owning app.
+	TitleSlug string
 
 	// Path is the item's current full folder path on disk as reported
 	// by the owning Arr app.

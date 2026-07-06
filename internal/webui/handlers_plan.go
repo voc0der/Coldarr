@@ -14,6 +14,7 @@ import (
 
 type planEntryView struct {
 	Title string
+	Links []linkView
 	Type  string
 	Size  string
 	From  string
@@ -63,6 +64,8 @@ func (s *Server) buildPlanData() planData {
 	data.Empty = len(plan.Entries) == 0
 	data.Warnings = append(append([]string{}, inv.Warnings...), plan.Warnings...)
 
+	linkSrc := s.buildLinkSources(eng)
+
 	var total int64
 	for _, e := range plan.Entries {
 		total += e.Item.SizeBytes
@@ -72,6 +75,7 @@ func (s *Server) buildPlanData() planData {
 		}
 		data.Entries = append(data.Entries, planEntryView{
 			Title: e.Item.Title,
+			Links: itemLinks(linkSrc, e.Item.ArrApp, e.Item.TitleSlug, e.Item.Path),
 			Type:  string(e.Item.Type),
 			Size:  fmt.Sprintf("%.1f GB", float64(e.Item.SizeBytes)/(1<<30)),
 			From:  fmt.Sprintf("%s (%s)", e.FromTier, e.FromPath),

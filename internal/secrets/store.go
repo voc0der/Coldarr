@@ -41,6 +41,13 @@ type Connection struct {
 	URL     string `json:"url"`
 	APIKey  string `json:"api_key"`
 	Enabled bool   `json:"enabled"`
+	// ExternalURL, if set, replaces URL as the prefix used to build
+	// clickable links into this app's web UI from the Plan/History pages
+	// (the "Links" column) - e.g. a public hostname a reverse proxy
+	// exposes instead of URL's internal/LAN address. It is never used for
+	// Coldarr's own API calls, so unlike URL/APIKey it has no env var
+	// override and isn't exercised by "Test connection".
+	ExternalURL string `json:"external_url"`
 }
 
 func (c Connection) configured() bool {

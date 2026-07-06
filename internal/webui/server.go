@@ -149,6 +149,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /settings/connections", s.handleConnectionsPage)
 	mux.HandleFunc("POST /settings/connections/{app}/test", s.handleConnectionTest)
 	mux.HandleFunc("POST /settings/connections/{app}", s.handleConnectionSave)
+	mux.HandleFunc("POST /settings/connections/{app}/external-url", s.handleConnectionExternalURLSave)
 	mux.HandleFunc("POST /settings/connections/{app}/delete", s.handleConnectionDelete)
 
 	mux.HandleFunc("GET /settings/tiers", s.handleTiersPage)

@@ -31,19 +31,20 @@
 
 <div class="card overflow-table">
 <table>
-<thead><tr><th>When</th><th>Title</th><th>App</th><th>From</th><th>To</th><th>Size</th></tr></thead>
+<thead><tr><th>When</th><th>Title</th><th>Links</th><th>App</th><th>From</th><th>To</th><th>Size</th></tr></thead>
 <tbody>
 {{range .Rows}}
 <tr>
   <td>{{.MovedAt}}</td>
   <td>{{.Title}}</td>
+  <td>{{template "links_cell" .Links}}</td>
   <td>{{.ArrApp}}</td>
   <td>{{.FromTier}} <span class="mono muted">{{.FromPath}}</span></td>
   <td>{{.ToTier}} <span class="mono muted">{{.ToPath}}</span></td>
   <td>{{.Size}}</td>
 </tr>
 {{else}}
-<tr><td colspan="6" class="muted">No moves recorded yet.</td></tr>
+<tr><td colspan="7" class="muted">No moves recorded yet.</td></tr>
 {{end}}
 </tbody>
 </table>
