@@ -186,6 +186,82 @@ func TestApply_SerializesSameVolumeButParallelAcrossVolumes(t *testing.T) {
 	}
 }
 
+// TestSettle_ConfirmsViaRescanWhenUsageNeverGrows covers the real-world bug
+// this fallback exists for: a move that lands without adding any
+// measurable usage to the destination (the item was already at/near
+// there, or landed via a same-volume rename) would otherwise never look
+// "grown" and wait out the full SettleMaxWait - here set to an hour -
+// every single time, even though the file is already correctly sitting at
+// its destination. confirmLanded's Radarr rescan+GetMovieSize fallback
+// must recognize it as done almost immediately instead.
+func TestSettle_ConfirmsViaRescanWhenUsageNeverGrows(t *testing.T) {
+	const toPath = "/cold/movies"
+
+	statFunc := func(path string) (diskusage.Usage, error) {
+		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+	}
+
+	var mu sync.Mutex
+	rescanCalls := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v3/movie/editor":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			mu.Lock()
+			rescanCalls++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/movie/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "sizeOnDisk": 10, "path": toPath + "/Item1"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  2,
+		SettleMaxWait:       time.Hour,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Item1", SizeBytes: 10}, ToTier: "cold", ToPath: toPath},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	waitFor(t, 2*time.Second, func() bool { return progress.Snapshot().Done })
+
+	snap := progress.Snapshot()
+	if failed := snap.Failed(); len(failed) != 0 {
+		t.Fatalf("expected no failures, got %+v", failed)
+	}
+	if moved := snap.Moved(); len(moved) != 1 {
+		t.Fatalf("expected item moved, got %d", len(moved))
+	}
+
+	mu.Lock()
+	got := rescanCalls
+	mu.Unlock()
+	if got == 0 {
+		t.Fatal("expected at least one rescan call as the fallback confirmation path - settle() must not rely on disk-usage growth alone")
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

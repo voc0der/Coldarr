@@ -14,6 +14,8 @@ package mover
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,6 +231,17 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 // actually on disk, so this watches disk usage directly rather than
 // trusting the API response alone - true regardless of exactly how
 // Radarr/Sonarr implement the move internally.
+//
+// Disk-usage growth can't tell a finished move that added no measurable
+// usage - the item was already sitting at (or very near) the destination,
+// or landed via a same-volume rename - from one that simply hasn't
+// started yet, so a move like that would otherwise wait out the full
+// maxWait (hours, by default) every single time before ever being marked
+// done, even though it's already sitting there correctly. Once growth
+// looks stalled for a while, this also asks Radarr/Sonarr directly (via
+// confirmLanded) whether it now considers the item moved - not on every
+// check, since a rescan is comparatively expensive and unnecessary for
+// the common case of a normal, growing transfer.
 func (m *Movers) settle(entry planner.MoveEntry) {
 	interval := m.SettleCheckInterval
 	if interval <= 0 {
@@ -252,6 +265,7 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 
 	tracker := newSettleTracker(baseline.UsedBytes, entry.Item.SizeBytes)
 	deadline := time.Now().Add(maxWait)
+	noGrowthChecks := 0
 
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
@@ -263,7 +277,48 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 		if tracker.observe(u.UsedBytes, stableTarget) {
 			return
 		}
+
+		if tracker.grown {
+			noGrowthChecks = 0
+			continue
+		}
+		noGrowthChecks++
+		if noGrowthChecks >= stableTarget && m.confirmLanded(entry) {
+			return
+		}
 	}
+}
+
+// confirmLanded asks Radarr/Sonarr to rescan the item's folder - forcing
+// it to recompute the item's location/size from the real filesystem
+// rather than a possibly-stale cached value - and reports whether it now
+// considers the item's path to be under entry.ToPath. This is the
+// ground-truth fallback settle() reaches for once disk-usage growth looks
+// stalled; see settle's doc comment for why growth alone isn't enough.
+func (m *Movers) confirmLanded(entry planner.MoveEntry) bool {
+	switch entry.Item.ArrApp {
+	case "radarr":
+		if err := m.Radarr.RescanMovie(entry.Item.ID); err != nil {
+			return false
+		}
+		_, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
+		return err == nil && found && isUnderPath(path, entry.ToPath)
+	case "sonarr":
+		if err := m.Sonarr.RescanSeries(entry.Item.ID); err != nil {
+			return false
+		}
+		_, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
+		return err == nil && found && isUnderPath(path, entry.ToPath)
+	default:
+		return false
+	}
+}
+
+// isUnderPath reports whether path is root itself or a descendant of it.
+func isUnderPath(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // settleTracker decides whether a transfer looks complete from a series
