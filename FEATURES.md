@@ -50,10 +50,27 @@ refactor or throw more infrastructure at it.
 CLI or a small web GUI (`coldarr serve`) - same config file either way. Cron
 the CLI, click around in the GUI, or both.
 
+## Keeping tabs on it without watching it
+
+Settings > Notifications takes a webhook URL for your own
+[Apprise](https://github.com/caronc/apprise) endpoint. Point it there and
+every run - scheduled or manual - sends you a one-line summary. Flip on
+Verbose if you also want a ping per item, not just the summary; it's off by
+default so a big move doesn't spam you.
+
+Settings > Scheduler adds two jobs, both off until you turn them on:
+
+- **Run the Plan** - does exactly what clicking Apply does, just on a
+  schedule (every N hours, or daily at a time you pick). No cron entry to
+  write, no `-y` flag to remember.
+- **Rescan Cold Storage** - a read-only health check on your cold tiers
+  (usage, reachability), nothing gets moved. Handy for those bare satellite
+  drives - you find out one's gone missing or full from a notification, not
+  from a failed transfer at 3am.
+
 ## What it's not (yet)
 
 - No Plex - Jellyfin only, for now
 - No watch-history/play-count scoring - Favorites are in, that's it
-- No scheduler built in - you cron it, or click Apply yourself, on purpose
 - No torrent-client awareness
 - No login on the GUI - put it behind your own reverse proxy
