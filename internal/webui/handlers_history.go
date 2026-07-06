@@ -117,6 +117,7 @@ func (s *Server) handleVerifyStart(w http.ResponseWriter, r *http.Request) {
 	s.verifyMu.Unlock()
 
 	page := parsePage(r.FormValue("page"))
+	mode := parseVerifyMode(r.FormValue("mode"))
 
 	eng, err := s.newEngine()
 	if err != nil {
@@ -126,7 +127,7 @@ func (s *Server) handleVerifyStart(w http.ResponseWriter, r *http.Request) {
 
 	pageRecords, _, _ := paginate(eng.History.All(), page)
 
-	progress := startVerify(eng.Radarr, eng.Sonarr, pageRecords)
+	progress := startVerify(eng.Radarr, eng.Sonarr, pageRecords, mode)
 
 	s.verifyMu.Lock()
 	s.currentVerify = progress
@@ -141,6 +142,7 @@ type verifyStatusEntryView struct {
 	MovedAt    string
 	RecordedGB string
 	CurrentGB  string
+	ArrGB      string
 	Status     string
 	SizeStatus string
 	Note       string
@@ -149,6 +151,7 @@ type verifyStatusEntryView struct {
 
 type verifyStatusData struct {
 	Title         string
+	Mode          string
 	NoRun         bool
 	Running       bool
 	Entries       []verifyStatusEntryView
@@ -166,7 +169,7 @@ func (s *Server) currentVerifyStatus() verifyStatusData {
 	}
 
 	snap := progress.Snapshot()
-	data := verifyStatusData{Title: "Verify sizes", Running: !snap.Done}
+	data := verifyStatusData{Title: "Verify sizes", Mode: string(snap.Mode), Running: !snap.Done}
 
 	for _, e := range snap.Entries {
 		view := verifyStatusEntryView{
@@ -176,7 +179,12 @@ func (s *Server) currentVerifyStatus() verifyStatusData {
 			RecordedGB: fmt.Sprintf("%.1f GB", float64(e.Record.SizeBytes)/(1<<30)),
 			Status:     e.Status,
 			SizeStatus: e.SizeStatus,
+			Note:       e.Note,
 			Err:        e.Err,
+		}
+
+		if e.HasArrSize {
+			view.ArrGB = fmt.Sprintf("%.1f GB", float64(e.ArrSize)/(1<<30))
 		}
 
 		switch e.Status {
@@ -187,14 +195,14 @@ func (s *Server) currentVerifyStatus() verifyStatusData {
 				data.MatchCount++
 			case "grew":
 				view.CurrentGB = fmt.Sprintf("%.1f GB", float64(e.CurrentSize)/(1<<30))
-				view.Note = "larger than when moved - codec upgrades are risky in cold storage, worth a look"
+				view.Note = joinNotes(view.Note, "larger than when moved - codec upgrades are risky in cold storage, worth a look")
 				data.MismatchCount++
 			case "shrank":
 				view.CurrentGB = fmt.Sprintf("%.1f GB", float64(e.CurrentSize)/(1<<30))
-				view.Note = "smaller than when moved - often just a re-compress or trimmed season, but also how a crash-interrupted transfer looks"
+				view.Note = joinNotes(view.Note, "smaller than when moved - often just a re-compress or trimmed season, but also how a crash-interrupted transfer looks")
 				data.MismatchCount++
 			case "unknown":
-				view.Note = "no longer found in " + e.Record.ArrApp + " - may have been deleted or replaced since"
+				view.Note = joinNotes(view.Note, "no longer found in "+e.Record.ArrApp+" - may have been deleted or replaced since")
 			}
 		}
 
@@ -202,6 +210,13 @@ func (s *Server) currentVerifyStatus() verifyStatusData {
 	}
 
 	return data
+}
+
+func joinNotes(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	return existing + " - " + addition
 }
 
 func (s *Server) handleVerifyStatus(w http.ResponseWriter, r *http.Request) {
