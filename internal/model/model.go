@@ -86,6 +86,12 @@ type MediaItem struct {
 	// Ended is only meaningful for TV: true once a series has finished
 	// airing (Sonarr status "ended"), false while continuing/upcoming.
 	Ended bool
+	// Upcoming is true if the item hasn't been released/premiered yet -
+	// for TV, Sonarr status "upcoming" (announced, no aired episodes
+	// yet); for movies, Radarr status "tba"/"announced"/"inCinemas" (not
+	// yet released for home viewing). Distinct from Ended==false for TV,
+	// which also covers an already-airing "continuing" series.
+	Upcoming bool
 	// LastAired is the most recent known air date for a series, if any.
 	LastAired *time.Time
 

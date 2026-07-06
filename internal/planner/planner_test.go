@@ -395,3 +395,153 @@ func TestBuild_RespectsRealFreeSpaceNotRawTotal(t *testing.T) {
 		}
 	}
 }
+
+// tvTiers is like testTiers but with a cold tier that accepts TV, for the
+// upcoming-on-cold promotion tests below.
+func tvTiers() []model.Tier {
+	return []model.Tier{
+		{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie, model.TV}},
+		{Name: "cold-tv", Role: model.RoleCold, Paths: []string{"/cold1"}, Media: []model.MediaType{model.TV}, TargetUsedPercent: 92, MaxUsedPercent: 95},
+	}
+}
+
+func upcomingItem(id int, title, rootFolderPath string, sizeBytes int64) ItemEval {
+	return ItemEval{
+		Item: model.MediaItem{
+			ArrApp: "sonarr", ID: id, Type: model.TV, Title: title,
+			RootFolderPath: rootFolderPath, SizeBytes: sizeBytes, Upcoming: true,
+		},
+		Eval: scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"upcoming - not yet released/premiered"}},
+	}
+}
+
+func TestBuild_PromotesUpcomingItemOnColdBackToHot(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{upcomingItem(1, "Show A", "/cold1", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected 1 promotion move, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	e := plan.Entries[0]
+	if e.FromTier != "cold-tv" || e.FromPath != "/cold1" || e.ToTier != "hot" || e.ToPath != "/hot" {
+		t.Fatalf("unexpected move direction: %+v", e)
+	}
+}
+
+func TestBuild_UpcomingOnColdWarnsWhenNoHotRoom(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 99*gib), // ~1 GB free - not enough
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{upcomingItem(1, "Show A", "/cold1", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no move when hot has no room, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatal("expected a warning when no hot destination has room for a promotion")
+	}
+}
+
+func TestBuild_UpcomingAlreadyOnHotIsNotPromoted(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{upcomingItem(1, "Show A", "/hot", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no move for an upcoming item already on hot, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+func TestBuild_NonUpcomingOnColdIsNotPromoted(t *testing.T) {
+	item := upcomingItem(1, "Show A", "/cold1", 5*gib)
+	item.Item.Upcoming = false // e.g. a continuing series scored Hot for some other reason
+	item.Eval = scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"series is continuing/currently airing"}}
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{item},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected promotion to stay scoped to Upcoming items only, got %d moves: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+func TestBuild_PromotionFreesColdRoomForSubsequentPacking(t *testing.T) {
+	// A cold tier sitting right at its ceiling, holding one upcoming item
+	// that needs to leave and one genuinely cold-eligible item on hot
+	// that's waiting for room - the promotion should free enough space
+	// for the hot->cold move to then succeed in the same pass.
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(100*gib, 95*gib), // at its 95% max already
+		},
+		Items: []ItemEval{
+			upcomingItem(1, "Show A (upcoming)", "/cold1", 10*gib),
+			{
+				Item: model.MediaItem{ArrApp: "sonarr", ID: 2, Type: model.TV, Title: "Show B", RootFolderPath: "/hot", SizeBytes: 5 * gib},
+				Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 80},
+			},
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 2 {
+		t.Fatalf("expected both the promotion and the freed-up hot->cold move, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+}

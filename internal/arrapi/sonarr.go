@@ -99,6 +99,7 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	items := make([]model.MediaItem, 0, len(series))
 	for _, sr := range series {
 		ended := sr.Ended || sr.Status == "ended"
+		upcoming := sr.Status == "upcoming"
 		items = append(items, model.MediaItem{
 			ArrApp:             "sonarr",
 			ID:                 sr.ID,
@@ -113,6 +114,7 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 			Monitored:          sr.Monitored,
 			HasFile:            sr.Statistics.EpisodeFileCount > 0,
 			Ended:              ended,
+			Upcoming:           upcoming,
 			LastAired:          sr.PreviousAiring,
 			InActiveQueue:      busy[sr.ID],
 		})

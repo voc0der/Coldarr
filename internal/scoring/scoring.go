@@ -59,6 +59,9 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 	if item.JellyfinFavorite {
 		return Evaluation{Decision: Protected, Reasons: []string{"marked Favorite in Jellyfin"}}
 	}
+	if item.Upcoming {
+		return Evaluation{Decision: Hot, Reasons: []string{"upcoming - not yet released/premiered"}}
+	}
 
 	age := now.Sub(item.Added)
 	graceCutoff := time.Duration(policy.HotGraceDays) * dayHours * time.Hour

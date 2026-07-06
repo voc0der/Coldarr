@@ -44,6 +44,12 @@ refactor or throw more infrastructure at it.
 - Anything any Jellyfin user has favorited
 - Anything added recently (a grace period, before it's even considered)
 - Currently-airing TV, if you want that on
+- Anything not released/premiered yet (an unreleased movie, a show that
+  hasn't aired its first episode) - it's about to start actively growing,
+  so it stays off cold storage. If one of these turns up already sitting on
+  a cold drive (imported straight there, or left behind from an earlier
+  season), Coldarr moves it back to hot on its own - the one case where a
+  move runs the other direction.
 
 ## How you run it
 

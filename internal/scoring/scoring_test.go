@@ -75,6 +75,23 @@ func TestEvaluate_ContinuingSeriesStaysHot(t *testing.T) {
 	}
 }
 
+func TestEvaluate_UpcomingStaysHot(t *testing.T) {
+	now := time.Now()
+	for _, mt := range []model.MediaType{model.Movie, model.TV} {
+		item := model.MediaItem{
+			Type:      mt,
+			Added:     now.AddDate(-5, 0, 0), // old enough to clear grace period
+			Tags:      []string{"cold-ok"},   // and tagged cold-ok
+			SizeBytes: 500 << 30,             // and big - would otherwise easily clear the threshold
+			Upcoming:  true,
+		}
+		eval := Evaluate(item, basePolicy(), now)
+		if eval.Decision != Hot {
+			t.Fatalf("%s: expected Hot for an upcoming item despite old age/cold-ok tag/size, got %v (score %.1f)", mt, eval.Decision, eval.Score)
+		}
+	}
+}
+
 func TestEvaluate_ColdOkTagPushesToCold(t *testing.T) {
 	now := time.Now()
 	item := model.MediaItem{
