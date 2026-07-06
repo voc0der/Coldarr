@@ -1,6 +1,7 @@
 package arrapi
 
 import (
+	"fmt"
 	"net/url"
 	"sync"
 	"time"
@@ -117,6 +118,23 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// GetSeriesSize returns the size Sonarr currently reports on disk for
+// series id, straight from Sonarr's own database - used to verify a past
+// move actually landed intact rather than being interrupted partway (e.g.
+// by a crash). found is false if Sonarr no longer knows about this series
+// (it was deleted or replaced since Coldarr moved it), which is not an
+// error.
+func (s *SonarrClient) GetSeriesSize(id int) (sizeBytes int64, found bool, err error) {
+	var sr sonarrSeries
+	if err := s.c.get(fmt.Sprintf("/api/v3/series/%d", id), nil, &sr); err != nil {
+		if IsNotFound(err) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return sr.Statistics.SizeOnDisk, true, nil
 }
 
 // BusySeriesIDs returns the set of series IDs Sonarr currently has an

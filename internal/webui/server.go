@@ -32,6 +32,12 @@ type Server struct {
 	// separate requests while it runs in the background.
 	applyMu    sync.Mutex
 	currentRun *applyRun
+
+	// verifyMu guards currentVerify the same way applyMu guards
+	// currentRun - only one size-verification run in flight at a time,
+	// polled across requests while it runs in the background.
+	verifyMu      sync.Mutex
+	currentVerify *verifyProgress
 }
 
 type applyRun struct {
@@ -76,6 +82,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /plan/apply/status/partial", s.handleApplyStatusPartial)
 
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
+	mux.HandleFunc("POST /history/verify", s.handleVerifyStart)
+	mux.HandleFunc("GET /history/verify/status", s.handleVerifyStatus)
+	mux.HandleFunc("GET /history/verify/status/partial", s.handleVerifyStatusPartial)
 
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {

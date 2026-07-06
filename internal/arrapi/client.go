@@ -6,6 +6,7 @@ package arrapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,6 +35,27 @@ func (c *client) get(path string, query url.Values, out interface{}) error {
 
 func (c *client) put(path string, body interface{}, out interface{}) error {
 	return c.do(http.MethodPut, path, nil, body, out)
+}
+
+// StatusError is returned when a request reaches the server but gets back
+// a non-2xx response, so callers can distinguish "this item doesn't exist"
+// (404) from a genuine connectivity/auth failure.
+type StatusError struct {
+	Method, Path string
+	Code         int
+	Body         string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: unexpected status %d: %s", e.Method, e.Path, e.Code, truncate(e.Body, 500))
+}
+
+// IsNotFound reports whether err is a StatusError for a 404 response -
+// Radarr/Sonarr return this when asked about an item ID they no longer
+// know about (e.g. deleted from the library since Coldarr moved it).
+func IsNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
 }
 
 func (c *client) do(method, path string, query url.Values, body interface{}, out interface{}) error {
@@ -72,7 +94,7 @@ func (c *client) do(method, path string, query url.Values, body interface{}, out
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: unexpected status %d: %s", method, path, resp.StatusCode, truncate(string(respBody), 500))
+		return &StatusError{Method: method, Path: path, Code: resp.StatusCode, Body: string(respBody)}
 	}
 
 	if out != nil && len(respBody) > 0 {

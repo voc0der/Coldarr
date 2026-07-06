@@ -1,0 +1,46 @@
+{{define "content"}}
+<h1>Verify sizes</h1>
+<p class="muted">Re-checks each moved item's current size against Radarr/Sonarr, to catch transfers left half-done by a crash.</p>
+
+{{if .NoRun}}
+<div class="card muted">No verification has been run yet. Go to <a href="/history">History</a> to start one.</div>
+{{else}}
+{{template "verify_status_table" .}}
+{{end}}
+{{end}}
+
+{{define "verify_status_table"}}
+<div id="verify-status" {{if .Running}}hx-get="/history/verify/status/partial" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+<div class="card">
+<p>
+  {{if .Running}}<span class="badge badge-warn">checking...</span>{{else}}<span class="badge badge-ok">finished</span>{{end}}
+  &nbsp; {{.MatchCount}} match, {{.MismatchCount}} mismatched
+</p>
+</div>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Title</th><th>App</th><th>Moved</th><th>Recorded size</th><th>Current size</th><th>Status</th></tr></thead>
+<tbody>
+{{range .Entries}}
+<tr>
+  <td>{{.Title}}</td>
+  <td>{{.ArrApp}}</td>
+  <td>{{.MovedAt}}</td>
+  <td>{{.RecordedGB}}</td>
+  <td>{{.CurrentGB}}</td>
+  <td>
+    {{if eq .Status "checking"}}<span class="badge badge-muted">checking</span>{{end}}
+    {{if eq .Status "failed"}}<span class="badge badge-danger">error: {{.Err}}</span>{{end}}
+    {{if eq .SizeStatus "match"}}<span class="badge badge-ok">match</span>{{end}}
+    {{if eq .SizeStatus "grew"}}<span class="badge badge-danger">grew</span>{{end}}
+    {{if eq .SizeStatus "shrank"}}<span class="badge badge-danger">shrank</span>{{end}}
+    {{if eq .SizeStatus "unknown"}}<span class="badge badge-muted">unknown</span>{{end}}
+    {{if .Note}}<div class="muted">{{.Note}}</div>{{end}}
+  </td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+</div>
+{{end}}

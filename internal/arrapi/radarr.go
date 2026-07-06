@@ -1,6 +1,7 @@
 package arrapi
 
 import (
+	"fmt"
 	"net/url"
 	"sync"
 	"time"
@@ -107,6 +108,22 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// GetMovieSize returns the size Radarr currently reports on disk for movie
+// id, straight from Radarr's own database - used to verify a past move
+// actually landed intact rather than being interrupted partway (e.g. by a
+// crash). found is false if Radarr no longer knows about this movie (it
+// was deleted or replaced since Coldarr moved it), which is not an error.
+func (r *RadarrClient) GetMovieSize(id int) (sizeBytes int64, found bool, err error) {
+	var m radarrMovie
+	if err := r.c.get(fmt.Sprintf("/api/v3/movie/%d", id), nil, &m); err != nil {
+		if IsNotFound(err) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return m.SizeOnDisk, true, nil
 }
 
 // BusyMovieIDs returns the set of movie IDs Radarr currently has an active
