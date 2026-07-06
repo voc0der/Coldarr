@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/scheduler"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,10 +43,33 @@ type HistoryConfig struct {
 	Path string `yaml:"path"`
 }
 
+// NotificationsConfig controls Coldarr's Apprise webhook notifications.
+// The Apprise URL itself is not here - it's stored encrypted alongside
+// the Radarr/Sonarr/Jellyfin connections in internal/secrets, since an
+// Apprise URL can itself function as a bearer credential (e.g. a raw
+// Discord/Slack webhook pasted directly instead of routed through a
+// hosted Apprise API gateway).
+type NotificationsConfig struct {
+	// Verbose sends one additional notification per item (e.g. per moved
+	// file, per cold-storage path checked) alongside the summary every
+	// task always sends. Off by default to keep notifications low-noise.
+	Verbose bool `yaml:"verbose"`
+}
+
+// SchedulerConfig holds the recurrence for each of Coldarr's two
+// schedulable tasks. Both default to disabled - an unattended apply or
+// cold-storage rescan only ever runs if explicitly turned on.
+type SchedulerConfig struct {
+	RunPlan    scheduler.Schedule `yaml:"run_plan"`
+	RescanCold scheduler.Schedule `yaml:"rescan_cold"`
+}
+
 type Config struct {
-	Tiers   []model.Tier  `yaml:"tiers"`
-	Policy  PolicyConfig  `yaml:"policy"`
-	History HistoryConfig `yaml:"history"`
+	Tiers         []model.Tier        `yaml:"tiers"`
+	Policy        PolicyConfig        `yaml:"policy"`
+	History       HistoryConfig       `yaml:"history"`
+	Notifications NotificationsConfig `yaml:"notifications"`
+	Scheduler     SchedulerConfig     `yaml:"scheduler"`
 }
 
 // Load reads, parses, and strictly validates the config file at path -
@@ -58,6 +82,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := ValidateTiers(cfg.Tiers, true); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := ValidateScheduler(cfg.Scheduler); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
@@ -87,8 +114,41 @@ func LoadForServer(path string) (*Config, error) {
 	if err := ValidateTiers(cfg.Tiers, false); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	if err := ValidateScheduler(cfg.Scheduler); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	log.Printf("config: loaded %d tier(s) from %s: %v", len(cfg.Tiers), path, tierNames(cfg.Tiers))
 	return cfg, nil
+}
+
+// ValidateScheduler checks both of the scheduler's task schedules -
+// invoked wherever config is loaded, and again before saving a schedule
+// change through the web GUI, so a malformed Every/At value never reaches
+// coldarr.yaml.
+func ValidateScheduler(cfg SchedulerConfig) error {
+	if err := scheduler.Validate(cfg.RunPlan); err != nil {
+		return fmt.Errorf("scheduler.run_plan: %w", err)
+	}
+	if err := scheduler.Validate(cfg.RescanCold); err != nil {
+		return fmt.Errorf("scheduler.rescan_cold: %w", err)
+	}
+	return nil
+}
+
+// applyScheduleDefaults fills in cosmetic defaults for a not-yet-configured
+// schedule, so its form has sane pre-filled values before an operator ever
+// enables it. It never touches Enabled - that stays false (Go's zero
+// value) until someone explicitly turns the task on.
+func applyScheduleDefaults(s *scheduler.Schedule, defaultAt string) {
+	if s.Unit == "" {
+		s.Unit = scheduler.Daily
+	}
+	if s.Every == 0 {
+		s.Every = 1
+	}
+	if s.At == "" {
+		s.At = defaultAt
+	}
 }
 
 func tierNames(tiers []model.Tier) []string {
@@ -170,6 +230,8 @@ func applyDefaults(cfg *Config) {
 	if cfg.History.Path == "" {
 		cfg.History.Path = "./coldarr-history.json"
 	}
+	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
+	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {
