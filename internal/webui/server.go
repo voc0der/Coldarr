@@ -6,6 +6,7 @@ package webui
 
 import (
 	"bytes"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
@@ -76,9 +77,48 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	return &Server{cfgPath: cfgPath, cfg: cfg, connStore: connStore, pages: pages}, nil
 }
 
-func (s *Server) ListenAndServe(addr string) error {
-	log.Printf("coldarr web GUI listening on %s", addr)
-	return http.ListenAndServe(addr, s.routes())
+type ListenOptions struct {
+	Addr                     string
+	TLSCertFile              string
+	TLSKeyFile               string
+	TrustedReverseProxyCIDRs string
+}
+
+func (o ListenOptions) Validate() error {
+	if (o.TLSCertFile == "") != (o.TLSKeyFile == "") {
+		return fmt.Errorf("both TLS certificate and key files are required when serving HTTPS")
+	}
+	if o.TrustedReverseProxyCIDRs != "" {
+		if _, err := parseTrustedReverseProxyCIDRs(o.TrustedReverseProxyCIDRs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) ListenAndServe(opts ListenOptions) error {
+	if err := opts.Validate(); err != nil {
+		return err
+	}
+
+	handler := s.routes()
+	if opts.TrustedReverseProxyCIDRs != "" {
+		proxies, err := parseTrustedReverseProxyCIDRs(opts.TrustedReverseProxyCIDRs)
+		if err != nil {
+			return err
+		}
+		handler = trustedReverseProxyMiddleware(handler, proxies)
+		log.Printf("coldarr web GUI trusting forwarded headers from %s", opts.TrustedReverseProxyCIDRs)
+	}
+
+	srv := &http.Server{Addr: opts.Addr, Handler: handler}
+	if opts.TLSCertFile != "" {
+		log.Printf("coldarr web GUI listening with HTTPS on %s", opts.Addr)
+		return srv.ListenAndServeTLS(opts.TLSCertFile, opts.TLSKeyFile)
+	}
+
+	log.Printf("coldarr web GUI listening on %s", opts.Addr)
+	return srv.ListenAndServe()
 }
 
 func (s *Server) routes() http.Handler {
