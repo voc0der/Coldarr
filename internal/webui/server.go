@@ -10,12 +10,15 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/engine"
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/mover"
+	"github.com/vocoder/coldarr/internal/scheduler"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
@@ -38,6 +41,26 @@ type Server struct {
 	// polled across requests while it runs in the background.
 	verifyMu      sync.Mutex
 	currentVerify *verifyProgress
+
+	// schedMu guards the scheduler's in-memory (not persisted across
+	// restarts) timing state. lastRunPlan/lastRunRescan are the due-check
+	// anchor scheduler.Due compares against - reset both when a task
+	// genuinely runs AND whenever its schedule is saved (so enabling or
+	// editing a schedule can never itself trigger a surprise immediate
+	// fire). lastRanPlan/lastRanRescan are the user-facing "last ran"
+	// fact shown on the Scheduler settings page - unlike the anchor,
+	// these are only ever updated by a genuine run, never by a save, so
+	// the page never claims a task ran when it was really just edited.
+	schedMu       sync.Mutex
+	lastRunPlan   time.Time
+	lastRunRescan time.Time
+	lastRanPlan   time.Time
+	lastRanRescan time.Time
+	// rescanMu keeps a scheduled "Rescan Cold Storage" tick from
+	// overlapping itself. It's read-only and independent of applyMu -
+	// unlike a scheduled Plan run, it never competes with a manual Apply
+	// click for the mover lock.
+	rescanMu sync.Mutex
 }
 
 type applyRun struct {
@@ -84,6 +107,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
 	mux.HandleFunc("POST /settings/notifications/test", s.handleNotificationsTest)
 	mux.HandleFunc("POST /settings/notifications/delete", s.handleNotificationsDelete)
+
+	mux.HandleFunc("GET /settings/scheduler", s.handleSchedulerPage)
+	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
 
 	// Connections and Tiers moved under /settings - redirect anyone with
 	// the old URLs bookmarked, same precedent as the /plan/apply/status
@@ -173,6 +199,150 @@ func (s *Server) updateNotifications(verbose bool) error {
 		return err
 	}
 	s.cfg = &updated
+	return nil
+}
+
+// StartScheduler resets each currently-enabled task's due-check anchor to
+// now - a process restart defers its next run rather than firing
+// immediately, since none of the scheduler's timing state is persisted
+// across restarts - then launches the background ticker that checks both
+// tasks every tickInterval(). Meant to be called once, after New, before
+// ListenAndServe; there's no corresponding Stop - like ListenAndServe
+// itself, this runs for the life of the process.
+func (s *Server) StartScheduler() {
+	now := time.Now()
+	cfg := s.currentConfig()
+	if cfg.Scheduler.RunPlan.Enabled {
+		s.touchPlanSchedule(now)
+	}
+	if cfg.Scheduler.RescanCold.Enabled {
+		s.touchRescanSchedule(now)
+	}
+
+	go func() {
+		ticker := time.NewTicker(tickInterval())
+		defer ticker.Stop()
+		for t := range ticker.C {
+			s.tick(t)
+		}
+	}()
+}
+
+// tickInterval defaults to a minute, overridable via
+// COLDARR_SCHEDULER_TICK_INTERVAL (a Go duration string) - the same
+// env-override idiom Engine.Movers() uses for settle timing, and what
+// makes the scheduler testable without waiting on real minutes/hours.
+func tickInterval() time.Duration {
+	if v := os.Getenv("COLDARR_SCHEDULER_TICK_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return time.Minute
+}
+
+func (s *Server) tick(now time.Time) {
+	cfg := s.currentConfig()
+
+	if scheduler.Due(cfg.Scheduler.RunPlan, s.getLastRunPlan(), now) {
+		s.runScheduledPlan(now)
+	}
+	if scheduler.Due(cfg.Scheduler.RescanCold, s.getLastRunRescan(), now) {
+		s.runScheduledRescan(now)
+	}
+}
+
+func (s *Server) getLastRunPlan() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRunPlan
+}
+
+func (s *Server) getLastRunRescan() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRunRescan
+}
+
+func (s *Server) getLastRanPlan() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRanPlan
+}
+
+func (s *Server) getLastRanRescan() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRanRescan
+}
+
+// touchPlanSchedule resets run_plan's due-check anchor without recording
+// a genuine run - called when the schedule itself is saved (see
+// updateSchedule) or the process starts, so enabling or editing it can
+// never trigger a surprise immediate fire.
+func (s *Server) touchPlanSchedule(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunPlan = t
+	s.schedMu.Unlock()
+}
+
+func (s *Server) touchRescanSchedule(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunRescan = t
+	s.schedMu.Unlock()
+}
+
+// recordPlanRan records that run_plan genuinely executed at t - resets
+// the due-check anchor (so it isn't considered due again until the next
+// full period) and updates the "last ran" fact shown on the Scheduler
+// settings page.
+func (s *Server) recordPlanRan(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunPlan = t
+	s.lastRanPlan = t
+	s.schedMu.Unlock()
+}
+
+func (s *Server) recordRescanRan(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunRescan = t
+	s.lastRanRescan = t
+	s.schedMu.Unlock()
+}
+
+// updateSchedule validates and persists a single named task's schedule
+// ("run_plan" or "rescan_cold"), then always resets that task's due-check
+// anchor to now - whether enabling, disabling, or just adjusting the time
+// - so saving a schedule can never itself trigger an immediate unattended
+// run as a surprise side effect. This does not touch the "last ran" fact
+// shown on the settings page - only a genuine run does that.
+func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
+	if err := scheduler.Validate(sched); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	updated := *s.cfg
+	switch task {
+	case "run_plan":
+		updated.Scheduler.RunPlan = sched
+	case "rescan_cold":
+		updated.Scheduler.RescanCold = sched
+	}
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.cfg = &updated
+	s.mu.Unlock()
+
+	now := time.Now()
+	switch task {
+	case "run_plan":
+		s.touchPlanSchedule(now)
+	case "rescan_cold":
+		s.touchRescanSchedule(now)
+	}
 	return nil
 }
 

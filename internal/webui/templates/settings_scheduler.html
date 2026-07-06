@@ -1,0 +1,10 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Scheduler</h1>
+<p class="muted">Coldarr can run these two tasks on its own. Both are off until you turn them on below. Because the countdown isn't kept across a restart, a task never fires immediately just because Coldarr came back up - it waits out a full period first.</p>
+
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+{{template "schedule_form" .RunPlan}}
+{{template "schedule_form" .RescanCold}}
+{{end}}
