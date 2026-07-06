@@ -1,0 +1,32 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Notifications</h1>
+<p class="muted">Coldarr can send a webhook to a self-hosted <a href="https://github.com/caronc/apprise" target="_blank" rel="noopener">Apprise</a> endpoint whenever a scheduled or manual task finishes.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+<div class="card">
+  <form class="stacked" method="post" action="/settings/notifications">
+    <div>
+      <label for="apprise_url">Apprise URL</label>
+      <input type="password" id="apprise_url" name="apprise_url" placeholder="{{if .AppriseURLSet}}(unchanged - leave blank to keep it){{else}}https://notify.example.com/notify/apprise{{end}}">
+      <p class="hint">Stored encrypted, the same way Radarr/Sonarr/Jellyfin connections are - a webhook URL can itself act as a bearer credential.</p>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="verbose" name="verbose" {{if .Verbose}}checked{{end}}>
+      <label for="verbose" style="font-weight:400">Verbose - also send one notification per item (moved file, cold-storage path checked), not just a summary</label>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+      <button type="button" class="btn" hx-post="/settings/notifications/test" hx-include="closest form" hx-target="#notify-test-result" hx-swap="innerHTML">{{template "icon-bell"}} Send test notification</button>
+    </div>
+  </form>
+  {{if .AppriseURLSet}}
+  <form method="post" action="/settings/notifications/delete" onsubmit="return confirm('Remove the saved Apprise URL?')" style="margin-top:0.5rem">
+    <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Remove</button>
+  </form>
+  {{end}}
+  <div id="notify-test-result"></div>
+</div>
+{{end}}

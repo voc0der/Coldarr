@@ -80,6 +80,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/tiers/{name}", s.handleTierUpdate)
 	mux.HandleFunc("POST /settings/tiers/{name}/delete", s.handleTierDelete)
 
+	mux.HandleFunc("GET /settings/notifications", s.handleNotificationsPage)
+	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
+	mux.HandleFunc("POST /settings/notifications/test", s.handleNotificationsTest)
+	mux.HandleFunc("POST /settings/notifications/delete", s.handleNotificationsDelete)
+
 	// Connections and Tiers moved under /settings - redirect anyone with
 	// the old URLs bookmarked, same precedent as the /plan/apply/status
 	// redirect below.
@@ -148,6 +153,22 @@ func (s *Server) updateTiers(fn func([]model.Tier) ([]model.Tier, error)) error 
 
 	updated := *s.cfg
 	updated.Tiers = newTiers
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		return err
+	}
+	s.cfg = &updated
+	return nil
+}
+
+// updateNotifications persists the Verbose flag (the Apprise URL itself
+// lives in connStore, not coldarr.yaml) and swaps it into the live
+// config, under the same lock discipline as updateTiers.
+func (s *Server) updateNotifications(verbose bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := *s.cfg
+	updated.Notifications.Verbose = verbose
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		return err
 	}
