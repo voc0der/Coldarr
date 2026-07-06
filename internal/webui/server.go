@@ -78,8 +78,12 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /plan", s.handlePlanPage)
 	mux.HandleFunc("POST /plan/apply", s.handleApplyStart)
-	mux.HandleFunc("GET /plan/apply/status", s.handleApplyStatus)
 	mux.HandleFunc("GET /plan/apply/status/partial", s.handleApplyStatusPartial)
+	// Apply status is now folded into /plan - redirect anyone with the old
+	// URL bookmarked instead of just dropping it.
+	mux.HandleFunc("GET /plan/apply/status", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/plan", http.StatusMovedPermanently)
+	})
 
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 	mux.HandleFunc("POST /history/verify", s.handleVerifyStart)
