@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -110,7 +111,9 @@ type itemsResponse struct {
 // Radarr/Sonarr items by path. Favorite status is per-user in Jellyfin's
 // API (there's no library-wide "is this a favorite" flag), so this
 // enumerates every user and unions their favorites - if anyone in the
-// household favorited it, Coldarr treats it as protected.
+// household favorited it, Coldarr treats it as protected. Per-user lookups
+// are independent, so they run concurrently rather than adding one round
+// trip of network latency per user to every plan/dashboard page load.
 func (c *Client) FavoritePaths() (map[string]bool, error) {
 	body, err := c.get("/Users", nil)
 	if err != nil {
@@ -128,23 +131,46 @@ func (c *Client) FavoritePaths() (map[string]bool, error) {
 	q.Set("IncludeItemTypes", "Movie,Series")
 	q.Set("Fields", "Path")
 
-	paths := map[string]bool{}
-	for _, u := range users {
-		body, err := c.get("/Users/"+u.ID+"/Items", q)
-		if err != nil {
-			return nil, fmt.Errorf("listing favorites for user %s: %w", u.ID, err)
-		}
+	perUser := make([]map[string]bool, len(users))
+	errs := make([]error, len(users))
 
-		var resp itemsResponse
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("listing favorites for user %s: decoding response: %w", u.ID, err)
-		}
+	var wg sync.WaitGroup
+	wg.Add(len(users))
+	for i, u := range users {
+		go func(i int, userID string) {
+			defer wg.Done()
 
-		for _, item := range resp.Items {
-			if item.Path == "" {
-				continue
+			body, err := c.get("/Users/"+userID+"/Items", q)
+			if err != nil {
+				errs[i] = fmt.Errorf("listing favorites for user %s: %w", userID, err)
+				return
 			}
-			paths[filepath.Clean(item.Path)] = true
+
+			var resp itemsResponse
+			if err := json.Unmarshal(body, &resp); err != nil {
+				errs[i] = fmt.Errorf("listing favorites for user %s: decoding response: %w", userID, err)
+				return
+			}
+
+			userPaths := map[string]bool{}
+			for _, item := range resp.Items {
+				if item.Path == "" {
+					continue
+				}
+				userPaths[filepath.Clean(item.Path)] = true
+			}
+			perUser[i] = userPaths
+		}(i, u.ID)
+	}
+	wg.Wait()
+
+	paths := map[string]bool{}
+	for i, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+		for p := range perUser[i] {
+			paths[p] = true
 		}
 	}
 	return paths, nil

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/arrapi"
@@ -172,33 +173,62 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 		}
 	}
 
-	var items []model.MediaItem
+	// Radarr, Sonarr, and Jellyfin are independent backends, so fetch all
+	// three concurrently - sequentially they'd add up to three backends'
+	// worth of network latency on every plan/dashboard page load.
+	var (
+		movies, series       []model.MediaItem
+		moviesErr, seriesErr error
+		favorites            map[string]bool
+		favWarning           string
+	)
+
+	var wg sync.WaitGroup
 
 	if e.Radarr != nil {
-		movies, err := e.Radarr.FetchMovies()
-		if err != nil {
-			return nil, fmt.Errorf("fetching movies from radarr: %w", err)
-		}
-		items = append(items, movies...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			movies, moviesErr = e.Radarr.FetchMovies()
+		}()
 	}
 
 	if e.Sonarr != nil {
-		series, err := e.Sonarr.FetchSeries()
-		if err != nil {
-			return nil, fmt.Errorf("fetching series from sonarr: %w", err)
-		}
-		items = append(items, series...)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			series, seriesErr = e.Sonarr.FetchSeries()
+		}()
 	}
 
-	var favorites map[string]bool
 	if jf := e.JellyfinClient(); jf != nil {
-		paths, err := jf.FavoritePaths()
-		if err != nil {
-			inv.Warnings = append(inv.Warnings, fmt.Sprintf("could not fetch Jellyfin favorites, favorited items are NOT protected this run: %v", err))
-		} else {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			paths, err := jf.FavoritePaths()
+			if err != nil {
+				favWarning = fmt.Sprintf("could not fetch Jellyfin favorites, favorited items are NOT protected this run: %v", err)
+				return
+			}
 			favorites = paths
-		}
+		}()
 	}
+
+	wg.Wait()
+
+	if moviesErr != nil {
+		return nil, fmt.Errorf("fetching movies from radarr: %w", moviesErr)
+	}
+	if seriesErr != nil {
+		return nil, fmt.Errorf("fetching series from sonarr: %w", seriesErr)
+	}
+	if favWarning != "" {
+		inv.Warnings = append(inv.Warnings, favWarning)
+	}
+
+	items := make([]model.MediaItem, 0, len(movies)+len(series))
+	items = append(items, movies...)
+	items = append(items, series...)
 
 	for _, it := range items {
 		if favorites[filepath.Clean(it.Path)] {

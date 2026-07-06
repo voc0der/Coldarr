@@ -2,6 +2,7 @@ package arrapi
 
 import (
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -50,33 +51,48 @@ type sonarrQueuePage struct {
 
 // FetchSeries returns every series Sonarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
+// The four lookups it needs are independent, so they run concurrently -
+// sequentially they add up to four round trips of network latency on
+// every plan/dashboard page load.
 func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
-	var series []sonarrSeries
-	if err := s.c.get("/api/v3/series", nil, &series); err != nil {
-		return nil, err
+	var (
+		series   []sonarrSeries
+		tags     []tagResource
+		profiles []qualityProfileResource
+		busy     map[int]bool
+
+		seriesErr, tagsErr, profilesErr, busyErr error
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() { defer wg.Done(); seriesErr = s.c.get("/api/v3/series", nil, &series) }()
+	go func() { defer wg.Done(); tagsErr = s.c.get("/api/v3/tag", nil, &tags) }()
+	go func() { defer wg.Done(); profilesErr = s.c.get("/api/v3/qualityprofile", nil, &profiles) }()
+	go func() { defer wg.Done(); busy, busyErr = s.BusySeriesIDs() }()
+	wg.Wait()
+
+	if seriesErr != nil {
+		return nil, seriesErr
+	}
+	if tagsErr != nil {
+		return nil, tagsErr
+	}
+	if profilesErr != nil {
+		return nil, profilesErr
+	}
+	if busyErr != nil {
+		return nil, busyErr
 	}
 
-	var tags []tagResource
-	if err := s.c.get("/api/v3/tag", nil, &tags); err != nil {
-		return nil, err
-	}
 	tagByID := make(map[int]string, len(tags))
 	for _, t := range tags {
 		tagByID[t.ID] = t.Label
 	}
 
-	var profiles []qualityProfileResource
-	if err := s.c.get("/api/v3/qualityprofile", nil, &profiles); err != nil {
-		return nil, err
-	}
 	profileByID := make(map[int]string, len(profiles))
 	for _, p := range profiles {
 		profileByID[p.ID] = p.Name
-	}
-
-	busy, err := s.BusySeriesIDs()
-	if err != nil {
-		return nil, err
 	}
 
 	items := make([]model.MediaItem, 0, len(series))
