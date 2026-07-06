@@ -13,6 +13,11 @@
       <input type="password" id="apprise_url" name="apprise_url" placeholder="{{if .AppriseURLSet}}(unchanged - leave blank to keep it){{else}}https://notify.example.com/notify/apprise{{end}}">
       <p class="hint">Stored encrypted, the same way Radarr/Sonarr/Jellyfin connections are - a webhook URL can itself act as a bearer credential.</p>
     </div>
+    <div>
+      <label for="tag">Tag</label>
+      <input type="text" id="tag" name="tag" value="{{.Tag}}" placeholder="e.g. mobile (leave blank if you don't use Apprise tags)">
+      <p class="hint">Many Apprise API setups route entirely by tag and reject a request that doesn't include one (a 424 response usually means this). Leave blank only if your Apprise endpoint has an untagged/default target.</p>
+    </div>
     <div class="checkbox-row">
       <input type="checkbox" id="verbose" name="verbose" {{if .Verbose}}checked{{end}}>
       <label for="verbose" style="font-weight:400">Verbose - also send one notification per item (moved file, cold-storage path checked), not just a summary</label>

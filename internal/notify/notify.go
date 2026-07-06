@@ -27,6 +27,7 @@ type payload struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	Type  string `json:"type"`
+	Tag   string `json:"tag,omitempty"`
 }
 
 // Notifier sends Apprise webhook notifications for one configured URL. A
@@ -35,6 +36,13 @@ type payload struct {
 type Notifier struct {
 	URL     string
 	Verbose bool
+	// Tag restricts delivery to the Apprise notification target(s)
+	// registered under this tag on the receiving end - many Apprise API
+	// deployments route entirely by tag and return HTTP 424 ("failed
+	// dependency") if a request matches none, most often because no tag
+	// was sent at all. Left blank, no "tag" field is sent (Apprise's own
+	// default routing applies).
+	Tag string
 }
 
 // Summary always sends when a URL is configured - the low-noise default
@@ -58,20 +66,21 @@ func (n *Notifier) send(title, body string, lvl Level) {
 	if n == nil || n.URL == "" {
 		return
 	}
-	if err := post(n.URL, title, body, lvl); err != nil {
+	if err := post(n.URL, n.Tag, title, body, lvl); err != nil {
 		log.Printf("notify: sending to apprise failed: %v", err)
 	}
 }
 
-// Test sends one notification to url and returns any error directly -
-// unlike Summary/Item, which log-and-swallow, Test exists specifically to
-// show an operator whether their configured URL actually works.
-func Test(url string) error {
-	return post(url, "Coldarr test notification", "If you can see this, Coldarr can reach your Apprise endpoint.", LevelInfo)
+// Test sends one notification to url (optionally restricted to tag) and
+// returns any error directly - unlike Summary/Item, which log-and-swallow,
+// Test exists specifically to show an operator whether their configured
+// URL (and tag, if their Apprise setup routes by one) actually works.
+func Test(url, tag string) error {
+	return post(url, tag, "Coldarr test notification", "If you can see this, Coldarr can reach your Apprise endpoint.", LevelInfo)
 }
 
-func post(url, title, body string, lvl Level) error {
-	data, err := json.Marshal(payload{Title: title, Body: body, Type: string(lvl)})
+func post(url, tag, title, body string, lvl Level) error {
+	data, err := json.Marshal(payload{Title: title, Body: body, Type: string(lvl), Tag: tag})
 	if err != nil {
 		return fmt.Errorf("encoding notification: %w", err)
 	}

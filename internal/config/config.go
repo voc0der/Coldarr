@@ -54,6 +54,13 @@ type NotificationsConfig struct {
 	// file, per cold-storage path checked) alongside the summary every
 	// task always sends. Off by default to keep notifications low-noise.
 	Verbose bool `yaml:"verbose"`
+	// Tag restricts delivery to whatever Apprise notification target(s)
+	// are registered under this tag on the receiving end. Many Apprise
+	// API deployments route entirely by tag and fail a request that
+	// matches none - left blank, no tag is sent and Apprise's own
+	// default routing applies. Not sensitive (just a routing label), so
+	// unlike the Apprise URL itself, this lives in plain coldarr.yaml.
+	Tag string `yaml:"tag"`
 }
 
 // SchedulerConfig holds the recurrence for each of Coldarr's two

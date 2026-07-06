@@ -19,7 +19,7 @@ import (
 func (s *Server) notifier() *notify.Notifier {
 	conn, _ := s.connStore.Get("apprise")
 	cfg := s.currentConfig()
-	return &notify.Notifier{URL: conn.URL, Verbose: cfg.Notifications.Verbose}
+	return &notify.Notifier{URL: conn.URL, Verbose: cfg.Notifications.Verbose, Tag: cfg.Notifications.Tag}
 }
 
 type scheduleFormView struct {
