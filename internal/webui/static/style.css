@@ -124,6 +124,16 @@ h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
 .link-icon { display: inline-flex; font-size: 1.15rem; margin-right: 0.35rem; }
 .link-icon:last-child { margin-right: 0; }
 
+/* Radarr/Sonarr/Jellyfin logos are fixed-color brand marks (unlike the
+   hand-drawn currentColor icons), so light/dark comes from swapping which
+   vendored variant is shown rather than tinting one image - see
+   icon-radarr/icon-sonarr/icon-jellyfin in partials/icons.html. */
+.icon-scheme-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .icon-scheme-light { display: none; }
+  .icon-scheme-dark { display: inline; }
+}
+
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; }

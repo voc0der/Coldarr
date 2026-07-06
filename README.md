@@ -307,3 +307,6 @@ outright or silently skipping it.
   and the roadmap
 - [CONTRIBUTING.md](CONTRIBUTING.md) - branch/commit/PR conventions
 - Licensed under [MIT](LICENSE.md)
+- Radarr/Sonarr/Jellyfin logos in the web GUI's Links column are vendored
+  from [selfh.st/icons](https://github.com/selfhst/icons), licensed
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
