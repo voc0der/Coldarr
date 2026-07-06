@@ -61,6 +61,10 @@ type Server struct {
 	// unlike a scheduled Plan run, it never competes with a manual Apply
 	// click for the mover lock.
 	rescanMu sync.Mutex
+
+	authMu       sync.Mutex
+	authSessions map[string]authSession
+	oidcStates   map[string]oidcLoginState
 }
 
 type applyRun struct {
@@ -73,7 +77,14 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfgPath: cfgPath, cfg: cfg, connStore: connStore, pages: pages}, nil
+	return &Server{
+		cfgPath:      cfgPath,
+		cfg:          cfg,
+		connStore:    connStore,
+		pages:        pages,
+		authSessions: map[string]authSession{},
+		oidcStates:   map[string]oidcLoginState{},
+	}, nil
 }
 
 func (s *Server) ListenAndServe(addr string) error {
@@ -86,6 +97,10 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("GET /auth/login", s.handleOIDCLogin)
+	mux.HandleFunc("GET /auth/callback", s.handleOIDCCallback)
+	mux.HandleFunc("GET /auth/logout", s.handleLogout)
 
 	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings/connections", http.StatusFound)
@@ -110,6 +125,9 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /settings/scheduler", s.handleSchedulerPage)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
+
+	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
+	mux.HandleFunc("POST /settings/auth", s.handleAuthSave)
 
 	// Connections and Tiers moved under /settings - redirect anyone with
 	// the old URLs bookmarked, same precedent as the /plan/apply/status
@@ -141,7 +159,7 @@ func (s *Server) routes() http.Handler {
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticSub)))
 
-	return mux
+	return s.authMiddleware(mux)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +214,19 @@ func (s *Server) updateNotifications(verbose bool, tag string) error {
 	updated := *s.cfg
 	updated.Notifications.Verbose = verbose
 	updated.Notifications.Tag = tag
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		return err
+	}
+	s.cfg = &updated
+	return nil
+}
+
+func (s *Server) updateAuthOIDC(auth config.OIDCAuthConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := *s.cfg
+	updated.Auth.OIDC = auth
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		return err
 	}

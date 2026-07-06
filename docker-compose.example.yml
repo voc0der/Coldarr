@@ -8,10 +8,10 @@
 # scheduler (cron/systemd timer):
 #   0 4 * * * docker compose run --rm coldarr apply --yes
 #
-# The GUI has no built-in authentication - it can view connection status
-# and trigger real moves. Put it behind your own reverse proxy/auth
-# (Authelia, Traefik forward-auth, etc.) or keep it off any network you
-# don't trust, rather than publishing :8478 directly.
+# The GUI can view connection status and trigger real moves. Enable its
+# OIDC auth in Settings -> Auth (or with COLDARR_OIDC_* env vars), keep it
+# behind your own trusted network boundary, or avoid publishing :8478
+# directly.
 #
 # Connections (Radarr/Sonarr/Jellyfin URL + API key) can be configured
 # either through the GUI (stored encrypted in ./config) or via env vars
@@ -27,6 +27,15 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: ${TZ:-Etc/UTC}
+      # Optional - OIDC auth. These env vars override GUI-saved auth values.
+      # COLDARR_OIDC_ENABLED: "true"
+      # COLDARR_OIDC_ISSUER_URL: https://auth.example.com
+      # COLDARR_OIDC_CLIENT_ID: coldarr
+      # COLDARR_OIDC_CLIENT_SECRET: ${COLDARR_OIDC_CLIENT_SECRET}
+      # COLDARR_OIDC_REDIRECT_URL: https://coldarr.example.com/auth/callback
+      # COLDARR_OIDC_REQUIRED_GROUP: coldarr
+      # COLDARR_OIDC_GROUPS_CLAIM: groups
+      # COLDARR_OIDC_AUTO_LOGIN: "false"
       # Optional - omit these and use the GUI's Connections page instead.
       # RADARR_URL: http://radarr:7878
       # RADARR_API_KEY: ${RADARR_API_KEY}

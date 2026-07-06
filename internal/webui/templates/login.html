@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Sign in</h1>
+
+{{if .Error}}
+<div class="alert alert-error">{{.Error}}</div>
+{{else}}
+<div class="card">
+  <p class="muted">Coldarr is protected by OIDC.</p>
+  <a class="btn btn-primary" href="{{.LoginURL}}">{{template "icon-shield-check"}} Continue</a>
+</div>
+{{end}}
+{{end}}

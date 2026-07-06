@@ -33,6 +33,9 @@ Implemented:
 - A web GUI (`coldarr serve`) for connections, tiers, dashboard, plan
   preview, apply, and move history - and an equivalent CLI (`report` /
   `plan` / `apply` / `connections`)
+- Optional OIDC authentication for the web GUI, with PKCE, group
+  authorization, encrypted client-secret storage, and environment-variable
+  overrides
 - Moves executed through Radarr's/Sonarr's own bulk "move" API, so their
   databases stay correct
 - Optional Jellyfin library refresh trigger after a successful apply
@@ -40,7 +43,7 @@ Implemented:
 Deliberately out of scope for this pass (see the bottom of this file):
 Plex, Seerr/Overseerr request history, Jellyfin play-history/watch-count
 scoring (Favorites are in, play counts aren't - yet), a fully-automatic
-scheduled mode, torrent client awareness, and GUI authentication.
+scheduled mode, and torrent client awareness.
 
 ## How a run works
 
@@ -156,14 +159,15 @@ Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
   check to catch a transfer a crash left half-done.
 - **Settings** - Connections (configure/test Radarr/Sonarr/Jellyfin),
   Tiers (add/edit/delete hot and cold tiers, live per-path disk usage),
-  Notifications (an Apprise webhook for run summaries), and Scheduler
-  (optionally run the plan or a cold-storage health check on a schedule -
-  see [FEATURES.md](FEATURES.md) for details).
+  Auth (optional OIDC login and group access), Notifications (an Apprise
+  webhook for run summaries), and Scheduler (optionally run the plan or a
+  cold-storage health check on a schedule - see [FEATURES.md](FEATURES.md)
+  for details).
 
-**The GUI has no built-in authentication.** It can view connection status
-and trigger real moves, so put it behind your own reverse proxy/auth
-(Authelia, Traefik forward-auth, etc.) or keep it off any network you
-don't trust - don't publish its port directly to the internet.
+OIDC auth is disabled by default. The GUI can view connection status and
+trigger real moves, so enable Settings -> Auth, keep it behind your own
+trusted network boundary, or avoid publishing its port directly to the
+internet.
 
 ## Docker
 
@@ -203,6 +207,9 @@ docker compose run --rm coldarr apply --yes
 | `TZ`                   | container timezone, mostly cosmetic for log timestamps.           |
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
+| `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. |
+| `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM` / `COLDARR_OIDC_AUTO_LOGIN` | Optional OIDC details. Required group defaults to `coldarr`; groups claim defaults to `groups`. |
+| `COLDARR_OIDC_DISABLE_AUTO_LOGIN` | set to `true` to force the login button page even when saved auth settings have auto-login on. Set `COLDARR_OIDC_ENABLED=false` to disable OIDC entirely for troubleshooting. |
 | `RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`) | connection overrides - see [Connections](#connections). |
 | `COLDARR_SETTLE_CHECK_INTERVAL` / `COLDARR_SETTLE_STABLE_CHECKS` / `COLDARR_SETTLE_MAX_WAIT` | tune how long `apply` waits for a move to actually land on disk before starting the next one queued for the same volume (Go duration strings, e.g. `5s`/`6h`). Defaults suit typical local disks; raise `MAX_WAIT` for very large files on slow/network storage. |
 

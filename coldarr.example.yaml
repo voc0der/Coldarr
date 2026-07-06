@@ -91,3 +91,16 @@ policy:
 
 history:
   path: ./coldarr-history.json
+
+# Optional web GUI authentication. Client secret is stored encrypted
+# alongside connection credentials, not in this YAML. Environment variables
+# named COLDARR_OIDC_* always override these saved values when set.
+auth:
+  oidc:
+    enabled: false
+    issuer_url: https://auth.example.com
+    client_id: coldarr
+    redirect_url: https://coldarr.example.com/auth/callback
+    required_group: coldarr
+    groups_claim: groups
+    auto_login: false

@@ -73,4 +73,3 @@ Settings > Scheduler adds two jobs, both off until you turn them on:
 - No Plex - Jellyfin only, for now
 - No watch-history/play-count scoring - Favorites are in, that's it
 - No torrent-client awareness
-- No login on the GUI - put it behind your own reverse proxy

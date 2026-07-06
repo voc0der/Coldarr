@@ -23,11 +23,13 @@ var pageNames = []string{
 	"connections",
 	"tiers",
 	"tier_form",
+	"settings_auth",
 	"settings_notifications",
 	"settings_scheduler",
 	"plan",
 	"history",
 	"verify_status",
+	"login",
 }
 
 func parseTemplates() (map[string]*template.Template, error) {

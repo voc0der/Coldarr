@@ -71,12 +71,27 @@ type SchedulerConfig struct {
 	RescanCold scheduler.Schedule `yaml:"rescan_cold"`
 }
 
+type AuthConfig struct {
+	OIDC OIDCAuthConfig `yaml:"oidc"`
+}
+
+type OIDCAuthConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	IssuerURL     string `yaml:"issuer_url"`
+	ClientID      string `yaml:"client_id"`
+	RedirectURL   string `yaml:"redirect_url"`
+	RequiredGroup string `yaml:"required_group"`
+	GroupsClaim   string `yaml:"groups_claim"`
+	AutoLogin     bool   `yaml:"auto_login"`
+}
+
 type Config struct {
 	Tiers         []model.Tier        `yaml:"tiers"`
 	Policy        PolicyConfig        `yaml:"policy"`
 	History       HistoryConfig       `yaml:"history"`
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Scheduler     SchedulerConfig     `yaml:"scheduler"`
+	Auth          AuthConfig          `yaml:"auth"`
 }
 
 // Load reads, parses, and strictly validates the config file at path -
@@ -236,6 +251,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.History.Path == "" {
 		cfg.History.Path = "./coldarr-history.json"
+	}
+	if cfg.Auth.OIDC.RequiredGroup == "" {
+		cfg.Auth.OIDC.RequiredGroup = "coldarr"
+	}
+	if cfg.Auth.OIDC.GroupsClaim == "" {
+		cfg.Auth.OIDC.GroupsClaim = "groups"
 	}
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
