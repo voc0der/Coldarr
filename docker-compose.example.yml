@@ -27,6 +27,11 @@ services:
       PUID: "1000"
       PGID: "1000"
       TZ: ${TZ:-Etc/UTC}
+      # Optional - serve HTTPS directly from Coldarr instead of plain HTTP.
+      # COLDARR_TLS_CERT_FILE: /certs/fullchain.pem
+      # COLDARR_TLS_KEY_FILE: /certs/privkey.pem
+      # Optional - trust X-Forwarded-Proto/Host only from these proxy CIDRs.
+      # COLDARR_TRUSTED_REVERSE_PROXIES_CIDR: 172.18.0.0/16,10.0.0.0/8
       # Optional - omit these and use the GUI's Connections page instead.
       # RADARR_URL: http://radarr:7878
       # RADARR_API_KEY: ${RADARR_API_KEY}
@@ -38,6 +43,8 @@ services:
       # Everything Coldarr persists lives here: coldarr.yaml, the
       # encrypted connection store + its key, and the move-history log.
       - ./config:/config
+      # Optional - if COLDARR_TLS_CERT_FILE / COLDARR_TLS_KEY_FILE point here.
+      # - ./certs:/certs:ro
       # Tier paths: mount at the SAME path Radarr/Sonarr use internally,
       # not just the same host path - Coldarr matches Arr API root folder
       # paths against these mounts literally.
