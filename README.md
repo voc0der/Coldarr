@@ -207,6 +207,8 @@ docker compose run --rm coldarr apply --yes
 | `TZ`                   | container timezone, mostly cosmetic for log timestamps.           |
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
+| `COLDARR_TLS_CERT_FILE` / `COLDARR_TLS_KEY_FILE` | certificate and private-key paths. Set both to make `coldarr serve` listen with HTTPS directly. |
+| `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`) | comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` headers should be trusted. Headers from other remote IPs are ignored. |
 | `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. |
 | `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM` / `COLDARR_OIDC_AUTO_LOGIN` | Optional OIDC details. Required group defaults to `coldarr`; groups claim defaults to `groups`. |
 | `COLDARR_OIDC_DISABLE_AUTO_LOGIN` | set to `true` to force the login button page even when saved auth settings have auto-login on. Set `COLDARR_OIDC_ENABLED=false` to disable OIDC entirely for troubleshooting. |

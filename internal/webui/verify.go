@@ -218,6 +218,10 @@ func verifyOne(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient, rec his
 }
 
 func compareSizes(current, recorded int64) string {
+	delta := current - recorded
+	if absInt64(delta) <= sizeCompareToleranceBytes {
+		return "match"
+	}
 	switch {
 	case current > recorded:
 		return "grew"
@@ -226,6 +230,19 @@ func compareSizes(current, recorded int64) string {
 	default:
 		return "match"
 	}
+}
+
+// sizeCompareToleranceBytes matches the history page's one-decimal GB
+// display closely enough that tiny byte-level differences do not show as
+// alarming "grew"/"shrank" results while still catching real transfer
+// mismatches.
+const sizeCompareToleranceBytes int64 = 64 * 1024 * 1024
+
+func absInt64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // mediaExtensions is the same set of file extensions Radarr/Sonarr

@@ -40,7 +40,7 @@ EXPOSE 8478
 # `report`/`plan`/`apply` invocation just exits before this has a chance
 # to matter.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O- "http://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8478}" | sed 's/.*://')/healthz" >/dev/null || exit 1
+  CMD proto=http; if [ -n "${COLDARR_TLS_CERT_FILE:-}" ] && [ -n "${COLDARR_TLS_KEY_FILE:-}" ]; then proto=https; fi; wget -q --no-check-certificate -O- "${proto}://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8478}" | sed 's/.*://')/healthz" >/dev/null || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["serve"]
