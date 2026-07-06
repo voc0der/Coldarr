@@ -2,6 +2,7 @@ package arrapi
 
 import (
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -43,33 +44,48 @@ type radarrQueuePage struct {
 
 // FetchMovies returns every movie Radarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
+// The four lookups it needs are independent, so they run concurrently -
+// sequentially they add up to four round trips of network latency on
+// every plan/dashboard page load.
 func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
-	var movies []radarrMovie
-	if err := r.c.get("/api/v3/movie", nil, &movies); err != nil {
-		return nil, err
+	var (
+		movies   []radarrMovie
+		tags     []tagResource
+		profiles []qualityProfileResource
+		busy     map[int]bool
+
+		moviesErr, tagsErr, profilesErr, busyErr error
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+	go func() { defer wg.Done(); moviesErr = r.c.get("/api/v3/movie", nil, &movies) }()
+	go func() { defer wg.Done(); tagsErr = r.c.get("/api/v3/tag", nil, &tags) }()
+	go func() { defer wg.Done(); profilesErr = r.c.get("/api/v3/qualityprofile", nil, &profiles) }()
+	go func() { defer wg.Done(); busy, busyErr = r.BusyMovieIDs() }()
+	wg.Wait()
+
+	if moviesErr != nil {
+		return nil, moviesErr
+	}
+	if tagsErr != nil {
+		return nil, tagsErr
+	}
+	if profilesErr != nil {
+		return nil, profilesErr
+	}
+	if busyErr != nil {
+		return nil, busyErr
 	}
 
-	var tags []tagResource
-	if err := r.c.get("/api/v3/tag", nil, &tags); err != nil {
-		return nil, err
-	}
 	tagByID := make(map[int]string, len(tags))
 	for _, t := range tags {
 		tagByID[t.ID] = t.Label
 	}
 
-	var profiles []qualityProfileResource
-	if err := r.c.get("/api/v3/qualityprofile", nil, &profiles); err != nil {
-		return nil, err
-	}
 	profileByID := make(map[int]string, len(profiles))
 	for _, p := range profiles {
 		profileByID[p.ID] = p.Name
-	}
-
-	busy, err := r.BusyMovieIDs()
-	if err != nil {
-		return nil, err
 	}
 
 	items := make([]model.MediaItem, 0, len(movies))
