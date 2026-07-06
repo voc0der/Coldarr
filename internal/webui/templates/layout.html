@@ -30,10 +30,12 @@
   // Mark only the single best-matching nav link "current" - e.g. on
   // /history/verify/status, both /history and a plain prefix test would
   // match, so pick the longest (most specific) match instead of marking
-  // multiple links at once.
+  // multiple links at once. The brand link also points at "/" (same as
+  // Dashboard) but isn't a page nav link, so it's excluded - otherwise it
+  // ties with Dashboard and wins for being first in the DOM.
   var path = location.pathname;
   var best = null;
-  document.querySelectorAll("nav a[href]").forEach(function (a) {
+  document.querySelectorAll("nav a[href]:not(.brand)").forEach(function (a) {
     var href = a.getAttribute("href");
     var matches = href === "/" ? path === "/" : (path === href || path.startsWith(href + "/"));
     if (matches && (!best || href.length > best.getAttribute("href").length)) {
