@@ -20,6 +20,7 @@ type notificationsData struct {
 	Saved         string
 	AppriseURLSet bool
 	Verbose       bool
+	Tag           string
 }
 
 func (s *Server) notificationsData() notificationsData {
@@ -29,6 +30,7 @@ func (s *Server) notificationsData() notificationsData {
 		Title:         "Notifications",
 		AppriseURLSet: conn.URL != "",
 		Verbose:       cfg.Notifications.Verbose,
+		Tag:           cfg.Notifications.Tag,
 	}
 }
 
@@ -40,6 +42,7 @@ func (s *Server) handleNotificationsSave(w http.ResponseWriter, r *http.Request)
 	_ = r.ParseForm()
 	rawURL := strings.TrimSpace(r.FormValue("apprise_url"))
 	verbose := r.FormValue("verbose") == "on"
+	tag := strings.TrimSpace(r.FormValue("tag"))
 
 	// A blank URL means "keep whatever's already saved" (the field is
 	// deliberately left blank in the form, same as Connections' API key)
@@ -59,7 +62,7 @@ func (s *Server) handleNotificationsSave(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	if err := s.updateNotifications(verbose); err != nil {
+	if err := s.updateNotifications(verbose, tag); err != nil {
 		data := s.notificationsData()
 		data.Error = err.Error()
 		s.render(w, "settings_notifications", data)
@@ -97,6 +100,10 @@ func (s *Server) handleNotificationsTest(w http.ResponseWriter, r *http.Request)
 		conn, _ := s.connStore.Get("apprise")
 		rawURL = conn.URL
 	}
+	tag := strings.TrimSpace(r.FormValue("tag"))
+	if tag == "" {
+		tag = s.currentConfig().Notifications.Tag
+	}
 
 	result := notifyTestResult{}
 	switch {
@@ -105,7 +112,7 @@ func (s *Server) handleNotificationsTest(w http.ResponseWriter, r *http.Request)
 	case !validHTTPURL(rawURL):
 		result.Error = "Apprise URL must be a valid http:// or https:// URL"
 	default:
-		if err := notify.Test(rawURL); err != nil {
+		if err := notify.Test(rawURL, tag); err != nil {
 			result.Error = err.Error()
 		}
 	}

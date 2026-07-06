@@ -90,7 +90,7 @@ func TestTest_ReturnsErrorOnFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := Test(srv.URL); err == nil {
+	if err := Test(srv.URL, ""); err == nil {
 		t.Fatal("Test() returned nil error for a 500 response, want an error")
 	}
 }
@@ -98,13 +98,48 @@ func TestTest_ReturnsErrorOnFailure(t *testing.T) {
 func TestTest_Success(t *testing.T) {
 	srv, received := captureServer(t)
 
-	if err := Test(srv.URL); err != nil {
+	if err := Test(srv.URL, ""); err != nil {
 		t.Fatalf("Test() = %v, want nil", err)
 	}
 	select {
 	case p := <-received:
 		if p.Type != "info" {
 			t.Fatalf("unexpected payload: %+v", p)
+		}
+		if p.Tag != "" {
+			t.Fatalf("payload.Tag = %q, want empty when no tag configured", p.Tag)
+		}
+	default:
+		t.Fatal("Test() did not send a notification")
+	}
+}
+
+func TestNotifier_Summary_IncludesTagWhenSet(t *testing.T) {
+	srv, received := captureServer(t)
+
+	n := &Notifier{URL: srv.URL, Tag: "mobile"}
+	n.Summary("title", "body", LevelInfo)
+
+	select {
+	case p := <-received:
+		if p.Tag != "mobile" {
+			t.Fatalf("payload.Tag = %q, want %q", p.Tag, "mobile")
+		}
+	default:
+		t.Fatal("Summary() did not send a notification")
+	}
+}
+
+func TestTest_IncludesTagWhenSet(t *testing.T) {
+	srv, received := captureServer(t)
+
+	if err := Test(srv.URL, "mobile"); err != nil {
+		t.Fatalf("Test() = %v, want nil", err)
+	}
+	select {
+	case p := <-received:
+		if p.Tag != "mobile" {
+			t.Fatalf("payload.Tag = %q, want %q", p.Tag, "mobile")
 		}
 	default:
 		t.Fatal("Test() did not send a notification")
