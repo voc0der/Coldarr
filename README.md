@@ -287,30 +287,10 @@ any reason, Coldarr proceeds without that protection for the run and
 surfaces a warning in `report`/`plan`/the dashboard rather than failing
 outright or silently skipping it.
 
-## CI/CD
+## More
 
-- `.github/workflows/ci.yml` - on every PR and push to `main`: `go build`,
-  `go vet`, a `gofmt -l` check, `go test -race`, and a docker build (not
-  pushed) to catch Dockerfile breakage early.
-- `.github/workflows/release.yml` - on publishing a GitHub Release: builds
-  a multi-arch (amd64/arm64) image and pushes it to
-  `ghcr.io/voc0der/coldarr`, tagged with the release version, its
-  `major.minor`, and `latest` (skipped for prereleases). Also runnable
-  manually via `workflow_dispatch`. No extra secrets needed - it
-  authenticates to GHCR with the repo's built-in `GITHUB_TOKEN`.
-
-To ship a new version: bump behavior as needed, then cut a GitHub Release
-with a semver tag (e.g. `v0.2.0`) - the image build/push happens
-automatically from there.
-
-## Roadmap (not in this pass)
-
-- Plex support alongside Jellyfin
-- Jellyfin play-history/play-count and request-history (Jellyseerr/
-  Overseerr) as scoring inputs (Favorites are already in)
-- An automatic scheduled mode (report/plan/apply are all you get for now
-  - on purpose, until the policy engine has proven itself)
-- Torrent client / seeding-state awareness
-- GUI authentication
-- Editing policy thresholds (tags, cooldown, score threshold) through the
-  GUI, not just tiers/connections
+- [FEATURES.md](FEATURES.md) - the plain-English version of what this does
+- [DEVELOPMENT.md](DEVELOPMENT.md) - building, testing, CI/CD, releasing,
+  and the roadmap
+- [CONTRIBUTING.md](CONTRIBUTING.md) - branch/commit/PR conventions
+- Licensed under [MIT](LICENSE.md)
