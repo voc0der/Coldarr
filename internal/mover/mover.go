@@ -70,9 +70,10 @@ type EntryProgress struct {
 // state, safe to read from any goroutine (e.g. a web handler polling for
 // status while the run continues in the background).
 type ProgressSnapshot struct {
-	Started time.Time
-	Done    bool
-	Entries []EntryProgress
+	Started  time.Time
+	Finished time.Time
+	Done     bool
+	Entries  []EntryProgress
 }
 
 func (s ProgressSnapshot) Moved() []EntryProgress {
@@ -95,11 +96,12 @@ func (s ProgressSnapshot) byStatus(status MoveStatus) []EntryProgress {
 
 // Progress is a live view of an in-progress (or completed) apply run.
 type Progress struct {
-	mu      sync.Mutex
-	started time.Time
-	done    bool
-	entries []EntryProgress
-	doneCh  chan struct{}
+	mu       sync.Mutex
+	started  time.Time
+	finished time.Time
+	done     bool
+	entries  []EntryProgress
+	doneCh   chan struct{}
 }
 
 func newProgress(plan *planner.Plan) *Progress {
@@ -122,6 +124,7 @@ func (p *Progress) setStatus(i int, status MoveStatus, err error) {
 func (p *Progress) markDone() {
 	p.mu.Lock()
 	p.done = true
+	p.finished = time.Now()
 	p.mu.Unlock()
 	close(p.doneCh)
 }
@@ -138,7 +141,7 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 	defer p.mu.Unlock()
 	entries := make([]EntryProgress, len(p.entries))
 	copy(entries, p.entries)
-	return ProgressSnapshot{Started: p.started, Done: p.done, Entries: entries}
+	return ProgressSnapshot{Started: p.started, Finished: p.finished, Done: p.done, Entries: entries}
 }
 
 // Apply starts executing plan and returns immediately with a *Progress the

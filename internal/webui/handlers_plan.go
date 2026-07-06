@@ -228,10 +228,18 @@ type applyStatusEntryView struct {
 type applyStatusData struct {
 	NoRun       bool
 	Running     bool
+	Finished    string
 	MovedCount  int
 	FailedCount int
 	Entries     []applyStatusEntryView
 }
+
+// finishedResultTTL bounds how long a completed apply's result stays
+// pinned to the top of the Plan page. Past that, it's stale news rather
+// than something worth pushing the fresh dry-run preview down for - the
+// page reverts to looking exactly like one that's never had an apply run.
+// A var, not a const, so tests can shrink it instead of sleeping an hour.
+var finishedResultTTL = time.Hour
 
 func (s *Server) currentApplyStatus() applyStatusData {
 	s.applyMu.Lock()
@@ -243,7 +251,14 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	}
 
 	snap := run.progress.Snapshot()
+	if snap.Done && time.Since(snap.Finished) > finishedResultTTL {
+		return applyStatusData{NoRun: true}
+	}
+
 	data := applyStatusData{Running: !snap.Done}
+	if snap.Done {
+		data.Finished = snap.Finished.Format("2006-01-02 15:04")
+	}
 
 	for _, e := range snap.Entries {
 		data.Entries = append(data.Entries, applyStatusEntryView{
