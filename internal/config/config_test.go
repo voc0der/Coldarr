@@ -11,8 +11,9 @@ func TestApplyDefaults_SchedulerStaysDisabled(t *testing.T) {
 	applyDefaults(cfg)
 
 	for name, s := range map[string]scheduler.Schedule{
-		"run_plan":    cfg.Scheduler.RunPlan,
-		"rescan_cold": cfg.Scheduler.RescanCold,
+		"run_plan":      cfg.Scheduler.RunPlan,
+		"rescan_cold":   cfg.Scheduler.RescanCold,
+		"refresh_links": cfg.Scheduler.RefreshLinks,
 	} {
 		if s.Enabled {
 			t.Errorf("%s: Enabled = true after applyDefaults, want false", name)
@@ -30,6 +31,9 @@ func TestApplyDefaults_SchedulerStaysDisabled(t *testing.T) {
 
 	if cfg.Scheduler.RunPlan.At == cfg.Scheduler.RescanCold.At {
 		t.Errorf("run_plan and rescan_cold defaulted to the same time %q - they should be staggered", cfg.Scheduler.RunPlan.At)
+	}
+	if cfg.Scheduler.RefreshLinks.At == cfg.Scheduler.RunPlan.At || cfg.Scheduler.RefreshLinks.At == cfg.Scheduler.RescanCold.At {
+		t.Errorf("refresh_links defaulted to the same time as another task (%q) - they should be staggered", cfg.Scheduler.RefreshLinks.At)
 	}
 }
 

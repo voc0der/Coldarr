@@ -63,12 +63,14 @@ type NotificationsConfig struct {
 	Tag string `yaml:"tag"`
 }
 
-// SchedulerConfig holds the recurrence for each of Coldarr's two
-// schedulable tasks. Both default to disabled - an unattended apply or
-// cold-storage rescan only ever runs if explicitly turned on.
+// SchedulerConfig holds the recurrence for each of Coldarr's three
+// schedulable tasks. All default to disabled - an unattended apply,
+// cold-storage rescan, or Links-cache refresh only ever runs if
+// explicitly turned on.
 type SchedulerConfig struct {
-	RunPlan    scheduler.Schedule `yaml:"run_plan"`
-	RescanCold scheduler.Schedule `yaml:"rescan_cold"`
+	RunPlan      scheduler.Schedule `yaml:"run_plan"`
+	RescanCold   scheduler.Schedule `yaml:"rescan_cold"`
+	RefreshLinks scheduler.Schedule `yaml:"refresh_links"`
 }
 
 type AuthConfig struct {
@@ -154,6 +156,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	}
 	if err := scheduler.Validate(cfg.RescanCold); err != nil {
 		return fmt.Errorf("scheduler.rescan_cold: %w", err)
+	}
+	if err := scheduler.Validate(cfg.RefreshLinks); err != nil {
+		return fmt.Errorf("scheduler.refresh_links: %w", err)
 	}
 	return nil
 }
@@ -264,6 +269,7 @@ func applyDefaults(cfg *Config) {
 	}
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
+	applyScheduleDefaults(&cfg.Scheduler.RefreshLinks, "01:00")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

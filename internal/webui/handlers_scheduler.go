@@ -35,10 +35,11 @@ type scheduleFormView struct {
 }
 
 type schedulerData struct {
-	Title      string
-	Saved      string
-	RunPlan    scheduleFormView
-	RescanCold scheduleFormView
+	Title        string
+	Saved        string
+	RunPlan      scheduleFormView
+	RescanCold   scheduleFormView
+	RefreshLinks scheduleFormView
 }
 
 func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule, lastRun time.Time) scheduleFormView {
@@ -67,6 +68,9 @@ func (s *Server) schedulerData() schedulerData {
 		RescanCold: s.scheduleView("rescan_cold", "Rescan Cold Storage",
 			"Refreshes disk usage and Radarr/Sonarr's library for your cold tiers only, and reports what it finds - a health check, not a move.",
 			cfg.Scheduler.RescanCold, s.getLastRanRescan()),
+		RefreshLinks: s.scheduleView("refresh_links", "Refresh Links Cache",
+			`Refreshes the Radarr/Sonarr/Jellyfin lookups behind the Plan/History pages' Links column, so opening those pages never waits on a live Jellyfin (and, for History, Radarr/Sonarr) call. This is reference data that almost never changes - until this has run at least once, the Links column just won't show anything yet.`,
+			cfg.Scheduler.RefreshLinks, s.getLastRanRefreshLinks()),
 	}
 }
 
@@ -76,7 +80,7 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "run_plan" && task != "rescan_cold" {
+	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" {
 		http.NotFound(w, r)
 		return
 	}
@@ -102,6 +106,9 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 		case "rescan_cold":
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RescanCold.Label, data.RescanCold.Hint, data.RescanCold.LastRan
 			data.RescanCold = submitted
+		case "refresh_links":
+			submitted.Label, submitted.Hint, submitted.LastRan = data.RefreshLinks.Label, data.RefreshLinks.Hint, data.RefreshLinks.LastRan
+			data.RefreshLinks = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return
@@ -250,4 +257,37 @@ func (s *Server) runScheduledRescan(now time.Time) {
 		title, level = fmt.Sprintf("Cold storage check: %d issue(s)", failures), notify.LevelWarning
 	}
 	n.Summary(title, strings.Join(lines, "; "), level)
+}
+
+// runScheduledRefreshLinks re-fetches the Radarr/Sonarr titleSlug and
+// Jellyfin item-ID/server-ID lookups the Links column needs and persists
+// them to the link cache (see internal/linkcache), so Plan/History page
+// views can read them instead of hitting Radarr/Sonarr/Jellyfin live.
+// Read-only from Radarr/Sonarr/Jellyfin's point of view and never touches
+// the mover lock. Only called from tick() when scheduler.Due says it's
+// time.
+func (s *Server) runScheduledRefreshLinks(now time.Time) {
+	if !s.refreshLinksMu.TryLock() {
+		log.Printf("scheduler: refresh-links-cache is due, but a previous refresh is still running - skipping this tick")
+		return
+	}
+	defer s.refreshLinksMu.Unlock()
+
+	s.recordRefreshLinksRan(now)
+	n := s.notifier()
+
+	eng, err := s.newEngine()
+	if err != nil {
+		log.Printf("scheduler: refresh-links-cache: %v", err)
+		n.Summary("Links cache refresh failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	if err := s.linkCache.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient()); err != nil {
+		log.Printf("scheduler: refresh-links-cache: %v", err)
+		n.Summary("Links cache refresh failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	n.Summary("Links cache refreshed", "Plan/History Links column lookups are up to date.", notify.LevelSuccess)
 }
