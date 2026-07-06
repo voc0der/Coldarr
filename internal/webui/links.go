@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vocoder/coldarr/internal/engine"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
@@ -19,7 +18,9 @@ type linkView struct {
 
 // linkSources holds the page-render-scoped, row-independent pieces needed
 // to build a Links column for any number of rows - resolved once per page
-// load rather than once per row.
+// load rather than once per row. Everything here comes from connStore and
+// the linkCache (see internal/linkcache) - never a live Radarr/Sonarr/
+// Jellyfin call, so building this costs nothing per page view.
 type linkSources struct {
 	// radarrExternal/sonarrExternal/jellyfinExternal are each app's link
 	// base (External URL if set, else its regular URL), or "" if that app
@@ -30,8 +31,8 @@ type linkSources struct {
 
 	jellyfinServerID string
 	// jellyfinPathToID is nil if Jellyfin isn't configured/enabled, or if
-	// its library couldn't be fetched - either way, degrades to "no
-	// Jellyfin icon" rather than an error, since this is a cosmetic
+	// the link cache hasn't been refreshed yet - either way, degrades to
+	// "no Jellyfin icon" rather than an error, since this is a cosmetic
 	// convenience, not a safety-relevant check like Favorites protection.
 	jellyfinPathToID map[string]string
 }
@@ -46,9 +47,11 @@ func linkBase(base, external string) string {
 	return strings.TrimRight(base, "/")
 }
 
-// buildLinkSources resolves each configured app's link base and, if
-// Jellyfin is enabled, its path->itemID catalog and server ID.
-func (s *Server) buildLinkSources(eng *engine.Engine) linkSources {
+// buildLinkSources resolves each configured app's link base from
+// connStore and, if Jellyfin is enabled, its path->itemID catalog and
+// server ID from the link cache's last refresh (see internal/linkcache) -
+// never live, so this is free to call on every Plan/History page view.
+func (s *Server) buildLinkSources() linkSources {
 	var src linkSources
 
 	if conn, source := s.connStore.Effective("radarr"); source != secrets.SourceNone {
@@ -58,15 +61,11 @@ func (s *Server) buildLinkSources(eng *engine.Engine) linkSources {
 		src.sonarrExternal = linkBase(conn.URL, conn.ExternalURL)
 	}
 
-	if jf := eng.JellyfinClient(); jf != nil {
-		conn, _ := s.connStore.Effective("jellyfin")
+	if conn, source := s.connStore.Effective("jellyfin"); source != secrets.SourceNone && conn.Enabled {
 		src.jellyfinExternal = linkBase(conn.URL, conn.ExternalURL)
-		if ids, err := jf.LibraryItemIDs(); err == nil {
-			src.jellyfinPathToID = ids
-		}
-		if id, err := jf.ServerID(); err == nil {
-			src.jellyfinServerID = id
-		}
+		snap := s.linkCache.Get()
+		src.jellyfinPathToID = snap.JellyfinPathToID
+		src.jellyfinServerID = snap.JellyfinServerID
 	}
 
 	return src

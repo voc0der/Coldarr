@@ -84,19 +84,10 @@ func (s *Server) buildHistoryData(page int) historyData {
 	data.HasNext = resolvedPage < totalPages
 	data.NextPage = resolvedPage + 1
 
-	linkSrc := s.buildLinkSources(eng)
-	radarrSlugByID := map[int]string{}
-	if eng.Radarr != nil {
-		if slugs, err := eng.Radarr.TitleSlugs(); err == nil {
-			radarrSlugByID = slugs
-		}
-	}
-	sonarrSlugByID := map[int]string{}
-	if eng.Sonarr != nil {
-		if slugs, err := eng.Sonarr.TitleSlugs(); err == nil {
-			sonarrSlugByID = slugs
-		}
-	}
+	linkSrc := s.buildLinkSources()
+	linkSnap := s.linkCache.Get()
+	radarrSlugByID := linkSnap.RadarrTitleSlugByID
+	sonarrSlugByID := linkSnap.SonarrTitleSlugByID
 
 	for _, rec := range pageRecords {
 		var slug string

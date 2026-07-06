@@ -12,11 +12,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/engine"
+	"github.com/vocoder/coldarr/internal/linkcache"
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/scheduler"
@@ -26,6 +28,7 @@ import (
 type Server struct {
 	cfgPath   string
 	connStore *secrets.Store
+	linkCache *linkcache.Store
 	pages     map[string]*template.Template
 
 	mu  sync.RWMutex
@@ -52,16 +55,21 @@ type Server struct {
 	// fact shown on the Scheduler settings page - unlike the anchor,
 	// these are only ever updated by a genuine run, never by a save, so
 	// the page never claims a task ran when it was really just edited.
-	schedMu       sync.Mutex
-	lastRunPlan   time.Time
-	lastRunRescan time.Time
-	lastRanPlan   time.Time
-	lastRanRescan time.Time
+	schedMu             sync.Mutex
+	lastRunPlan         time.Time
+	lastRunRescan       time.Time
+	lastRunRefreshLinks time.Time
+	lastRanPlan         time.Time
+	lastRanRescan       time.Time
+	lastRanRefreshLinks time.Time
 	// rescanMu keeps a scheduled "Rescan Cold Storage" tick from
 	// overlapping itself. It's read-only and independent of applyMu -
 	// unlike a scheduled Plan run, it never competes with a manual Apply
 	// click for the mover lock.
 	rescanMu sync.Mutex
+	// refreshLinksMu is rescanMu's counterpart for the "Refresh Links
+	// cache" task - keeps a scheduled refresh from overlapping itself.
+	refreshLinksMu sync.Mutex
 
 	authMu       sync.Mutex
 	authSessions map[string]authSession
@@ -78,14 +86,28 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	if err != nil {
 		return nil, err
 	}
+	linkCache, err := linkcache.Load(linkCachePath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		cfgPath:      cfgPath,
 		cfg:          cfg,
 		connStore:    connStore,
+		linkCache:    linkCache,
 		pages:        pages,
 		authSessions: map[string]authSession{},
 		oidcStates:   map[string]oidcLoginState{},
 	}, nil
+}
+
+// linkCachePath derives the Links-column reference-data cache file's
+// location the same way connections.enc.json/.coldarr.key already are -
+// alongside the config file, not a separately configurable path, since
+// it's purely an internal cache rather than something an operator needs
+// to point elsewhere.
+func linkCachePath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "coldarr-linkcache.json")
 }
 
 type ListenOptions struct {
@@ -291,6 +313,9 @@ func (s *Server) StartScheduler() {
 	if cfg.Scheduler.RescanCold.Enabled {
 		s.touchRescanSchedule(now)
 	}
+	if cfg.Scheduler.RefreshLinks.Enabled {
+		s.touchRefreshLinksSchedule(now)
+	}
 
 	go func() {
 		ticker := time.NewTicker(tickInterval())
@@ -323,6 +348,9 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.RescanCold, s.getLastRunRescan(), now) {
 		s.runScheduledRescan(now)
 	}
+	if scheduler.Due(cfg.Scheduler.RefreshLinks, s.getLastRunRefreshLinks(), now) {
+		s.runScheduledRefreshLinks(now)
+	}
 }
 
 func (s *Server) getLastRunPlan() time.Time {
@@ -337,6 +365,12 @@ func (s *Server) getLastRunRescan() time.Time {
 	return s.lastRunRescan
 }
 
+func (s *Server) getLastRunRefreshLinks() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRunRefreshLinks
+}
+
 func (s *Server) getLastRanPlan() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
@@ -347,6 +381,12 @@ func (s *Server) getLastRanRescan() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
 	return s.lastRanRescan
+}
+
+func (s *Server) getLastRanRefreshLinks() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRanRefreshLinks
 }
 
 // touchPlanSchedule resets run_plan's due-check anchor without recording
@@ -362,6 +402,12 @@ func (s *Server) touchPlanSchedule(t time.Time) {
 func (s *Server) touchRescanSchedule(t time.Time) {
 	s.schedMu.Lock()
 	s.lastRunRescan = t
+	s.schedMu.Unlock()
+}
+
+func (s *Server) touchRefreshLinksSchedule(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunRefreshLinks = t
 	s.schedMu.Unlock()
 }
 
@@ -383,12 +429,20 @@ func (s *Server) recordRescanRan(t time.Time) {
 	s.schedMu.Unlock()
 }
 
+func (s *Server) recordRefreshLinksRan(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunRefreshLinks = t
+	s.lastRanRefreshLinks = t
+	s.schedMu.Unlock()
+}
+
 // updateSchedule validates and persists a single named task's schedule
-// ("run_plan" or "rescan_cold"), then always resets that task's due-check
-// anchor to now - whether enabling, disabling, or just adjusting the time
-// - so saving a schedule can never itself trigger an immediate unattended
-// run as a surprise side effect. This does not touch the "last ran" fact
-// shown on the settings page - only a genuine run does that.
+// ("run_plan", "rescan_cold", or "refresh_links"), then always resets that
+// task's due-check anchor to now - whether enabling, disabling, or just
+// adjusting the time - so saving a schedule can never itself trigger an
+// immediate unattended run as a surprise side effect. This does not touch
+// the "last ran" fact shown on the settings page - only a genuine run
+// does that.
 func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 	if err := scheduler.Validate(sched); err != nil {
 		return err
@@ -401,6 +455,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		updated.Scheduler.RunPlan = sched
 	case "rescan_cold":
 		updated.Scheduler.RescanCold = sched
+	case "refresh_links":
+		updated.Scheduler.RefreshLinks = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()
@@ -415,6 +471,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		s.touchPlanSchedule(now)
 	case "rescan_cold":
 		s.touchRescanSchedule(now)
+	case "refresh_links":
+		s.touchRefreshLinksSchedule(now)
 	}
 	return nil
 }

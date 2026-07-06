@@ -64,7 +64,7 @@ func (s *Server) buildPlanData() planData {
 	data.Empty = len(plan.Entries) == 0
 	data.Warnings = append(append([]string{}, inv.Warnings...), plan.Warnings...)
 
-	linkSrc := s.buildLinkSources(eng)
+	linkSrc := s.buildLinkSources()
 
 	var total int64
 	for _, e := range plan.Entries {

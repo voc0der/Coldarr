@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/linkcache"
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/scheduler"
 	"github.com/vocoder/coldarr/internal/secrets"
@@ -64,7 +65,7 @@ func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v3/movie", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{{
-			"id": 1, "title": "Movie A",
+			"id": 1, "title": "Movie A", "titleSlug": "movie-a-2020",
 			"path": hotRoot + "/Movie A", "rootFolderPath": hotRoot,
 			"qualityProfileId": 1, "monitored": true, "hasFile": true,
 			"added": "2020-01-01T00:00:00Z", "tags": []int{}, "sizeOnDisk": 5_000_000,
@@ -315,5 +316,86 @@ func TestUpdateSchedule_ResetsAnchorNotLastRan(t *testing.T) {
 	}
 	if got := srv.getLastRunPlan(); got.Equal(ranAt) || got.IsZero() {
 		t.Errorf("lastRunPlan anchor = %v, want reset to ~now (not %v or zero)", got, ranAt)
+	}
+}
+
+// TestTick_RunScheduledRefreshLinks_PopulatesCache confirms the scheduled
+// "Refresh Links Cache" task actually fetches Radarr/Sonarr titleSlugs and
+// Jellyfin's item-ID/server-ID and persists them, so Plan/History can read
+// the link cache instead of hitting these apps live on every page view.
+func TestTick_RunScheduledRefreshLinks_PopulatesCache(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	sonarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/series" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "titleSlug": "some-show"}})
+	}))
+	t.Cleanup(sonarr.Close)
+
+	jf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/System/Info":
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "srv-123"})
+		case "/Users":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"Id": "user1"}})
+		case "/Users/user1/Items":
+			_ = json.NewEncoder(w).Encode(map[string]any{"Items": []map[string]any{
+				{"Id": "jf-1", "Path": hotDir + "/Movie A"},
+			}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(jf.Close)
+
+	if err := srv.connStore.Set("sonarr", secrets.Connection{URL: sonarr.URL, APIKey: "test", Enabled: true}); err != nil {
+		t.Fatalf("connStore.Set sonarr: %v", err)
+	}
+	if err := srv.connStore.Set("jellyfin", secrets.Connection{URL: jf.URL, APIKey: "test", Enabled: true}); err != nil {
+		t.Fatalf("connStore.Set jellyfin: %v", err)
+	}
+
+	srv.cfg.Scheduler.RefreshLinks = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+
+	now := time.Now()
+	srv.tick(now)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.linkCache.Get().RefreshedAt.IsZero() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	snap := srv.linkCache.Get()
+	if snap.RadarrTitleSlugByID[1] != "movie-a-2020" {
+		t.Errorf("RadarrTitleSlugByID[1] = %q, want %q", snap.RadarrTitleSlugByID[1], "movie-a-2020")
+	}
+	if snap.SonarrTitleSlugByID[7] != "some-show" {
+		t.Errorf("SonarrTitleSlugByID[7] = %q, want %q", snap.SonarrTitleSlugByID[7], "some-show")
+	}
+	if got := snap.JellyfinPathToID[filepath.Clean(hotDir+"/Movie A")]; got != "jf-1" {
+		t.Errorf("JellyfinPathToID[%q] = %q, want %q", hotDir+"/Movie A", got, "jf-1")
+	}
+	if snap.JellyfinServerID != "srv-123" {
+		t.Errorf("JellyfinServerID = %q, want %q", snap.JellyfinServerID, "srv-123")
+	}
+
+	if got := srv.getLastRanRefreshLinks(); got.IsZero() || !got.Equal(now) {
+		t.Errorf("lastRanRefreshLinks = %v, want %v", got, now)
+	}
+
+	// The cache must also have been persisted to disk, not just held in
+	// memory - a fresh Load from the same path should see it too.
+	reloaded, err := linkcache.Load(linkCachePath(filepath.Join(dir, "coldarr.yaml")))
+	if err != nil {
+		t.Fatalf("linkcache.Load: %v", err)
+	}
+	if reloaded.Get().RefreshedAt.IsZero() {
+		t.Errorf("reloaded link cache RefreshedAt is zero - Refresh did not persist to disk")
 	}
 }
