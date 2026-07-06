@@ -23,6 +23,7 @@ var pageNames = []string{
 	"connections",
 	"tiers",
 	"tier_form",
+	"settings_notifications",
 	"plan",
 	"history",
 	"verify_status",
