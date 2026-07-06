@@ -32,6 +32,13 @@ type scheduleFormView struct {
 	At      string
 	LastRan string
 	Error   string
+	// ShowRunNow adds a "Refresh now" button below the schedule form -
+	// only set for tasks where waiting out a full schedule period before
+	// ever seeing a result is a poor first-run experience (currently just
+	// refresh_links: its whole visible effect, the Links column, would
+	// otherwise stay empty until the schedule is both enabled and has
+	// waited out a full period).
+	ShowRunNow bool
 }
 
 type schedulerData struct {
@@ -44,13 +51,14 @@ type schedulerData struct {
 
 func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule, lastRun time.Time) scheduleFormView {
 	view := scheduleFormView{
-		Task:    task,
-		Label:   label,
-		Hint:    hint,
-		Enabled: sched.Enabled,
-		Unit:    string(sched.Unit),
-		Every:   sched.Every,
-		At:      sched.At,
+		Task:       task,
+		Label:      label,
+		Hint:       hint,
+		Enabled:    sched.Enabled,
+		Unit:       string(sched.Unit),
+		Every:      sched.Every,
+		At:         sched.At,
+		ShowRunNow: task == "refresh_links",
 	}
 	if !lastRun.IsZero() {
 		view.LastRan = lastRun.Format("2006-01-02 15:04")
@@ -69,7 +77,7 @@ func (s *Server) schedulerData() schedulerData {
 			"Refreshes disk usage and Radarr/Sonarr's library for your cold tiers only, and reports what it finds - a health check, not a move.",
 			cfg.Scheduler.RescanCold, s.getLastRanRescan()),
 		RefreshLinks: s.scheduleView("refresh_links", "Refresh Links Cache",
-			`Refreshes the Radarr/Sonarr/Jellyfin lookups behind the Plan/History pages' Links column, so opening those pages never waits on a live Jellyfin (and, for History, Radarr/Sonarr) call. This is reference data that almost never changes - until this has run at least once, the Links column just won't show anything yet.`,
+			`Refreshes the Radarr/Sonarr/Jellyfin lookups behind the Plan/History pages' Links column, so opening those pages never waits on a live Jellyfin (and, for History, Radarr/Sonarr) call. This is reference data that almost never changes - until this has run at least once (or you click "Refresh now" below), the Links column just won't show anything yet.`,
 			cfg.Scheduler.RefreshLinks, s.getLastRanRefreshLinks()),
 	}
 }
@@ -108,6 +116,7 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			data.RescanCold = submitted
 		case "refresh_links":
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RefreshLinks.Label, data.RefreshLinks.Hint, data.RefreshLinks.LastRan
+			submitted.ShowRunNow = true
 			data.RefreshLinks = submitted
 		}
 		s.render(w, "settings_scheduler", data)
@@ -290,4 +299,31 @@ func (s *Server) runScheduledRefreshLinks(now time.Time) {
 	}
 
 	n.Summary("Links cache refreshed", "Plan/History Links column lookups are up to date.", notify.LevelSuccess)
+}
+
+// handleRefreshLinksNow is the manual counterpart to runScheduledRefreshLinks
+// - since the schedule (like every schedule in this app) defaults to off,
+// and even once enabled deliberately waits out a full period before its
+// first fire, an operator would otherwise see an empty Links column
+// indefinitely unless they also knew to wait. This runs the exact same
+// refresh synchronously and reports the result inline, and - like a
+// genuine scheduled run - resets the due-check anchor so an already-
+// enabled schedule doesn't immediately fire again right after this.
+func (s *Server) handleRefreshLinksNow(w http.ResponseWriter, r *http.Request) {
+	eng, err := s.newEngine()
+	if err == nil {
+		err = s.linkCache.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient())
+	}
+
+	if err != nil {
+		data := s.schedulerData()
+		data.RefreshLinks.Error = err.Error()
+		s.render(w, "settings_scheduler", data)
+		return
+	}
+
+	s.recordRefreshLinksRan(time.Now())
+	data := s.schedulerData()
+	data.Saved = "Links cache refreshed."
+	s.render(w, "settings_scheduler", data)
 }
