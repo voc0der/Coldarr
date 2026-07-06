@@ -76,13 +76,14 @@ type AuthConfig struct {
 }
 
 type OIDCAuthConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	IssuerURL     string `yaml:"issuer_url"`
-	ClientID      string `yaml:"client_id"`
-	RedirectURL   string `yaml:"redirect_url"`
-	RequiredGroup string `yaml:"required_group"`
-	GroupsClaim   string `yaml:"groups_claim"`
-	AutoLogin     bool   `yaml:"auto_login"`
+	Enabled         bool   `yaml:"enabled"`
+	IssuerURL       string `yaml:"issuer_url"`
+	ClientID        string `yaml:"client_id"`
+	RedirectURL     string `yaml:"redirect_url"`
+	RequiredGroup   string `yaml:"required_group"`
+	GroupsClaim     string `yaml:"groups_claim"`
+	TokenAuthMethod string `yaml:"token_auth_method"`
+	AutoLogin       bool   `yaml:"auto_login"`
 }
 
 type Config struct {
@@ -257,6 +258,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Auth.OIDC.GroupsClaim == "" {
 		cfg.Auth.OIDC.GroupsClaim = "groups"
+	}
+	if cfg.Auth.OIDC.TokenAuthMethod == "" {
+		cfg.Auth.OIDC.TokenAuthMethod = "auto"
 	}
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")

@@ -25,6 +25,10 @@ const (
 	authSessionCookie = "coldarr_session"
 	authSessionTTL    = 12 * time.Hour
 	oidcStateTTL      = 10 * time.Minute
+
+	oidcTokenAuthAuto        = "auto"
+	oidcTokenAuthClientPost  = "client_secret_post"
+	oidcTokenAuthClientBasic = "client_secret_basic"
 )
 
 type effectiveOIDCConfig struct {
@@ -256,10 +260,12 @@ func (s *Server) oidcOAuthConfig(ctx context.Context, r *http.Request, cfg effec
 	if err != nil {
 		return nil, oauth2.Config{}, fmt.Errorf("discovering OIDC provider: %w", err)
 	}
+	endpoint := provider.Endpoint()
+	endpoint.AuthStyle = oidcOAuth2AuthStyle(cfg.TokenAuthMethod)
 	oauthCfg := oauth2.Config{
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
-		Endpoint:     provider.Endpoint(),
+		Endpoint:     endpoint,
 		RedirectURL:  s.oidcRedirectURL(r, cfg),
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email", "groups"},
 	}
@@ -311,6 +317,15 @@ func (s *Server) effectiveOIDCConfig() effectiveOIDCConfig {
 	setString("COLDARR_OIDC_REDIRECT_URL", &out.RedirectURL)
 	setString("COLDARR_OIDC_REQUIRED_GROUP", &out.RequiredGroup)
 	setString("COLDARR_OIDC_GROUPS_CLAIM", &out.GroupsClaim)
+	setString("COLDARR_OIDC_TOKEN_AUTH_METHOD", &out.TokenAuthMethod)
+	if post, ok := boolEnv("COLDARR_OIDC_CLIENT_SECRET_POST"); ok {
+		envLocked = true
+		if post {
+			out.TokenAuthMethod = oidcTokenAuthClientPost
+		} else {
+			out.TokenAuthMethod = oidcTokenAuthClientBasic
+		}
+	}
 	setBool("COLDARR_OIDC_AUTO_LOGIN", &out.AutoLogin)
 	if disabled, ok := boolEnv("COLDARR_OIDC_DISABLE_AUTO_LOGIN"); ok && disabled {
 		out.AutoLogin = false
@@ -322,6 +337,9 @@ func (s *Server) effectiveOIDCConfig() effectiveOIDCConfig {
 	}
 	if out.GroupsClaim == "" {
 		out.GroupsClaim = "groups"
+	}
+	if out.TokenAuthMethod == "" {
+		out.TokenAuthMethod = oidcTokenAuthAuto
 	}
 	out.ClientSecretSet = out.ClientSecret != ""
 	out.EnvLocked = envLocked
@@ -353,6 +371,9 @@ func validateEffectiveOIDCConfig(cfg effectiveOIDCConfig) error {
 	if strings.TrimSpace(cfg.GroupsClaim) == "" {
 		return fmt.Errorf("groups claim is required")
 	}
+	if !validOIDCTokenAuthMethod(cfg.TokenAuthMethod) {
+		return fmt.Errorf("token auth method must be %q, %q, or %q", oidcTokenAuthAuto, oidcTokenAuthClientPost, oidcTokenAuthClientBasic)
+	}
 	if _, err := url.ParseRequestURI(cfg.IssuerURL); err != nil {
 		return fmt.Errorf("issuer URL is invalid: %w", err)
 	}
@@ -362,6 +383,26 @@ func validateEffectiveOIDCConfig(cfg effectiveOIDCConfig) error {
 		}
 	}
 	return nil
+}
+
+func oidcOAuth2AuthStyle(method string) oauth2.AuthStyle {
+	switch strings.TrimSpace(method) {
+	case oidcTokenAuthClientPost:
+		return oauth2.AuthStyleInParams
+	case oidcTokenAuthClientBasic:
+		return oauth2.AuthStyleInHeader
+	default:
+		return oauth2.AuthStyleAutoDetect
+	}
+}
+
+func validOIDCTokenAuthMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "", oidcTokenAuthAuto, oidcTokenAuthClientPost, oidcTokenAuthClientBasic:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) currentAuthSession(r *http.Request) (authSession, bool) {

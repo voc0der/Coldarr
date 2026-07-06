@@ -9,33 +9,35 @@ import (
 )
 
 type authData struct {
-	Title           string
-	Error           string
-	Saved           string
-	Enabled         bool
-	IssuerURL       string
-	ClientID        string
-	RedirectURL     string
-	RequiredGroup   string
-	GroupsClaim     string
-	AutoLogin       bool
-	ClientSecretSet bool
-	Locked          bool
+	Title            string
+	Error            string
+	Saved            string
+	Enabled          bool
+	IssuerURL        string
+	ClientID         string
+	RedirectURL      string
+	RequiredGroup    string
+	GroupsClaim      string
+	ClientSecretPost bool
+	AutoLogin        bool
+	ClientSecretSet  bool
+	Locked           bool
 }
 
 func (s *Server) authPageData() authData {
 	cfg := s.effectiveOIDCConfig()
 	return authData{
-		Title:           "Auth",
-		Enabled:         cfg.Enabled,
-		IssuerURL:       cfg.IssuerURL,
-		ClientID:        cfg.ClientID,
-		RedirectURL:     cfg.RedirectURL,
-		RequiredGroup:   cfg.RequiredGroup,
-		GroupsClaim:     cfg.GroupsClaim,
-		AutoLogin:       cfg.AutoLogin,
-		ClientSecretSet: cfg.ClientSecretSet,
-		Locked:          cfg.EnvLocked,
+		Title:            "Auth",
+		Enabled:          cfg.Enabled,
+		IssuerURL:        cfg.IssuerURL,
+		ClientID:         cfg.ClientID,
+		RedirectURL:      cfg.RedirectURL,
+		RequiredGroup:    cfg.RequiredGroup,
+		GroupsClaim:      cfg.GroupsClaim,
+		ClientSecretPost: cfg.TokenAuthMethod == oidcTokenAuthClientPost,
+		AutoLogin:        cfg.AutoLogin,
+		ClientSecretSet:  cfg.ClientSecretSet,
+		Locked:           cfg.EnvLocked,
 	}
 }
 
@@ -53,13 +55,17 @@ func (s *Server) handleAuthSave(w http.ResponseWriter, r *http.Request) {
 
 	_ = r.ParseForm()
 	authCfg := config.OIDCAuthConfig{
-		Enabled:       r.FormValue("enabled") == "on",
-		IssuerURL:     strings.TrimSpace(r.FormValue("issuer_url")),
-		ClientID:      strings.TrimSpace(r.FormValue("client_id")),
-		RedirectURL:   strings.TrimSpace(r.FormValue("redirect_url")),
-		RequiredGroup: strings.TrimSpace(r.FormValue("required_group")),
-		GroupsClaim:   strings.TrimSpace(r.FormValue("groups_claim")),
-		AutoLogin:     r.FormValue("auto_login") == "on",
+		Enabled:         r.FormValue("enabled") == "on",
+		IssuerURL:       strings.TrimSpace(r.FormValue("issuer_url")),
+		ClientID:        strings.TrimSpace(r.FormValue("client_id")),
+		RedirectURL:     strings.TrimSpace(r.FormValue("redirect_url")),
+		RequiredGroup:   strings.TrimSpace(r.FormValue("required_group")),
+		GroupsClaim:     strings.TrimSpace(r.FormValue("groups_claim")),
+		TokenAuthMethod: oidcTokenAuthClientBasic,
+		AutoLogin:       r.FormValue("auto_login") == "on",
+	}
+	if r.FormValue("client_secret_post") == "on" {
+		authCfg.TokenAuthMethod = oidcTokenAuthClientPost
 	}
 	if authCfg.RequiredGroup == "" {
 		authCfg.RequiredGroup = "coldarr"
@@ -85,6 +91,7 @@ func (s *Server) handleAuthSave(w http.ResponseWriter, r *http.Request) {
 			data.RedirectURL = authCfg.RedirectURL
 			data.RequiredGroup = authCfg.RequiredGroup
 			data.GroupsClaim = authCfg.GroupsClaim
+			data.ClientSecretPost = authCfg.TokenAuthMethod == oidcTokenAuthClientPost
 			data.AutoLogin = authCfg.AutoLogin
 			data.ClientSecretSet = clientSecret != ""
 			s.render(w, "settings_auth", data)
