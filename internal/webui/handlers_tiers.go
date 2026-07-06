@@ -222,7 +222,7 @@ func (s *Server) handleTierCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/tiers", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/tiers", http.StatusSeeOther)
 }
 
 func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +258,7 @@ func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/tiers", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/tiers", http.StatusSeeOther)
 }
 
 func (s *Server) handleTierDelete(w http.ResponseWriter, r *http.Request) {
@@ -278,5 +278,5 @@ func (s *Server) handleTierDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/tiers", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/tiers", http.StatusSeeOther)
 }

@@ -1,9 +1,10 @@
 {{define "content"}}
+{{template "settings_subnav" .}}
 <h1>{{.Title}}</h1>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
-<form class="stacked" method="post" action="{{if .Editing}}/tiers/{{.OrigName}}{{else}}/tiers{{end}}">
+<form class="stacked" method="post" action="{{if .Editing}}/settings/tiers/{{.OrigName}}{{else}}/settings/tiers{{end}}">
   <div>
     <label for="name">Name</label>
     <input type="text" id="name" name="name" value="{{.Tier.Name}}" required>
@@ -60,7 +61,7 @@
 
   <div class="btn-row">
     <button type="submit" class="btn btn-primary">{{if .Editing}}Save changes{{else}}Add tier{{end}}</button>
-    <a class="btn" href="/tiers">Cancel</a>
+    <a class="btn" href="/settings/tiers">Cancel</a>
   </div>
 </form>
 

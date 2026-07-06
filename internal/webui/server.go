@@ -64,17 +64,31 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
-	mux.HandleFunc("GET /connections", s.handleConnectionsPage)
-	mux.HandleFunc("POST /connections/{app}/test", s.handleConnectionTest)
-	mux.HandleFunc("POST /connections/{app}", s.handleConnectionSave)
-	mux.HandleFunc("POST /connections/{app}/delete", s.handleConnectionDelete)
+	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/settings/connections", http.StatusFound)
+	})
 
-	mux.HandleFunc("GET /tiers", s.handleTiersPage)
-	mux.HandleFunc("GET /tiers/new", s.handleTierNewForm)
-	mux.HandleFunc("GET /tiers/{name}/edit", s.handleTierEditForm)
-	mux.HandleFunc("POST /tiers", s.handleTierCreate)
-	mux.HandleFunc("POST /tiers/{name}", s.handleTierUpdate)
-	mux.HandleFunc("POST /tiers/{name}/delete", s.handleTierDelete)
+	mux.HandleFunc("GET /settings/connections", s.handleConnectionsPage)
+	mux.HandleFunc("POST /settings/connections/{app}/test", s.handleConnectionTest)
+	mux.HandleFunc("POST /settings/connections/{app}", s.handleConnectionSave)
+	mux.HandleFunc("POST /settings/connections/{app}/delete", s.handleConnectionDelete)
+
+	mux.HandleFunc("GET /settings/tiers", s.handleTiersPage)
+	mux.HandleFunc("GET /settings/tiers/new", s.handleTierNewForm)
+	mux.HandleFunc("GET /settings/tiers/{name}/edit", s.handleTierEditForm)
+	mux.HandleFunc("POST /settings/tiers", s.handleTierCreate)
+	mux.HandleFunc("POST /settings/tiers/{name}", s.handleTierUpdate)
+	mux.HandleFunc("POST /settings/tiers/{name}/delete", s.handleTierDelete)
+
+	// Connections and Tiers moved under /settings - redirect anyone with
+	// the old URLs bookmarked, same precedent as the /plan/apply/status
+	// redirect below.
+	mux.HandleFunc("GET /connections", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/settings/connections", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /tiers", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/settings/tiers", http.StatusMovedPermanently)
+	})
 
 	mux.HandleFunc("GET /plan", s.handlePlanPage)
 	mux.HandleFunc("POST /plan/apply", s.handleApplyStart)

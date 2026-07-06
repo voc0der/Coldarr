@@ -18,31 +18,39 @@
   <a class="brand" href="/"><img src="/static/icon-512.png" alt="" class="brand-icon">Coldarr</a>
   <a href="/">{{template "icon-dashboard"}} Dashboard</a>
   <a href="/plan">{{template "icon-plan"}} Plan</a>
-  <a href="/tiers">{{template "icon-tiers"}} Tiers</a>
-  <a href="/connections">{{template "icon-connections"}} Connections</a>
   <a href="/history">{{template "icon-history"}} History</a>
+  <a href="/settings">{{template "icon-settings"}} Settings</a>
 </nav>
 <main>
 {{block "content" .}}{{end}}
 </main>
 <script>
 (function () {
-  // Mark only the single best-matching nav link "current" - e.g. on
-  // /history/verify/status, both /history and a plain prefix test would
-  // match, so pick the longest (most specific) match instead of marking
-  // multiple links at once. The brand link also points at "/" (same as
-  // Dashboard) but isn't a page nav link, so it's excluded - otherwise it
-  // ties with Dashboard and wins for being first in the DOM.
+  // Mark only the single best-matching link "current" within a given set
+  // - e.g. on /history/verify/status, both /history and a plain prefix
+  // test would match, so pick the longest (most specific) match instead of
+  // marking multiple links at once. Run this separately over the top nav
+  // and the settings subnav, so e.g. /settings/tiers marks both "Settings"
+  // (top nav) and "Tiers" (subnav) as current - a single combined pass
+  // would let the subnav's longer URL match steal aria-current away from
+  // the top-level Settings link.
   var path = location.pathname;
-  var best = null;
-  document.querySelectorAll("nav a[href]:not(.brand)").forEach(function (a) {
-    var href = a.getAttribute("href");
-    var matches = href === "/" ? path === "/" : (path === href || path.startsWith(href + "/"));
-    if (matches && (!best || href.length > best.getAttribute("href").length)) {
-      best = a;
-    }
-  });
-  if (best) best.setAttribute("aria-current", "page");
+  function markCurrent(selector) {
+    var best = null;
+    document.querySelectorAll(selector).forEach(function (a) {
+      var href = a.getAttribute("href");
+      var matches = href === "/" ? path === "/" : (path === href || path.startsWith(href + "/"));
+      if (matches && (!best || href.length > best.getAttribute("href").length)) {
+        best = a;
+      }
+    });
+    if (best) best.setAttribute("aria-current", "page");
+  }
+  // The brand link also points at "/" (same as Dashboard) but isn't a
+  // page nav link, so it's excluded - otherwise it ties with Dashboard and
+  // wins for being first in the DOM.
+  markCurrent("nav a[href]:not(.brand)");
+  markCurrent(".subnav a[href]");
 })();
 </script>
 </body>
