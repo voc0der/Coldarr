@@ -16,16 +16,34 @@
 <body>
 <nav>
   <a class="brand" href="/"><img src="/static/icon-512.png" alt="" class="brand-icon">Coldarr</a>
-  <a href="/">Dashboard</a>
-  <a href="/plan">Plan</a>
-  <a href="/plan/apply/status">Apply status</a>
-  <a href="/tiers">Tiers</a>
-  <a href="/connections">Connections</a>
-  <a href="/history">History</a>
+  <a href="/">{{template "icon-dashboard"}} Dashboard</a>
+  <a href="/plan">{{template "icon-plan"}} Plan</a>
+  <a href="/plan/apply/status">{{template "icon-check-circle"}} Apply status</a>
+  <a href="/tiers">{{template "icon-tiers"}} Tiers</a>
+  <a href="/connections">{{template "icon-connections"}} Connections</a>
+  <a href="/history">{{template "icon-history"}} History</a>
 </nav>
 <main>
 {{block "content" .}}{{end}}
 </main>
+<script>
+(function () {
+  // Mark only the single best-matching nav link "current" - e.g. on
+  // /plan/apply/status, both it and the shorter /plan would match a plain
+  // prefix test, so pick the longest (most specific) match instead of
+  // marking both.
+  var path = location.pathname;
+  var best = null;
+  document.querySelectorAll("nav a[href]").forEach(function (a) {
+    var href = a.getAttribute("href");
+    var matches = href === "/" ? path === "/" : (path === href || path.startsWith(href + "/"));
+    if (matches && (!best || href.length > best.getAttribute("href").length)) {
+      best = a;
+    }
+  });
+  if (best) best.setAttribute("aria-current", "page");
+})();
+</script>
 </body>
 </html>
 {{end}}

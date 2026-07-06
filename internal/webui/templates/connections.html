@@ -11,9 +11,9 @@
 
   {{if .Locked}}
   <p class="hint">This connection is set via the <code>{{.EnvURLVar}}</code> / <code>{{.EnvKeyVar}}</code> environment variable{{if eq .App "jellyfin"}} (and <code>JELLYFIN_ENABLED</code>){{end}} and can't be edited here while those are set. You can still test it below.</p>
-  <p>URL: <span class="mono">{{.URL}}</span> &nbsp; API key: {{if .APIKeySet}}<span class="badge badge-ok">set</span>{{else}}<span class="badge badge-muted">not set</span>{{end}}</p>
+  <p>URL: <span class="mono">{{.URL}}</span> &nbsp; API key: {{if .APIKeySet}}<span class="badge badge-ok">{{template "icon-check-circle"}} set</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not set</span>{{end}}</p>
   <div class="btn-row">
-    <button class="btn" hx-post="/connections/{{.App}}/test" hx-target="#test-{{.App}}" hx-swap="innerHTML">Test connection</button>
+    <button class="btn" hx-post="/connections/{{.App}}/test" hx-target="#test-{{.App}}" hx-swap="innerHTML">{{template "icon-connections"}} Test connection</button>
   </div>
   <div id="test-{{.App}}"></div>
 
@@ -35,12 +35,12 @@
     {{end}}
     <div class="btn-row">
       <button type="submit" class="btn btn-primary">Save</button>
-      <button type="button" class="btn" hx-post="/connections/{{.App}}/test" hx-include="closest form" hx-target="#test-{{.App}}" hx-swap="innerHTML">Test connection</button>
+      <button type="button" class="btn" hx-post="/connections/{{.App}}/test" hx-include="closest form" hx-target="#test-{{.App}}" hx-swap="innerHTML">{{template "icon-connections"}} Test connection</button>
     </div>
   </form>
   {{if or .URL .APIKeySet}}
   <form method="post" action="/connections/{{.App}}/delete" onsubmit="return confirm('Remove the stored {{.App}} connection?')" style="margin-top:0.5rem">
-    <button type="submit" class="btn btn-danger">Remove</button>
+    <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Remove</button>
   </form>
   {{end}}
   <div id="test-{{.App}}"></div>

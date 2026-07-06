@@ -7,7 +7,7 @@
 {{if .Rows}}
 <form method="post" action="/history/verify">
   <input type="hidden" name="page" value="{{.Page}}">
-  <button type="submit" class="btn btn-primary">Verify sizes on this page</button>
+  <button type="submit" class="btn btn-primary">{{template "icon-shield-check"}} Verify sizes on this page</button>
 </form>
 <p class="muted">Re-checks each row below against Radarr/Sonarr's current on-disk size - catches transfers left half-done by a crash. A mismatch isn't necessarily a problem (cold storage often compresses or drops extras), just worth a look.</p>
 {{end}}
@@ -35,8 +35,8 @@
 {{if gt .TotalPages 1}}
 <p class="muted">
   Page {{.Page}} of {{.TotalPages}} ({{.TotalCount}} moves total)
-  {{if .HasPrev}} &nbsp; <a href="/history?page={{.PrevPage}}">&laquo; Newer</a>{{end}}
-  {{if .HasNext}} &nbsp; <a href="/history?page={{.NextPage}}">Older &raquo;</a>{{end}}
+  {{if .HasPrev}} &nbsp; <a href="/history?page={{.PrevPage}}">{{template "icon-chevron-left"}} Newer</a>{{end}}
+  {{if .HasNext}} &nbsp; <a href="/history?page={{.NextPage}}">Older {{template "icon-chevron-right"}}</a>{{end}}
 </p>
 {{end}}
 {{end}}
