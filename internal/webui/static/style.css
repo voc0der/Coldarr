@@ -194,3 +194,16 @@ a:focus-visible, .btn:focus-visible {
 }
 .empty-state .icon { width: 2rem; height: 2rem; }
 .empty-state .title { font-weight: 600; color: var(--fg); }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: var(--shadow-md);
+  max-width: 480px;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog h2 { margin-top: 0; }
+.verify-option { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; margin-bottom: 1rem; }

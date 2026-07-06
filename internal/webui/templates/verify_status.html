@@ -15,11 +15,12 @@
 <p>
   {{if .Running}}<span class="badge badge-warn">{{template "icon-loader"}} checking...</span>{{else}}<span class="badge badge-ok">{{template "icon-check-circle"}} finished</span>{{end}}
   &nbsp; {{.MatchCount}} match, {{.MismatchCount}} mismatched
+  &nbsp; <span class="badge badge-muted">{{if eq .Mode "complete"}}complete check{{else}}quick check{{end}}</span>
 </p>
 </div>
 <div class="card overflow-table">
 <table>
-<thead><tr><th>Title</th><th>App</th><th>Moved</th><th>Recorded size</th><th>Current size</th><th>Status</th></tr></thead>
+<thead><tr><th>Title</th><th>App</th><th>Moved</th><th>Recorded size</th><th>{{if eq .Mode "complete"}}On disk{{else}}Current size{{end}}</th>{{if eq .Mode "complete"}}<th>Radarr/Sonarr reports</th>{{end}}<th>Status</th></tr></thead>
 <tbody>
 {{range .Entries}}
 <tr>
@@ -28,6 +29,7 @@
   <td>{{.MovedAt}}</td>
   <td>{{.RecordedGB}}</td>
   <td>{{.CurrentGB}}</td>
+  {{if eq $.Mode "complete"}}<td>{{.ArrGB}}</td>{{end}}
   <td>
     {{if eq .Status "checking"}}<span class="badge badge-muted">{{template "icon-loader"}} checking</span>{{end}}
     {{if eq .Status "failed"}}<span class="badge badge-danger">{{template "icon-x-circle"}} error: {{.Err}}</span>{{end}}

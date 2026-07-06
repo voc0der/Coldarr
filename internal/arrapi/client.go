@@ -37,6 +37,10 @@ func (c *client) put(path string, body interface{}, out interface{}) error {
 	return c.do(http.MethodPut, path, nil, body, out)
 }
 
+func (c *client) post(path string, body interface{}, out interface{}) error {
+	return c.do(http.MethodPost, path, nil, body, out)
+}
+
 // StatusError is returned when a request reaches the server but gets back
 // a non-2xx response, so callers can distinguish "this item doesn't exist"
 // (404) from a genuine connectivity/auth failure.
@@ -104,6 +108,45 @@ func (c *client) do(method, path string, query url.Values, body interface{}, out
 	}
 
 	return nil
+}
+
+// commandResource is the subset of Radarr/Sonarr's command-queue resource
+// (POST/GET /api/v3/command) that callers need to trigger a command and
+// poll it to completion.
+type commandResource struct {
+	ID     int    `json:"id"`
+	Status string `json:"status"`
+}
+
+// runCommand starts a Radarr/Sonarr command (e.g. a folder rescan) and
+// blocks until it reaches a terminal state, so callers see the effect of
+// the command (an updated database record) rather than racing a
+// still-running background job. body must include the command's "name"
+// field alongside whatever arguments it needs (e.g. {"name": "RescanMovie",
+// "movieId": 5}) - see each app's MediaFiles/Commands/*.cs for the exact
+// shape, since it varies per command.
+func (c *client) runCommand(body interface{}) error {
+	var cmd commandResource
+	if err := c.post("/api/v3/command", body, &cmd); err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if err := c.get(fmt.Sprintf("/api/v3/command/%d", cmd.ID), nil, &cmd); err != nil {
+			return err
+		}
+		switch cmd.Status {
+		case "completed":
+			return nil
+		case "failed", "aborted", "cancelled", "orphaned":
+			return fmt.Errorf("command %d ended with status %q", cmd.ID, cmd.Status)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("command %d did not finish within 2m (last status %q)", cmd.ID, cmd.Status)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func truncate(s string, n int) string {

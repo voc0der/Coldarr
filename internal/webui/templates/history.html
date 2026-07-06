@@ -5,11 +5,28 @@
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 {{if .Rows}}
-<form method="post" action="/history/verify">
-  <input type="hidden" name="page" value="{{.Page}}">
-  <button type="submit" class="btn btn-primary">{{template "icon-shield-check"}} Verify sizes on this page</button>
-</form>
-<p class="muted">Re-checks each row below against Radarr/Sonarr's current on-disk size - catches transfers left half-done by a crash. A mismatch isn't necessarily a problem (cold storage often compresses or drops extras), just worth a look.</p>
+<button type="button" class="btn btn-primary" onclick="document.getElementById('verify-dialog').showModal()">{{template "icon-shield-check"}} Verify sizes on this page</button>
+<p class="muted">Re-checks each row below against Radarr/Sonarr - catches transfers left half-done by a crash. A mismatch isn't necessarily a problem (cold storage often compresses or drops extras), just worth a look.</p>
+
+<dialog id="verify-dialog">
+  <form method="post" action="/history/verify">
+    <input type="hidden" name="page" value="{{.Page}}">
+    <h2>Verify sizes</h2>
+    <p class="muted">Choose how thorough the check should be.</p>
+
+    <div class="verify-option">
+      <button type="submit" name="mode" value="quick" class="btn btn-primary">Quick</button>
+      <p class="hint">Asks Radarr/Sonarr what they already have on record. Fast, but if a transfer stalled very recently, Radarr/Sonarr might not have noticed yet.</p>
+    </div>
+
+    <div class="verify-option">
+      <button type="submit" name="mode" value="complete" class="btn">Complete</button>
+      <p class="hint">Asks Radarr/Sonarr to rescan the folder first, then Coldarr walks the actual media file(s) on disk itself and counts the real bytes - reflects exactly what's physically there. Slower, especially over network storage.</p>
+    </div>
+
+    <button type="button" class="btn" onclick="document.getElementById('verify-dialog').close()">Cancel</button>
+  </form>
+</dialog>
 {{end}}
 
 <div class="card overflow-table">
