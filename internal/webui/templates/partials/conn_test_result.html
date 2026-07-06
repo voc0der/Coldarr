@@ -1,7 +1,7 @@
 {{define "conn_test_result"}}
 {{if .Error}}
-<p class="badge badge-danger">Failed: {{.Error}}</p>
+<p class="badge badge-danger">{{template "icon-x-circle"}} Failed: {{.Error}}</p>
 {{else}}
-<p class="badge badge-ok">Connected - version {{.Version}}</p>
+<p class="badge badge-ok">{{template "icon-check-circle"}} Connected - version {{.Version}}</p>
 {{end}}
 {{end}}

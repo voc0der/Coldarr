@@ -6,15 +6,15 @@
 
 <div class="card">
   <div class="stat-row">
-    <div class="stat"><div class="value">{{.TotalItems}}</div><div class="label">library items</div></div>
-    <div class="stat"><div class="value">{{.ProtectedCount}}</div><div class="label">protected</div></div>
-    <div class="stat"><div class="value">{{.HotCount}}</div><div class="label">hot</div></div>
-    <div class="stat"><div class="value">{{.ColdCount}}</div><div class="label">cold candidates</div></div>
+    <div class="stat">{{template "icon-plan"}}<div><div class="value">{{.TotalItems}}</div><div class="label">library items</div></div></div>
+    <div class="stat">{{template "icon-shield-check"}}<div><div class="value">{{.ProtectedCount}}</div><div class="label">protected</div></div></div>
+    <div class="stat">{{template "icon-flame"}}<div><div class="value">{{.HotCount}}</div><div class="label">hot</div></div></div>
+    <div class="stat">{{template "icon-snowflake"}}<div><div class="value">{{.ColdCount}}</div><div class="label">cold candidates</div></div></div>
   </div>
   <p class="hint">
-    Radarr: {{if .RadarrConfigured}}<span class="badge badge-ok">connected</span>{{else}}<span class="badge badge-muted">not configured</span>{{end}}
-    &nbsp; Sonarr: {{if .SonarrConfigured}}<span class="badge badge-ok">connected</span>{{else}}<span class="badge badge-muted">not configured</span>{{end}}
-    &nbsp; Jellyfin: {{if .JellyfinConfigured}}<span class="badge badge-ok">connected</span>{{else}}<span class="badge badge-muted">not configured</span>{{end}}
+    Radarr: {{if .RadarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
+    &nbsp; Sonarr: {{if .SonarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
+    &nbsp; Jellyfin: {{if .JellyfinConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
     &nbsp; <a href="/connections">manage connections</a>
   </p>
 </div>
@@ -40,12 +40,12 @@
   <td class="muted">-</td>
   {{end}}
   <td>
-    <span class="badge badge-{{.StatusClass}}">{{.StatusMsg}}</span>
-    {{if .SharesVolumeWith}}<br><span class="badge badge-warn">shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span>{{end}}
+    <span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span>
+    {{if .SharesVolumeWith}}<br><span class="badge badge-warn">{{template "icon-alert-triangle"}} shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span>{{end}}
   </td>
   {{else}}
   <td colspan="5" class="muted">unavailable</td>
-  <td><span class="badge badge-danger">{{.StatusMsg}}</span></td>
+  <td><span class="badge badge-danger">{{template "icon-x-circle"}} {{.StatusMsg}}</span></td>
   {{end}}
 </tr>
 {{else}}

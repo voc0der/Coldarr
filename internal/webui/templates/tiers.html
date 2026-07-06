@@ -5,16 +5,16 @@
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
 
-<p><a class="btn btn-primary" href="/tiers/new">+ Add tier</a></p>
+<p><a class="btn btn-primary" href="/tiers/new">{{template "icon-plus"}} Add tier</a></p>
 
 {{range .Tiers}}
 <div class="card">
   <div class="btn-row" style="justify-content: space-between">
-    <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{.Tier.Role}}</span></h2>
+    <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{if eq (print .Tier.Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Tier.Role}}</span></h2>
     <div class="btn-row">
-      <a class="btn" href="/tiers/{{.Tier.Name}}/edit">Edit</a>
+      <a class="btn" href="/tiers/{{.Tier.Name}}/edit">{{template "icon-pencil"}} Edit</a>
       <form method="post" action="/tiers/{{.Tier.Name}}/delete" onsubmit="return confirm('Delete tier {{.Tier.Name}}? This does not delete any media.')">
-        <button type="submit" class="btn btn-danger">Delete</button>
+        <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Delete</button>
       </form>
     </div>
   </div>
@@ -31,13 +31,13 @@
     <td class="mono">{{.Path}}</td>
     {{if .Available}}
     <td>{{pct .UsedPercent}}</td>
-    <td><span class="badge badge-ok">available</span></td>
+    <td><span class="badge badge-ok">{{template "icon-check-circle"}} available</span></td>
     {{else}}
     <td class="muted">-</td>
-    <td><span class="badge badge-danger">{{.Err}}</span></td>
+    <td><span class="badge badge-danger">{{template "icon-x-circle"}} {{.Err}}</span></td>
     {{end}}
     {{if .SharesVolumeWith}}
-    <td><span class="badge badge-warn">shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span></td>
+    <td><span class="badge badge-warn">{{template "icon-alert-triangle"}} shares a disk</span> <span class="mono muted">{{range .SharesVolumeWith}}{{.}} {{end}}</span></td>
     {{else}}
     <td class="muted">-</td>
     {{end}}
@@ -47,6 +47,9 @@
   </table>
 </div>
 {{else}}
-<div class="card muted">No tiers configured yet.</div>
+<div class="card empty-state">
+  {{template "icon-tiers"}}
+  <div class="title">No tiers configured yet</div>
+</div>
 {{end}}
 {{end}}
