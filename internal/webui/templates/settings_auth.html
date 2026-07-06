@@ -1,0 +1,61 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Auth</h1>
+<p class="muted">OIDC protects the web GUI with your identity provider and a required group membership.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+<div class="card">
+  {{if .Locked}}
+  <p class="hint">OIDC auth is set through <code>COLDARR_OIDC_*</code> environment variables and can't be edited here while those are set.</p>
+  <p>
+    Status:
+    {{if .Enabled}}<span class="badge badge-ok">{{template "icon-check-circle"}} enabled</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} disabled</span>{{end}}
+    &nbsp; client secret:
+    {{if .ClientSecretSet}}<span class="badge badge-ok">{{template "icon-check-circle"}} set</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not set</span>{{end}}
+  </p>
+  <p class="mono">{{.IssuerURL}}</p>
+  {{else}}
+  <form class="stacked" method="post" action="/settings/auth">
+    <div class="checkbox-row">
+      <input type="checkbox" id="enabled" name="enabled" {{if .Enabled}}checked{{end}}>
+      <label for="enabled" style="font-weight:400">Enabled</label>
+    </div>
+    <div>
+      <label for="issuer_url">Issuer URL</label>
+      <input type="url" id="issuer_url" name="issuer_url" value="{{.IssuerURL}}" placeholder="https://auth.example.com">
+    </div>
+    <div>
+      <label for="client_id">Client ID</label>
+      <input type="text" id="client_id" name="client_id" value="{{.ClientID}}" placeholder="coldarr">
+    </div>
+    <div>
+      <label for="client_secret">Client secret</label>
+      <input type="password" id="client_secret" name="client_secret" placeholder="{{if .ClientSecretSet}}(unchanged - leave blank to keep it){{else}}client secret{{end}}">
+      <p class="hint">Stored encrypted, alongside the other connection credentials.</p>
+    </div>
+    <div>
+      <label for="redirect_url">Redirect URL</label>
+      <input type="url" id="redirect_url" name="redirect_url" value="{{.RedirectURL}}" placeholder="https://coldarr.example.com/auth/callback">
+      <p class="hint">Leave blank only when Coldarr can infer the browser-facing URL directly.</p>
+    </div>
+    <div>
+      <label for="required_group">Required group</label>
+      <input type="text" id="required_group" name="required_group" value="{{.RequiredGroup}}" placeholder="coldarr">
+    </div>
+    <div>
+      <label for="groups_claim">Groups claim</label>
+      <input type="text" id="groups_claim" name="groups_claim" value="{{.GroupsClaim}}" placeholder="groups">
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="auto_login" name="auto_login" {{if .AutoLogin}}checked{{end}}>
+      <label for="auto_login" style="font-weight:400">Auto login</label>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+  {{end}}
+</div>
+{{end}}

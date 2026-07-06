@@ -44,6 +44,21 @@ func TestApplyDefaults_PreservesExplicitSchedule(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_AuthOIDC(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+
+	if cfg.Auth.OIDC.RequiredGroup != "coldarr" {
+		t.Fatalf("RequiredGroup = %q, want coldarr", cfg.Auth.OIDC.RequiredGroup)
+	}
+	if cfg.Auth.OIDC.GroupsClaim != "groups" {
+		t.Fatalf("GroupsClaim = %q, want groups", cfg.Auth.OIDC.GroupsClaim)
+	}
+	if cfg.Auth.OIDC.Enabled {
+		t.Fatal("OIDC auth should default to disabled")
+	}
+}
+
 func TestValidateScheduler(t *testing.T) {
 	valid := SchedulerConfig{
 		RunPlan:    scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "03:00"},
