@@ -72,6 +72,27 @@ nav a {
 nav a:hover, nav .brand { color: var(--fg); }
 nav a[aria-current="page"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
 
+.subnav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.subnav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+  border-bottom: 2px solid transparent;
+}
+.subnav a:hover { color: var(--fg); }
+.subnav a[aria-current="page"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
+
 main {
   max-width: 1100px;
   margin: 0 auto;
