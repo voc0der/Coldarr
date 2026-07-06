@@ -88,6 +88,44 @@ func Build(in Input) (*Plan, error) {
 		}
 	}
 
+	coldPaths := map[string]model.Tier{}
+	for _, tier := range in.Tiers {
+		if tier.Role != model.RoleCold {
+			continue
+		}
+		for _, path := range tier.Paths {
+			coldPaths[path] = tier
+		}
+	}
+
+	// Promotions run first: an upcoming item has no business sitting on
+	// cold storage - it's about to start actively receiving new episodes/
+	// a release, and needs to be back on fast storage before that
+	// happens, not packed away on a slow satellite drive. This also
+	// frees the cold space it was occupying before the hot->cold pass
+	// below considers what else has room to move in.
+	for _, c := range upcomingOnCold(in.Items, coldPaths) {
+		fromTier := coldPaths[c.Item.RootFolderPath]
+
+		destTier, destPath, ok := pickHotDestination(in.Tiers, working, c.Item.Type, c.Item.SizeBytes)
+		if !ok {
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back before it's released (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
+			continue
+		}
+
+		plan.Entries = append(plan.Entries, MoveEntry{
+			Item:     c.Item,
+			FromTier: fromTier.Name,
+			FromPath: c.Item.RootFolderPath,
+			ToTier:   destTier.Name,
+			ToPath:   destPath,
+			Reasons:  []string{"upcoming - misplaced on cold storage, moving back before it's released"},
+		})
+
+		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
+	}
+
 	candidates := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
 
 	for _, c := range candidates {
@@ -115,6 +153,28 @@ func Build(in Input) (*Plan, error) {
 
 	plan.FinalUsage = working
 	return plan, nil
+}
+
+// upcomingOnCold returns every item that hasn't been released/premiered
+// yet but is currently sitting on a cold-tier path - likely because it was
+// imported straight into a root folder Coldarr had previously packed with
+// older, already-cold-eligible content, or because a prior season/cut of
+// it was moved to cold before this one was announced. Not gated by
+// cooldown or minimum move size: unlike the coldness ranking below, this
+// is a correctness fix, not a stylistic rebalance, and it's a one-time
+// transition per item (once it's released it's no longer "upcoming").
+func upcomingOnCold(items []ItemEval, coldPaths map[string]model.Tier) []ItemEval {
+	var out []ItemEval
+	for _, it := range items {
+		if !it.Item.Upcoming {
+			continue
+		}
+		if _, onColdPath := coldPaths[it.Item.RootFolderPath]; !onColdPath {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // coldCandidates returns every cold-scored item currently sitting on a hot
@@ -190,6 +250,43 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 			}
 			if u.UsedPercent > bestUsedPercent {
 				bestUsedPercent = u.UsedPercent
+				bestTier = tier
+				bestPath = path
+				found = true
+			}
+		}
+	}
+
+	return bestTier, bestPath, found
+}
+
+// pickHotDestination finds a hot-tier path with enough free room to accept
+// sizeBytes, for moving an upcoming item back off cold storage (see
+// upcomingOnCold). Hot storage is never packed toward a usage level, so
+// unlike pickDestination there's no target/max ceiling to respect - just
+// enough space to fit. Among viable paths, prefers whichever currently has
+// the most free space, spreading rather than concentrating.
+func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) (model.Tier, string, bool) {
+	var bestTier model.Tier
+	var bestPath string
+	var bestFree uint64
+	found := false
+
+	for _, tier := range tiers {
+		if tier.Role != model.RoleHot || !tier.AcceptsMediaType(mt) {
+			continue
+		}
+		for _, path := range tier.Paths {
+			u, ok := usage[path]
+			if !ok || u.TotalBytes == 0 {
+				continue
+			}
+			projected := applyDelta(u, sizeBytes)
+			if projected.UsedBytes > u.TotalBytes {
+				continue
+			}
+			if !found || u.FreeBytes > bestFree {
+				bestFree = u.FreeBytes
 				bestTier = tier
 				bestPath = path
 				found = true

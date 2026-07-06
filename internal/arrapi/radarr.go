@@ -33,6 +33,21 @@ type radarrMovie struct {
 	Added            time.Time `json:"added"`
 	Tags             []int     `json:"tags"`
 	SizeOnDisk       int64     `json:"sizeOnDisk"`
+	// Status is Radarr's MovieStatusType: "tba", "announced",
+	// "inCinemas", or "released" - anything short of "released" means no
+	// home-viewing file is expected yet.
+	Status string `json:"status"`
+}
+
+// upcomingMovieStatuses are Radarr's MovieStatusType values that mean "not
+// yet released for home viewing" - an allow-list rather than checking
+// Status != "released", so an unrecognized/future status string fails
+// safe (not treated as upcoming) instead of accidentally locking a movie
+// onto hot storage forever.
+var upcomingMovieStatuses = map[string]bool{
+	"tba":       true,
+	"announced": true,
+	"inCinemas": true,
 }
 
 type radarrQueueRecord struct {
@@ -104,6 +119,7 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 			QualityProfileName: profileByID[m.QualityProfileID],
 			Monitored:          m.Monitored,
 			HasFile:            m.HasFile,
+			Upcoming:           upcomingMovieStatuses[m.Status],
 			InActiveQueue:      busy[m.ID],
 		})
 	}
