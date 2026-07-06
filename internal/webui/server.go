@@ -187,6 +187,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/notifications/delete", s.handleNotificationsDelete)
 
 	mux.HandleFunc("GET /settings/scheduler", s.handleSchedulerPage)
+	mux.HandleFunc("POST /settings/scheduler/refresh_links/run", s.handleRefreshLinksNow)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
 
 	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
