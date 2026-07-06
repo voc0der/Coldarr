@@ -39,6 +39,7 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 
+			srv.StartScheduler()
 			return srv.ListenAndServe(addr)
 		},
 	}

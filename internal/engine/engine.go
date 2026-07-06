@@ -126,6 +126,19 @@ func (inv *Inventory) VolumeOf() map[string]uint64 {
 	return out
 }
 
+// ColdTierPaths returns PathStatus for every path belonging to a
+// cold-role tier - used by the scheduled "Rescan Cold Storage" task,
+// which only reports on cold storage, not the whole inventory.
+func (inv *Inventory) ColdTierPaths() []PathStatus {
+	var out []PathStatus
+	for _, status := range inv.PathStatus {
+		if status.Tier.Role == model.RoleCold {
+			out = append(out, status)
+		}
+	}
+	return out
+}
+
 // SharedVolumePaths returns every other configured path that is on the
 // same physical volume as path, for surfacing in the UI.
 func (inv *Inventory) SharedVolumePaths(path string) []string {

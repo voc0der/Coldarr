@@ -1,0 +1,34 @@
+{{define "schedule_form"}}
+<div class="card">
+  <h2 style="margin-top:0">{{.Label}}</h2>
+  <p class="hint">{{.Hint}}</p>
+  {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+  <p class="muted">{{if .LastRan}}Last ran: {{.LastRan}}{{else}}Never run yet.{{end}}</p>
+  <form class="stacked" method="post" action="/settings/scheduler/{{.Task}}">
+    <div class="checkbox-row">
+      <input type="checkbox" id="enabled-{{.Task}}" name="enabled" {{if .Enabled}}checked{{end}}>
+      <label for="enabled-{{.Task}}" style="font-weight:400">Enabled</label>
+    </div>
+    <div>
+      <label for="unit-{{.Task}}">Recurrence</label>
+      <select id="unit-{{.Task}}" name="unit">
+        <option value="daily" {{if eq .Unit "daily"}}selected{{end}}>Daily</option>
+        <option value="hourly" {{if eq .Unit "hourly"}}selected{{end}}>Hourly</option>
+      </select>
+    </div>
+    <div>
+      <label for="every-{{.Task}}">Every</label>
+      <input type="number" id="every-{{.Task}}" name="every" min="1" value="{{.Every}}">
+      <p class="hint">Day(s) if Recurrence is Daily, hour(s) if Hourly.</p>
+    </div>
+    <div>
+      <label for="at-{{.Task}}">At</label>
+      <input type="time" id="at-{{.Task}}" name="at" value="{{.At}}">
+      <p class="hint">24h local time - only used when Recurrence is Daily.</p>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+{{end}}

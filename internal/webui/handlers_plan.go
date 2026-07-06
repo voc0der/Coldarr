@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vocoder/coldarr/internal/engine"
 	"github.com/vocoder/coldarr/internal/mover"
+	"github.com/vocoder/coldarr/internal/planner"
 )
 
 type planEntryView struct {
@@ -167,10 +169,27 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))
-	if err != nil {
+	if _, err := s.startApply(eng, inv, plan); err != nil {
 		s.renderPlanError(w, err)
 		return
+	}
+
+	http.Redirect(w, r, "/plan", http.StatusSeeOther)
+}
+
+// startApply acquires the mover lock, kicks off the plan's moves in the
+// background, and records the run as currentRun so the status page (and
+// a concurrent scheduled tick, see handlers_scheduler.go) can see it's in
+// flight - shared by the manual "Apply this plan" button and the
+// scheduled "Run the Plan" task. It always spawns a goroutine that waits
+// for the moves to finish and triggers a Jellyfin refresh if anything
+// moved. A caller that also needs to know when the run finishes (e.g. to
+// send a notification) calls progress.Wait() again itself -
+// mover.Progress supports any number of independent waiters.
+func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *planner.Plan) (*mover.Progress, error) {
+	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))
+	if err != nil {
+		return nil, err
 	}
 
 	progress := eng.Movers().Apply(plan, inv.VolumeOf())
@@ -192,7 +211,7 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	http.Redirect(w, r, "/plan", http.StatusSeeOther)
+	return progress, nil
 }
 
 type applyStatusEntryView struct {
