@@ -98,9 +98,7 @@ build and publish the Docker image. To ship a new version:
 - Plex support alongside Jellyfin
 - Jellyfin play-history/play-count and request-history (Jellyseerr/
   Overseerr) as scoring inputs (Favorites are already in)
-- An automatic scheduled mode (report/plan/apply are all you get for now
-  - on purpose, until the policy engine has proven itself)
 - Torrent client / seeding-state awareness
 - GUI authentication
 - Editing policy thresholds (tags, cooldown, score threshold) through the
-  GUI, not just tiers/connections
+  GUI, not just tiers/connections/notifications/scheduler

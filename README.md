@@ -148,14 +148,17 @@ Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
 
 - **Dashboard** - tier usage/space allotment, library item counts by
   decision (protected/hot/cold), connection status.
-- **Connections** - configure and test Radarr/Sonarr/Jellyfin.
-- **Tiers** - add/edit/delete hot and cold tiers, with live per-path disk
-  usage shown right in the list.
 - **Plan** - the same dry-run preview as the CLI's `plan`, with an Apply
-  button (confirm dialog, then executes through Radarr/Sonarr).
-- **Apply status** - live progress of the current (or most recent) apply
-  run, per item, auto-refreshing until it finishes.
-- **History** - every move Coldarr has executed.
+  button (confirm dialog, then executes through Radarr/Sonarr) and live
+  progress of the current (or most recent) apply run, auto-refreshing
+  until it finishes.
+- **History** - every move Coldarr has executed, with a size-verification
+  check to catch a transfer a crash left half-done.
+- **Settings** - Connections (configure/test Radarr/Sonarr/Jellyfin),
+  Tiers (add/edit/delete hot and cold tiers, live per-path disk usage),
+  Notifications (an Apprise webhook for run summaries), and Scheduler
+  (optionally run the plan or a cold-storage health check on a schedule -
+  see [FEATURES.md](FEATURES.md) for details).
 
 **The GUI has no built-in authentication.** It can view connection status
 and trigger real moves, so put it behind your own reverse proxy/auth
@@ -170,7 +173,7 @@ cp docker-compose.example.yml docker-compose.yml   # edit tier paths, ports
 cp .env.example .env                                # only if using env-var connections
 
 docker compose up -d
-# then open http://localhost:8478 and use the Connections/Tiers pages,
+# then open http://localhost:8478 and use the Settings pages,
 # or configure everything via env vars / a mounted coldarr.yaml instead
 ```
 
