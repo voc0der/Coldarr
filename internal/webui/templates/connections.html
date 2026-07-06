@@ -46,6 +46,17 @@
   {{end}}
   <div id="test-{{.App}}"></div>
   {{end}}
+
+  <form class="stacked" method="post" action="/settings/connections/{{.App}}/external-url" style="margin-top:0.75rem">
+    <div>
+      <label for="ext-{{.App}}">External URL <span class="hint">(optional)</span></label>
+      <input type="url" id="ext-{{.App}}" name="external_url" placeholder="{{.ExternalURLPlaceholder}}" value="{{.ExternalURL}}">
+    </div>
+    <p class="hint">Used only to build clickable links to this item in {{.App}} from the Plan/History pages' Links column - e.g. a public hostname your reverse proxy exposes instead of the URL above. Left blank, links fall back to the URL above. This address doesn't need to be reachable from Coldarr itself, only from your browser - so it's fine if it sits behind something like Authelia/Authentik that would bounce an unauthenticated request.</p>
+    <div class="btn-row">
+      <button type="submit" class="btn">Save external URL</button>
+    </div>
+  </form>
 </div>
 {{end}}
 {{end}}

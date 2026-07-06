@@ -25,6 +25,7 @@ func (r *RadarrClient) Ping() (version string, err error) {
 type radarrMovie struct {
 	ID               int       `json:"id"`
 	Title            string    `json:"title"`
+	TitleSlug        string    `json:"titleSlug"`
 	Path             string    `json:"path"`
 	RootFolderPath   string    `json:"rootFolderPath"`
 	QualityProfileID int       `json:"qualityProfileId"`
@@ -111,6 +112,7 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 			ID:                 m.ID,
 			Type:               model.Movie,
 			Title:              m.Title,
+			TitleSlug:          m.TitleSlug,
 			Path:               m.Path,
 			RootFolderPath:     m.RootFolderPath,
 			SizeBytes:          m.SizeOnDisk,
@@ -124,6 +126,22 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// TitleSlugs returns every movie's titleSlug keyed by Radarr's internal
+// ID - used by the History page (which only records the ID) to build a
+// deep link into Radarr's web UI without paying for FetchMovies' extra
+// tag/quality-profile/queue round trips, which a link has no use for.
+func (r *RadarrClient) TitleSlugs() (map[int]string, error) {
+	var movies []radarrMovie
+	if err := r.c.get("/api/v3/movie", nil, &movies); err != nil {
+		return nil, err
+	}
+	slugs := make(map[int]string, len(movies))
+	for _, m := range movies {
+		slugs[m.ID] = m.TitleSlug
+	}
+	return slugs, nil
 }
 
 // GetMovieSize returns the size and current folder Radarr reports for

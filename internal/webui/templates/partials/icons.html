@@ -50,3 +50,17 @@ embedded straight into the binary via the existing static/template
 {{define "icon-clock"}}<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>{{end}}
 
 {{define "icon-settings"}}<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.35a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.04-1.56V3a2 2 0 0 1 4 0v.09A1.7 1.7 0 0 0 15 4.65a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1.04H21a2 2 0 0 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>{{end}}
+
+{{/*
+  App-monogram glyphs for the Links column (Plan/History) - a circle plus
+  letter in the same hand-drawn outline style as the rest of this set,
+  rather than reproducing each project's actual trademarked logo.
+*/}}
+{{define "icon-radarr"}}<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><text x="12" y="16.5" text-anchor="middle" font-size="10" font-weight="700" font-family="sans-serif" fill="currentColor" stroke="none">R</text></svg>{{end}}
+
+{{define "icon-sonarr"}}<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><text x="12" y="16.5" text-anchor="middle" font-size="10" font-weight="700" font-family="sans-serif" fill="currentColor" stroke="none">S</text></svg>{{end}}
+
+{{define "icon-jellyfin"}}<svg class="icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><text x="12" y="16.5" text-anchor="middle" font-size="10" font-weight="700" font-family="sans-serif" fill="currentColor" stroke="none">J</text></svg>{{end}}
+
+{{/* Renders a []linkView (see internal/webui/links.go) as a row of clickable app icons - used by the Links column on Plan and History. */}}
+{{define "links_cell"}}{{range .}}<a href="{{.URL}}" target="_blank" rel="noopener" title="Open in {{.App}}" class="link-icon">{{if eq .App "radarr"}}{{template "icon-radarr"}}{{else if eq .App "sonarr"}}{{template "icon-sonarr"}}{{else if eq .App "jellyfin"}}{{template "icon-jellyfin"}}{{end}}</a>{{end}}{{end}}

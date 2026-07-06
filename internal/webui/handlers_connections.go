@@ -10,15 +10,17 @@ import (
 )
 
 type connRow struct {
-	App            string
-	URL            string
-	URLPlaceholder string
-	APIKeySet      bool
-	Enabled        bool
-	Source         string
-	Locked         bool
-	EnvURLVar      string
-	EnvKeyVar      string
+	App                    string
+	URL                    string
+	URLPlaceholder         string
+	APIKeySet              bool
+	Enabled                bool
+	Source                 string
+	Locked                 bool
+	EnvURLVar              string
+	EnvKeyVar              string
+	ExternalURL            string
+	ExternalURLPlaceholder string
 }
 
 var defaultPorts = map[string]string{
@@ -38,17 +40,25 @@ func (s *Server) connRows() []connRow {
 	rows := make([]connRow, 0, len(conncheck.Apps))
 	for _, app := range conncheck.Apps {
 		conn, source := s.connStore.Effective(app)
+		// External URL is read from the raw stored connection, not
+		// Effective - it has no env var override, so it should round-trip
+		// on the settings form even in the edge case where it's set
+		// before URL/API key ever are (when Effective would report
+		// SourceNone and zero out everything else).
+		raw, _ := s.connStore.Get(app)
 		prefix := strings.ToUpper(app)
 		rows = append(rows, connRow{
-			App:            app,
-			URL:            conn.URL,
-			URLPlaceholder: fmt.Sprintf("http://%s:%s", app, defaultPorts[app]),
-			APIKeySet:      conn.APIKey != "",
-			Enabled:        conn.Enabled,
-			Source:         source,
-			Locked:         source == secrets.SourceEnv,
-			EnvURLVar:      prefix + "_URL",
-			EnvKeyVar:      prefix + "_API_KEY",
+			App:                    app,
+			URL:                    conn.URL,
+			URLPlaceholder:         fmt.Sprintf("http://%s:%s", app, defaultPorts[app]),
+			APIKeySet:              conn.APIKey != "",
+			Enabled:                conn.Enabled,
+			Source:                 source,
+			Locked:                 source == secrets.SourceEnv,
+			EnvURLVar:              prefix + "_URL",
+			EnvKeyVar:              prefix + "_API_KEY",
+			ExternalURL:            raw.ExternalURL,
+			ExternalURLPlaceholder: fmt.Sprintf("https://%s.mydomain.com", app),
 		})
 	}
 	return rows
@@ -140,6 +150,32 @@ func (s *Server) handleConnectionSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, "connections", connectionsData{Title: "Connections", Saved: app + " connection saved.", Rows: s.connRows()})
+}
+
+// handleConnectionExternalURLSave saves just the External URL field,
+// independent of Locked state (there's no env var override for it) and
+// without the URL/API-key validation handleConnectionSave applies -
+// External URL is optional and purely cosmetic (it builds outbound
+// browser links, never a Coldarr API call), so an empty value just means
+// "fall back to the URL above" rather than an error.
+func (s *Server) handleConnectionExternalURLSave(w http.ResponseWriter, r *http.Request) {
+	app := r.PathValue("app")
+	if !conncheck.Valid(app) {
+		http.Error(w, "unknown app", http.StatusNotFound)
+		return
+	}
+
+	_ = r.ParseForm()
+	externalURL := strings.TrimSpace(r.FormValue("external_url"))
+
+	conn, _ := s.connStore.Get(app)
+	conn.ExternalURL = externalURL
+	if err := s.connStore.Set(app, conn); err != nil {
+		s.render(w, "connections", connectionsData{Title: "Connections", Error: err.Error(), Rows: s.connRows()})
+		return
+	}
+
+	s.render(w, "connections", connectionsData{Title: "Connections", Saved: app + " external URL saved.", Rows: s.connRows()})
 }
 
 func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) {

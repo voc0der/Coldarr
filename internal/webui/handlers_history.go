@@ -17,6 +17,7 @@ const historyPageSize = 25
 type historyRowView struct {
 	MovedAt  string
 	Title    string
+	Links    []linkView
 	ArrApp   string
 	FromTier string
 	FromPath string
@@ -83,10 +84,33 @@ func (s *Server) buildHistoryData(page int) historyData {
 	data.HasNext = resolvedPage < totalPages
 	data.NextPage = resolvedPage + 1
 
+	linkSrc := s.buildLinkSources(eng)
+	radarrSlugByID := map[int]string{}
+	if eng.Radarr != nil {
+		if slugs, err := eng.Radarr.TitleSlugs(); err == nil {
+			radarrSlugByID = slugs
+		}
+	}
+	sonarrSlugByID := map[int]string{}
+	if eng.Sonarr != nil {
+		if slugs, err := eng.Sonarr.TitleSlugs(); err == nil {
+			sonarrSlugByID = slugs
+		}
+	}
+
 	for _, rec := range pageRecords {
+		var slug string
+		switch rec.ArrApp {
+		case "radarr":
+			slug = radarrSlugByID[rec.ItemID]
+		case "sonarr":
+			slug = sonarrSlugByID[rec.ItemID]
+		}
+
 		data.Rows = append(data.Rows, historyRowView{
 			MovedAt:  rec.MovedAt.Format("2006-01-02 15:04"),
 			Title:    rec.Title,
+			Links:    itemLinks(linkSrc, rec.ArrApp, slug, rec.ToPath),
 			ArrApp:   rec.ArrApp,
 			FromTier: rec.FromTier,
 			FromPath: rec.FromPath,

@@ -30,6 +30,7 @@ type sonarrSeriesStatistics struct {
 type sonarrSeries struct {
 	ID               int                    `json:"id"`
 	Title            string                 `json:"title"`
+	TitleSlug        string                 `json:"titleSlug"`
 	Path             string                 `json:"path"`
 	RootFolderPath   string                 `json:"rootFolderPath"`
 	QualityProfileID int                    `json:"qualityProfileId"`
@@ -105,6 +106,7 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 			ID:                 sr.ID,
 			Type:               model.TV,
 			Title:              sr.Title,
+			TitleSlug:          sr.TitleSlug,
 			Path:               sr.Path,
 			RootFolderPath:     sr.RootFolderPath,
 			SizeBytes:          sr.Statistics.SizeOnDisk,
@@ -120,6 +122,22 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		})
 	}
 	return items, nil
+}
+
+// TitleSlugs returns every series' titleSlug keyed by Sonarr's internal
+// ID - used by the History page (which only records the ID) to build a
+// deep link into Sonarr's web UI without paying for FetchSeries' extra
+// tag/quality-profile/queue round trips, which a link has no use for.
+func (s *SonarrClient) TitleSlugs() (map[int]string, error) {
+	var series []sonarrSeries
+	if err := s.c.get("/api/v3/series", nil, &series); err != nil {
+		return nil, err
+	}
+	slugs := make(map[int]string, len(series))
+	for _, sr := range series {
+		slugs[sr.ID] = sr.TitleSlug
+	}
+	return slugs, nil
 }
 
 // GetSeriesSize returns the size and current folder Sonarr reports for

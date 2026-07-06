@@ -100,21 +100,23 @@ type userResource struct {
 	ID string `json:"Id"`
 }
 
-type itemsResponse struct {
-	Items []struct {
-		Path string `json:"Path"`
-	} `json:"Items"`
+type libraryItem struct {
+	ID   string `json:"Id"`
+	Path string `json:"Path"`
 }
 
-// FavoritePaths returns the cleaned filesystem paths of every movie and
-// series marked as a Favorite by any Jellyfin user, for matching back to
-// Radarr/Sonarr items by path. Favorite status is per-user in Jellyfin's
-// API (there's no library-wide "is this a favorite" flag), so this
-// enumerates every user and unions their favorites - if anyone in the
-// household favorited it, Coldarr treats it as protected. Per-user lookups
-// are independent, so they run concurrently rather than adding one round
-// trip of network latency per user to every plan/dashboard page load.
-func (c *Client) FavoritePaths() (map[string]bool, error) {
+type itemsResponse struct {
+	Items []libraryItem `json:"Items"`
+}
+
+// perUserItems fans out "/Users/{id}/Items" with the given query across
+// every Jellyfin user and returns the union of items seen by any of them,
+// deduplicated by ID - a library-restricted user might not see every item,
+// so this counts anything visible to at least one household member.
+// Per-user lookups are independent, so they run concurrently rather than
+// adding one round trip of network latency per user to every plan/
+// dashboard page load.
+func (c *Client) perUserItems(q url.Values) ([]libraryItem, error) {
 	body, err := c.get("/Users", nil)
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -125,13 +127,7 @@ func (c *Client) FavoritePaths() (map[string]bool, error) {
 		return nil, fmt.Errorf("listing users: decoding response: %w", err)
 	}
 
-	q := url.Values{}
-	q.Set("Recursive", "true")
-	q.Set("Filters", "IsFavorite")
-	q.Set("IncludeItemTypes", "Movie,Series")
-	q.Set("Fields", "Path")
-
-	perUser := make([]map[string]bool, len(users))
+	perUser := make([][]libraryItem, len(users))
 	errs := make([]error, len(users))
 
 	var wg sync.WaitGroup
@@ -142,36 +138,103 @@ func (c *Client) FavoritePaths() (map[string]bool, error) {
 
 			body, err := c.get("/Users/"+userID+"/Items", q)
 			if err != nil {
-				errs[i] = fmt.Errorf("listing favorites for user %s: %w", userID, err)
+				errs[i] = fmt.Errorf("listing items for user %s: %w", userID, err)
 				return
 			}
 
 			var resp itemsResponse
 			if err := json.Unmarshal(body, &resp); err != nil {
-				errs[i] = fmt.Errorf("listing favorites for user %s: decoding response: %w", userID, err)
+				errs[i] = fmt.Errorf("listing items for user %s: decoding response: %w", userID, err)
 				return
 			}
-
-			userPaths := map[string]bool{}
-			for _, item := range resp.Items {
-				if item.Path == "" {
-					continue
-				}
-				userPaths[filepath.Clean(item.Path)] = true
-			}
-			perUser[i] = userPaths
+			perUser[i] = resp.Items
 		}(i, u.ID)
 	}
 	wg.Wait()
 
-	paths := map[string]bool{}
+	seen := map[string]bool{}
+	var items []libraryItem
 	for i, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		for p := range perUser[i] {
-			paths[p] = true
+		for _, item := range perUser[i] {
+			if item.ID == "" || seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			items = append(items, item)
 		}
 	}
+	return items, nil
+}
+
+// FavoritePaths returns the cleaned filesystem paths of every movie and
+// series marked as a Favorite by any Jellyfin user, for matching back to
+// Radarr/Sonarr items by path. Favorite status is per-user in Jellyfin's
+// API (there's no library-wide "is this a favorite" flag), so this
+// enumerates every user and unions their favorites - if anyone in the
+// household favorited it, Coldarr treats it as protected.
+func (c *Client) FavoritePaths() (map[string]bool, error) {
+	q := url.Values{}
+	q.Set("Recursive", "true")
+	q.Set("Filters", "IsFavorite")
+	q.Set("IncludeItemTypes", "Movie,Series")
+	q.Set("Fields", "Path")
+
+	items, err := c.perUserItems(q)
+	if err != nil {
+		return nil, err
+	}
+
+	paths := map[string]bool{}
+	for _, item := range items {
+		if item.Path == "" {
+			continue
+		}
+		paths[filepath.Clean(item.Path)] = true
+	}
 	return paths, nil
+}
+
+// LibraryItemIDs returns every movie/series Jellyfin knows about, keyed by
+// cleaned filesystem path, mapped to Jellyfin's own internal item ID -
+// used to build a deep link from a Radarr/Sonarr item into its Jellyfin
+// entry, when the two can be matched by path.
+func (c *Client) LibraryItemIDs() (map[string]string, error) {
+	q := url.Values{}
+	q.Set("Recursive", "true")
+	q.Set("IncludeItemTypes", "Movie,Series")
+	q.Set("Fields", "Path")
+
+	items, err := c.perUserItems(q)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := map[string]string{}
+	for _, item := range items {
+		if item.Path == "" || item.ID == "" {
+			continue
+		}
+		ids[filepath.Clean(item.Path)] = item.ID
+	}
+	return ids, nil
+}
+
+// ServerID returns this Jellyfin server's own ID, needed for the
+// "serverId" query parameter on a web UI deep link.
+func (c *Client) ServerID() (string, error) {
+	body, err := c.get("/System/Info", nil)
+	if err != nil {
+		return "", err
+	}
+
+	var info struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("GET /System/Info: decoding response: %w", err)
+	}
+	return info.ID, nil
 }

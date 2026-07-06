@@ -121,6 +121,9 @@ h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
 .icon-spin { animation: coldarr-spin .9s linear infinite; }
 @keyframes coldarr-spin { to { transform: rotate(360deg); } }
 
+.link-icon { display: inline-flex; font-size: 1.15rem; margin-right: 0.35rem; }
+.link-icon:last-child { margin-right: 0; }
+
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; }
