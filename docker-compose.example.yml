@@ -40,6 +40,7 @@ services:
       # COLDARR_OIDC_REDIRECT_URL: https://coldarr.example.com/auth/callback
       # COLDARR_OIDC_REQUIRED_GROUP: coldarr
       # COLDARR_OIDC_GROUPS_CLAIM: groups
+      # COLDARR_OIDC_CLIENT_SECRET_POST: "true" # Authelia often wants this.
       # COLDARR_OIDC_AUTO_LOGIN: "false"
       # Optional - omit these and use the GUI's Connections page instead.
       # RADARR_URL: http://radarr:7878

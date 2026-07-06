@@ -54,6 +54,9 @@ func TestApplyDefaults_AuthOIDC(t *testing.T) {
 	if cfg.Auth.OIDC.GroupsClaim != "groups" {
 		t.Fatalf("GroupsClaim = %q, want groups", cfg.Auth.OIDC.GroupsClaim)
 	}
+	if cfg.Auth.OIDC.TokenAuthMethod != "auto" {
+		t.Fatalf("TokenAuthMethod = %q, want auto", cfg.Auth.OIDC.TokenAuthMethod)
+	}
 	if cfg.Auth.OIDC.Enabled {
 		t.Fatal("OIDC auth should default to disabled")
 	}

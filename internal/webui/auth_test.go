@@ -3,6 +3,8 @@ package webui
 import (
 	"testing"
 
+	"golang.org/x/oauth2"
+
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
@@ -81,6 +83,7 @@ func TestEffectiveOIDCConfigEnvOverridesStoredValues(t *testing.T) {
 	t.Setenv("COLDARR_OIDC_CLIENT_ID", "env-client")
 	t.Setenv("COLDARR_OIDC_CLIENT_SECRET", "env-secret")
 	t.Setenv("COLDARR_OIDC_REQUIRED_GROUP", "env-group")
+	t.Setenv("COLDARR_OIDC_CLIENT_SECRET_POST", "true")
 	t.Setenv("COLDARR_OIDC_DISABLE_AUTO_LOGIN", "true")
 
 	got := s.effectiveOIDCConfig()
@@ -90,10 +93,33 @@ func TestEffectiveOIDCConfigEnvOverridesStoredValues(t *testing.T) {
 	if got.RequiredGroup != "env-group" {
 		t.Fatalf("RequiredGroup = %q, want env-group", got.RequiredGroup)
 	}
+	if got.TokenAuthMethod != oidcTokenAuthClientPost {
+		t.Fatalf("TokenAuthMethod = %q, want %q", got.TokenAuthMethod, oidcTokenAuthClientPost)
+	}
 	if got.AutoLogin {
 		t.Fatal("COLDARR_OIDC_DISABLE_AUTO_LOGIN should force AutoLogin off")
 	}
 	if !got.EnvLocked {
 		t.Fatal("expected EnvLocked when OIDC env vars are set")
+	}
+}
+
+func TestOIDCOAuth2AuthStyle(t *testing.T) {
+	tests := []struct {
+		method string
+		want   oauth2.AuthStyle
+	}{
+		{method: oidcTokenAuthAuto, want: oauth2.AuthStyleAutoDetect},
+		{method: oidcTokenAuthClientPost, want: oauth2.AuthStyleInParams},
+		{method: oidcTokenAuthClientBasic, want: oauth2.AuthStyleInHeader},
+		{method: "", want: oauth2.AuthStyleAutoDetect},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			if got := oidcOAuth2AuthStyle(tt.method); got != tt.want {
+				t.Fatalf("oidcOAuth2AuthStyle(%q) = %v, want %v", tt.method, got, tt.want)
+			}
+		})
 	}
 }

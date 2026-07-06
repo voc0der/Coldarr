@@ -103,4 +103,5 @@ auth:
     redirect_url: https://coldarr.example.com/auth/callback
     required_group: coldarr
     groups_claim: groups
+    token_auth_method: auto # auto, client_secret_basic, or client_secret_post
     auto_login: false

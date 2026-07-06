@@ -35,6 +35,11 @@
       <input type="password" id="client_secret" name="client_secret" placeholder="{{if .ClientSecretSet}}(unchanged - leave blank to keep it){{else}}client secret{{end}}">
       <p class="hint">Stored encrypted, alongside the other connection credentials.</p>
     </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="client_secret_post" name="client_secret_post" {{if .ClientSecretPost}}checked{{end}}>
+      <label for="client_secret_post" style="font-weight:400">Use client_secret_post for token exchange</label>
+    </div>
+    <p class="hint">Enable this when the OIDC client is registered with <code>token_endpoint_auth_method: client_secret_post</code>. Leave it off for <code>client_secret_basic</code>.</p>
     <div>
       <label for="redirect_url">Redirect URL</label>
       <input type="url" id="redirect_url" name="redirect_url" value="{{.RedirectURL}}" placeholder="https://coldarr.example.com/auth/callback">
