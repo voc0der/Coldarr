@@ -16,6 +16,10 @@ disk directly, and nothing moves without a dry-run `report`/`plan` first.
 CLI and web GUI, same config either way - mix them (e.g. configure
 connections in the GUI, run `apply` from cron).
 
+<p align="center">
+  <img src="assets/hot-cold-example.svg" alt="Example layout: primary NAS at 76%, satellite drives packed to 99%">
+</p>
+
 ## Quick start
 
 ```
