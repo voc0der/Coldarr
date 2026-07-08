@@ -74,6 +74,12 @@ type Server struct {
 	authMu       sync.Mutex
 	authSessions map[string]authSession
 	oidcStates   map[string]oidcLoginState
+	// password gates the GUI whenever OIDC is disabled - resolved once in
+	// New() from COLDARR_PASSWORD/COLDARR_PASSWORD_FILE (or generated), so
+	// it's never reachable with zero protection just because nobody set
+	// up OIDC. Empty when OIDC was enabled at startup, since it's unused
+	// in that case.
+	password string
 }
 
 type applyRun struct {
@@ -90,7 +96,7 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
+	s := &Server{
 		cfgPath:      cfgPath,
 		cfg:          cfg,
 		connStore:    connStore,
@@ -98,7 +104,20 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		pages:        pages,
 		authSessions: map[string]authSession{},
 		oidcStates:   map[string]oidcLoginState{},
-	}, nil
+	}
+
+	if !s.effectiveOIDCConfig().Enabled {
+		password, generated, err := resolvePassword()
+		if err != nil {
+			return nil, err
+		}
+		s.password = password
+		if generated {
+			logGeneratedPassword(password)
+		}
+	}
+
+	return s, nil
 }
 
 // linkCachePath derives the Links-column reference-data cache file's
@@ -160,6 +179,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleDashboard)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /login", s.handleLoginPage)
+	mux.HandleFunc("POST /login", s.handlePasswordLogin)
 	mux.HandleFunc("GET /auth/login", s.handleOIDCLogin)
 	mux.HandleFunc("GET /auth/callback", s.handleOIDCCallback)
 	mux.HandleFunc("GET /auth/logout", s.handleLogout)
