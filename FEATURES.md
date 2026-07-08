@@ -64,7 +64,7 @@ every run - scheduled or manual - sends you a one-line summary. Flip on
 Verbose if you also want a ping per item, not just the summary; it's off by
 default so a big move doesn't spam you.
 
-Settings > Scheduler adds two jobs, both off until you turn them on:
+Settings > Scheduler adds three jobs, all off until you turn them on:
 
 - **Run the Plan** - does exactly what clicking Apply does, just on a
   schedule (every N hours, or daily at a time you pick). No cron entry to
@@ -73,6 +73,9 @@ Settings > Scheduler adds two jobs, both off until you turn them on:
   (usage, reachability), nothing gets moved. Handy for those bare satellite
   drives - you find out one's gone missing or full from a notification, not
   from a failed transfer at 3am.
+- **Refresh Links Cache** - keeps the Plan/History pages' Links column
+  (deep links into Radarr/Sonarr/Jellyfin) current without hitting those
+  apps live on every page view.
 
 ## What it's not (yet)
 
