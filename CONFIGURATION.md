@@ -85,7 +85,13 @@ Prefer the CLI, or scripting Coldarr instead of clicking through the GUI?
 See [CLI.md](CLI.md) for the full command reference.
 
 Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
-`COLDARR_LISTEN_ADDR`):
+`COLDARR_LISTEN_ADDR`). It can view connection status and trigger real
+moves, so it's never reachable unauthenticated: without OIDC configured,
+it falls back to a single shared password instead - see [Docker](#docker)
+below for how that password is set (`COLDARR_PASSWORD`/
+`COLDARR_PASSWORD_FILE`), or configure real identity-provider-backed
+login and group-based access via Settings -> Auth (or `COLDARR_OIDC_*`
+env vars). Once signed in:
 
 - **Dashboard** - tier usage/space allotment, library item counts by
   decision (protected/hot/cold), connection status.
@@ -101,13 +107,6 @@ Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
   webhook for run summaries), and Scheduler (optionally run the plan or a
   cold-storage health check on a schedule - see [FEATURES.md](FEATURES.md)
   for details).
-
-The GUI can view connection status and trigger real moves, so it's never
-reachable unauthenticated: without OIDC configured, it falls back to a
-single shared password instead. See [Docker](#docker) below for how that
-password is set (`COLDARR_PASSWORD`/`COLDARR_PASSWORD_FILE`) - or
-configure real identity-provider-backed login and group-based access via
-Settings -> Auth (or `COLDARR_OIDC_*` env vars).
 
 ## Docker
 
