@@ -552,7 +552,7 @@ func (s *Server) cleanupAuthLocked(now time.Time) {
 // moment it restarts.
 func resolvePassword() (password string, generated bool, err error) {
 	if path := strings.TrimSpace(os.Getenv(passwordFileEnvVar)); path != "" {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is the operator's own COLDARR_PASSWORD_FILE env var, never derived from a request
 		if err != nil {
 			return "", false, fmt.Errorf("reading %s %s: %w", passwordFileEnvVar, path, err)
 		}
