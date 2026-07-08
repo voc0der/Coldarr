@@ -123,7 +123,7 @@ volume instead of the GUI, see [CLI.md](CLI.md#running-the-cli-in-docker).
 | `PUID` / `PGID`        | uid/gid the process runs as, so it can read your bind mounts. Same convention as Radarr/Sonarr/Jellyfin images. Default `1000`/`1000`. Ignored if the container is already started as non-root (`docker run --user`, compose `user:`, a rootless runtime, or a Kubernetes securityContext) - the entrypoint skips straight to running as whatever user it was given. |
 | `TZ`                   | container timezone, mostly cosmetic for log timestamps.           |
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
-| `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
+| `COLDARR_LISTEN_ADDR`  | address `serve` listens on, in Go's `host:port` form - a bare port number is normalized to `:port` (all interfaces), but anything else must include the colon yourself, e.g. `0.0.0.0:8555` or `127.0.0.1:8555`. Default `:8478`. |
 | `COLDARR_TLS_CERT_FILE` / `COLDARR_TLS_KEY_FILE` | certificate and private-key paths. Set both to make `coldarr serve` listen with HTTPS directly. |
 | `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`) | comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` headers should be trusted. Headers from other remote IPs are ignored. |
 | `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. |

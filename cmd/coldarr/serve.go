@@ -43,7 +43,7 @@ func newServeCmd() *cobra.Command {
 			}
 
 			opts := webui.ListenOptions{
-				Addr:                     addr,
+				Addr:                     normalizeListenAddr(addr),
 				TLSCertFile:              tlsCertFile,
 				TLSKeyFile:               tlsKeyFile,
 				TrustedReverseProxyCIDRs: trustedProxies,
@@ -71,4 +71,20 @@ func envFirst(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// normalizeListenAddr forgives the single most common mistake with
+// COLDARR_LISTEN_ADDR/--listen: giving a bare port ("8478") instead of the
+// host:port net.Listen expects ("" + ":8478" listens on all interfaces).
+// Anything that isn't purely digits is passed through untouched.
+func normalizeListenAddr(addr string) string {
+	if addr == "" {
+		return addr
+	}
+	for _, r := range addr {
+		if r < '0' || r > '9' {
+			return addr
+		}
+	}
+	return ":" + addr
 }
