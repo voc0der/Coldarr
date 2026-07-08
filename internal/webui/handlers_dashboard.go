@@ -24,6 +24,22 @@ type tierRow struct {
 	StatusMsg        string
 	StatusClass      string
 	SharesVolumeWith []string
+	SharedColorClass string // CSS class coloring the Tier column's link glyph; empty unless SharesVolumeWith is non-empty
+}
+
+// sharedVolumeColorClasses is the fixed color wheel for the Tier column's
+// link glyph: tiers sharing a physical disk get the same color, assigned in
+// the order their shared group is first seen while walking the (statically
+// ordered) config - so the same config always paints the same colors, never
+// randomly. Skips the hues --ok/--danger already claim elsewhere in this UI
+// (green/red), so a link color is never mistaken for a status.
+var sharedVolumeColorClasses = []string{
+	"tier-link-1", // blue
+	"tier-link-2", // aqua
+	"tier-link-3", // yellow
+	"tier-link-4", // violet
+	"tier-link-5", // magenta
+	"tier-link-6", // orange
 }
 
 type dashboardData struct {
@@ -61,6 +77,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	volumeOf := inv.VolumeOf()
+	deviceColorIdx := make(map[uint64]int)
+	nextColor := 0
+
 	for _, tier := range inv.Tiers {
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]
@@ -83,6 +103,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				row.StatusMsg = "ok"
 				row.StatusClass = "ok"
 				row.SharesVolumeWith = inv.SharedVolumePaths(path)
+				if len(row.SharesVolumeWith) > 0 {
+					dev := volumeOf[path]
+					idx, seen := deviceColorIdx[dev]
+					if !seen {
+						idx = nextColor % len(sharedVolumeColorClasses)
+						deviceColorIdx[dev] = idx
+						nextColor++
+					}
+					row.SharedColorClass = sharedVolumeColorClasses[idx]
+				}
 				usedRounded := roundTenth(row.UsedPercent)
 				if row.HasThresholds {
 					row.UsedPercentOver = usedRounded > roundTenth(row.MaxPercent)

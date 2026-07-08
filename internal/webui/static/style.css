@@ -16,6 +16,12 @@
   --shadow-md: 0 4px 12px rgba(15,23,42,.08), 0 2px 4px rgba(15,23,42,.05);
   --accent-soft: #dbe6fd;
   --stripe: rgba(15,23,42,.03);
+  --tier-link-1: #2a78d6;
+  --tier-link-2: #1baf7a;
+  --tier-link-3: #eda100;
+  --tier-link-4: #4a3aa7;
+  --tier-link-5: #e87ba4;
+  --tier-link-6: #eb6834;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +43,12 @@
     --shadow-md: 0 6px 16px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);
     --accent-soft: #1b2c4d;
     --stripe: rgba(255,255,255,.035);
+    --tier-link-1: #3987e5;
+    --tier-link-2: #199e70;
+    --tier-link-3: #c98500;
+    --tier-link-4: #9085e9;
+    --tier-link-5: #d55181;
+    --tier-link-6: #d95926;
   }
 }
 
@@ -132,6 +144,14 @@ h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
 .link-icon:last-child { margin-right: 0; }
 
 .icon-label { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+.tier-link { display: inline-flex; cursor: default; }
+.tier-link-1 { color: var(--tier-link-1); }
+.tier-link-2 { color: var(--tier-link-2); }
+.tier-link-3 { color: var(--tier-link-3); }
+.tier-link-4 { color: var(--tier-link-4); }
+.tier-link-5 { color: var(--tier-link-5); }
+.tier-link-6 { color: var(--tier-link-6); }
 
 /* Radarr/Sonarr/Jellyfin logos are fixed-color brand marks (unlike the
    hand-drawn currentColor icons), so light/dark comes from swapping which

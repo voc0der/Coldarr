@@ -35,7 +35,7 @@
 <tbody>
 {{range .Rows}}
 <tr>
-  <td><span class="icon-label">{{template "icon-hdd"}} {{.TierName}}</span></td>
+  <td><span class="icon-label">{{template "icon-hdd"}} {{.TierName}}{{if .SharedColorClass}} <span class="tier-link {{.SharedColorClass}}" title="Shares a disk with: {{range .SharesVolumeWith}}{{.}} {{end}}">{{template "icon-link"}}</span>{{end}}</span></td>
   <td><span class="badge badge-muted">{{if eq (print .Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Role}}</span></td>
   <td class="mono">{{.Path}}</td>
   {{if .Available}}
@@ -50,10 +50,7 @@
   {{else}}
   <td class="muted">-</td>
   {{end}}
-  <td>
-    <span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span>
-    {{if .SharesVolumeWith}} <span class="badge badge-warn" title="Shares a disk with: {{range .SharesVolumeWith}}{{.}} {{end}}">{{template "icon-alert-triangle"}} shares a disk</span>{{end}}
-  </td>
+  <td><span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span></td>
   {{else}}
   <td colspan="3" class="muted">unavailable</td>
   <td><span class="badge badge-danger">{{template "icon-x-circle"}} {{.StatusMsg}}</span></td>
