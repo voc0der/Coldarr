@@ -84,7 +84,7 @@ ciphertext on the same volume.
 Prefer the CLI, or scripting Coldarr instead of clicking through the GUI?
 See [CLI.md](CLI.md) for the full command reference.
 
-Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
+Web GUI (`coldarr serve`, default port `8478`, override with `--listen` or
 `COLDARR_LISTEN_ADDR`). It can view connection status and trigger real
 moves, so it's never reachable unauthenticated: without OIDC configured,
 it falls back to a single shared password instead - see [Docker](#docker)

@@ -33,7 +33,7 @@ coldarr plan     # builds and prints a move plan, makes no changes
 coldarr apply    # builds a plan, prompts, then executes it
 coldarr apply -y # skip the confirmation prompt (e.g. for cron/systemd)
 coldarr connections list|set|test|delete <radarr|sonarr|jellyfin>
-coldarr serve    # run the web GUI, default :8478
+coldarr serve    # run the web GUI, default port 8478
 ```
 
 All commands take `--config path/to/coldarr.yaml` (default

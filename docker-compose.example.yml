@@ -1,6 +1,6 @@
 # Example Coldarr deployment. Copy to docker-compose.yml and adjust paths.
 #
-# Coldarr's default command is `serve` - a persistent web GUI at :8478 for
+# Coldarr's default command is `serve` - a persistent web GUI on port 8478 for
 # configuring connections/tiers, previewing plans, and applying them by
 # hand. It is NOT a scheduler: nothing moves automatically. If you'd
 # rather script it, override `command` to a one-shot CLI call instead
