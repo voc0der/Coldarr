@@ -63,10 +63,15 @@ services:
       # - ./certs:/certs:ro
       # Tier paths: mount at the SAME path Radarr/Sonarr use internally,
       # not just the same host path - Coldarr matches Arr API root folder
-      # paths against these mounts literally.
-      - /data/media:/data/media
-      - /mnt/sat1:/mnt/sat1
-      - /mnt/sat2:/mnt/sat2
+      # paths against these mounts literally. Coldarr only ever reads them
+      # (disk usage checks, sizing candidates for a plan) - the actual
+      # move is a moveFiles: true call to Radarr/Sonarr's own API, executed
+      # by their containers against their own (separate, read-write) mount
+      # of the same paths. :ro here costs Coldarr nothing and guarantees
+      # it can't touch your media even if it tried.
+      - /data/media:/data/media:ro
+      - /mnt/sat1:/mnt/sat1:ro
+      - /mnt/sat2:/mnt/sat2:ro
     restart: unless-stopped
     # If radarr/sonarr/jellyfin are containers in this same compose
     # project, put coldarr on their network instead of using service
