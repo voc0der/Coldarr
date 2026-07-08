@@ -327,10 +327,6 @@ func (s *Server) effectiveOIDCConfig() effectiveOIDCConfig {
 		}
 	}
 	setBool("COLDARR_OIDC_AUTO_LOGIN", &out.AutoLogin)
-	if disabled, ok := boolEnv("COLDARR_OIDC_DISABLE_AUTO_LOGIN"); ok && disabled {
-		out.AutoLogin = false
-		envLocked = true
-	}
 
 	if out.RequiredGroup == "" {
 		out.RequiredGroup = "coldarr"

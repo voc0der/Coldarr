@@ -126,10 +126,10 @@ volume instead of the GUI, see [CLI.md](CLI.md#running-the-cli-in-docker).
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
 | `COLDARR_TLS_CERT_FILE` / `COLDARR_TLS_KEY_FILE` | certificate and private-key paths. Set both to make `coldarr serve` listen with HTTPS directly. |
 | `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`) | comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` headers should be trusted. Headers from other remote IPs are ignored. |
-| `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. |
-| `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM` / `COLDARR_OIDC_AUTO_LOGIN` | Optional OIDC details. Required group defaults to `coldarr`; groups claim defaults to `groups`. |
+| `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. Set `COLDARR_OIDC_ENABLED=false` to disable OIDC entirely for troubleshooting. |
+| `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM` | Optional OIDC details. Required group defaults to `coldarr`; groups claim defaults to `groups`. |
+| `COLDARR_OIDC_AUTO_LOGIN` | set to `true`/`false` to skip straight to the IdP instead of showing a login button, overriding the GUI-saved Settings -> Auth checkbox. |
 | `COLDARR_OIDC_CLIENT_SECRET_POST` | set to `true` for providers whose client registration uses `token_endpoint_auth_method: client_secret_post` (common with Authelia). The GUI exposes this as a checkbox under Settings -> Auth. |
-| `COLDARR_OIDC_DISABLE_AUTO_LOGIN` | set to `true` to force the login button page even when saved auth settings have auto-login on. Set `COLDARR_OIDC_ENABLED=false` to disable OIDC entirely for troubleshooting. |
 | `RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`) | connection overrides - see [Connections](#connections). |
 | `COLDARR_SETTLE_CHECK_INTERVAL` / `COLDARR_SETTLE_STABLE_CHECKS` / `COLDARR_SETTLE_MAX_WAIT` | tune how long `apply` waits for a move to actually land on disk before starting the next one queued for the same volume (Go duration strings, e.g. `5s`/`6h`). Defaults suit typical local disks; raise `MAX_WAIT` for very large files on slow/network storage. |
 

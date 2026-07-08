@@ -85,7 +85,7 @@ func TestEffectiveOIDCConfigEnvOverridesStoredValues(t *testing.T) {
 	t.Setenv("COLDARR_OIDC_CLIENT_SECRET", "env-secret")
 	t.Setenv("COLDARR_OIDC_REQUIRED_GROUP", "env-group")
 	t.Setenv("COLDARR_OIDC_CLIENT_SECRET_POST", "true")
-	t.Setenv("COLDARR_OIDC_DISABLE_AUTO_LOGIN", "true")
+	t.Setenv("COLDARR_OIDC_AUTO_LOGIN", "false")
 
 	got := s.effectiveOIDCConfig()
 	if got.IssuerURL != "https://env.example" || got.ClientID != "env-client" || got.ClientSecret != "env-secret" {
@@ -98,7 +98,7 @@ func TestEffectiveOIDCConfigEnvOverridesStoredValues(t *testing.T) {
 		t.Fatalf("TokenAuthMethod = %q, want %q", got.TokenAuthMethod, oidcTokenAuthClientPost)
 	}
 	if got.AutoLogin {
-		t.Fatal("COLDARR_OIDC_DISABLE_AUTO_LOGIN should force AutoLogin off")
+		t.Fatal("COLDARR_OIDC_AUTO_LOGIN=false should override the stored AutoLogin=true")
 	}
 	if !got.EnvLocked {
 		t.Fatal("expected EnvLocked when OIDC env vars are set")
