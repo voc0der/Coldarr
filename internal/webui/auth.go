@@ -501,8 +501,15 @@ func cleanReturnTo(raw string) string {
 	if raw == "" {
 		return "/"
 	}
+	// Require a genuine single-segment path: raw[0] must be '/', and
+	// raw[1] (if any) must be neither '/' nor '\' - some browsers treat a
+	// leading "/\" the same as "//", so checking only for a literal "//"
+	// prefix leaves a protocol-relative-redirect bypass open.
+	if raw[0] != '/' || (len(raw) > 1 && (raw[1] == '/' || raw[1] == '\\')) {
+		return "/"
+	}
 	u, err := url.Parse(raw)
-	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+	if err != nil || u.IsAbs() || u.Host != "" {
 		return "/"
 	}
 	if strings.HasPrefix(u.Path, "/auth/") || u.Path == "/login" {

@@ -18,6 +18,7 @@ func TestCleanReturnTo(t *testing.T) {
 		{raw: "/plan?page=1", want: "/plan?page=1"},
 		{raw: "https://evil.example/plan", want: "/"},
 		{raw: "//evil.example/plan", want: "/"},
+		{raw: "/\\evil.example/plan", want: "/"},
 		{raw: "/auth/login", want: "/"},
 		{raw: "/login", want: "/"},
 	}
