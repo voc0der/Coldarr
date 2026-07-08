@@ -8,10 +8,11 @@
 # scheduler (cron/systemd timer):
 #   0 4 * * * docker compose run --rm coldarr apply --yes
 #
-# The GUI can view connection status and trigger real moves. Enable its
-# OIDC auth in Settings -> Auth (or with COLDARR_OIDC_* env vars), keep it
-# behind your own trusted network boundary, or avoid publishing :8478
-# directly.
+# The GUI can view connection status and trigger real moves, so it's
+# never reachable unauthenticated: with no OIDC configured (the default),
+# it falls back to a single shared password instead - see COLDARR_PASSWORD
+# below. Enable OIDC in Settings -> Auth (or with COLDARR_OIDC_* env vars)
+# for real identity-provider-backed login and group-based access instead.
 #
 # Connections (Radarr/Sonarr/Jellyfin URL + API key) can be configured
 # either through the GUI (stored encrypted in ./config) or via env vars
@@ -38,6 +39,13 @@ services:
       # COLDARR_TLS_KEY_FILE: /certs/privkey.pem
       # Optional - trust X-Forwarded-Proto/Host only from these proxy CIDRs.
       # COLDARR_TRUSTED_REVERSE_PROXIES_CIDR: 172.18.0.0/16,10.0.0.0/8
+      # Optional - fixed password for when OIDC is disabled (below). Left
+      # unset, one is generated and printed to `docker logs coldarr` on
+      # every start, but won't survive a restart. COLDARR_PASSWORD_FILE
+      # (path to a Docker secret or bind-mounted file, inside the
+      # container) overrides this if both are set.
+      # COLDARR_PASSWORD: ${COLDARR_PASSWORD}
+      # COLDARR_PASSWORD_FILE: /run/secrets/coldarr_password
       # Optional - OIDC auth. These env vars override GUI-saved auth values.
       # COLDARR_OIDC_ENABLED: "true"
       # COLDARR_OIDC_ISSUER_URL: https://auth.example.com

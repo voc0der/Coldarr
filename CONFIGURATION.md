@@ -102,10 +102,12 @@ Web GUI (`coldarr serve`, default `:8478`, override with `--listen` or
   cold-storage health check on a schedule - see [FEATURES.md](FEATURES.md)
   for details).
 
-OIDC auth is disabled by default. The GUI can view connection status and
-trigger real moves, so enable Settings -> Auth, keep it behind your own
-trusted network boundary, or avoid publishing its port directly to the
-internet.
+The GUI can view connection status and trigger real moves, so it's never
+reachable unauthenticated: without OIDC configured, it falls back to a
+single shared password instead. See [Docker](#docker) below for how that
+password is set (`COLDARR_PASSWORD`/`COLDARR_PASSWORD_FILE`) - or
+configure real identity-provider-backed login and group-based access via
+Settings -> Auth (or `COLDARR_OIDC_*` env vars).
 
 ## Docker
 
@@ -126,6 +128,8 @@ volume instead of the GUI, see [CLI.md](CLI.md#running-the-cli-in-docker).
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on, in Go's `host:port` form - a bare port number is normalized to `:port` (all interfaces), but anything else must include the colon yourself, e.g. `0.0.0.0:8555` or `127.0.0.1:8555`. Default `:8478`. |
 | `COLDARR_TLS_CERT_FILE` / `COLDARR_TLS_KEY_FILE` | certificate and private-key paths. Set both to make `coldarr serve` listen with HTTPS directly. |
 | `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`) | comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` / `X-Forwarded-Host` headers should be trusted. Headers from other remote IPs are ignored. |
+| `COLDARR_PASSWORD` | password that gates the GUI whenever OIDC is disabled. If unset (and `COLDARR_PASSWORD_FILE` isn't either), a random 64-character password is generated on every start and printed to the container's console log, with a warning that it won't survive a restart - set this to keep it stable. Irrelevant once OIDC is enabled. |
+| `COLDARR_PASSWORD_FILE` | path to a file containing the password (its contents win over `COLDARR_PASSWORD` if both are set) - point this at a Docker secret or any file you bind-mount into the container. |
 | `COLDARR_OIDC_ENABLED` / `COLDARR_OIDC_ISSUER_URL` / `COLDARR_OIDC_CLIENT_ID` / `COLDARR_OIDC_CLIENT_SECRET` | OIDC auth overrides. When any are set, env values win over GUI-saved values. Set `COLDARR_OIDC_ENABLED=false` to disable OIDC entirely for troubleshooting. |
 | `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM` | Optional OIDC details. Required group defaults to `coldarr`; groups claim defaults to `groups`. |
 | `COLDARR_OIDC_AUTO_LOGIN` | set to `true`/`false` to skip straight to the IdP instead of showing a login button, overriding the GUI-saved Settings -> Auth checkbox. |

@@ -1,6 +1,24 @@
 {{define "content"}}
 <h1>Sign in</h1>
 
+{{if .PasswordAuth}}
+{{if .Error}}
+<div class="alert alert-error">{{.Error}}</div>
+{{end}}
+<div class="card">
+  <p class="muted">OIDC isn't configured, so Coldarr is protected by a password instead.</p>
+  <form class="stacked" method="post" action="/login">
+    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+    <div>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autofocus required>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Sign in</button>
+    </div>
+  </form>
+</div>
+{{else}}
 {{if .Error}}
 <div class="alert alert-error">{{.Error}}</div>
 {{else}}
@@ -8,5 +26,6 @@
   <p class="muted">Coldarr is protected by OIDC.</p>
   <a class="btn btn-primary" href="{{.LoginURL}}">{{template "icon-shield-check"}} Continue</a>
 </div>
+{{end}}
 {{end}}
 {{end}}

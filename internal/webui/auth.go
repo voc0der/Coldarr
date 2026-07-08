@@ -3,9 +3,12 @@ package webui
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +32,10 @@ const (
 	oidcTokenAuthAuto        = "auto"
 	oidcTokenAuthClientPost  = "client_secret_post"
 	oidcTokenAuthClientBasic = "client_secret_basic"
+
+	passwordEnvVar         = "COLDARR_PASSWORD"
+	passwordFileEnvVar     = "COLDARR_PASSWORD_FILE"
+	generatedPasswordBytes = 32 // -> 64 hex characters
 )
 
 type effectiveOIDCConfig struct {
@@ -53,9 +60,11 @@ type oidcLoginState struct {
 }
 
 type loginData struct {
-	Title    string
-	Error    string
-	LoginURL string
+	Title        string
+	Error        string
+	LoginURL     string
+	PasswordAuth bool
+	ReturnTo     string
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -67,7 +76,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		cfg := s.effectiveOIDCConfig()
 		if !cfg.Enabled {
-			next.ServeHTTP(w, r)
+			s.requirePasswordSession(w, r, next)
 			return
 		}
 		if err := validateEffectiveOIDCConfig(cfg); err != nil {
@@ -93,6 +102,22 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// requirePasswordSession is authMiddleware's branch for whenever OIDC is
+// disabled: password auth is the fallback gate, so the GUI is never
+// reachable with zero protection just because nobody configured OIDC.
+func (s *Server) requirePasswordSession(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if s.currentAuthSession(r) {
+		next.ServeHTTP(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	returnTo := cleanReturnTo(r.URL.RequestURI())
+	http.Redirect(w, r, "/login?return_to="+url.QueryEscape(returnTo), http.StatusFound)
+}
+
 func authPublicPath(path string) bool {
 	switch {
 	case path == "/healthz":
@@ -107,17 +132,18 @@ func authPublicPath(path string) bool {
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	cfg := s.effectiveOIDCConfig()
-	if !cfg.Enabled {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
 	if s.currentAuthSession(r) {
 		http.Redirect(w, r, cleanReturnTo(r.URL.Query().Get("return_to")), http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path
 		return
 	}
-
 	returnTo := cleanReturnTo(r.URL.Query().Get("return_to"))
+
+	cfg := s.effectiveOIDCConfig()
+	if !cfg.Enabled {
+		s.render(w, "login", loginData{Title: "Sign in", PasswordAuth: true, ReturnTo: returnTo})
+		return
+	}
+
 	data := loginData{
 		Title:    "Sign in",
 		LoginURL: "/auth/login?return_to=" + url.QueryEscape(returnTo),
@@ -126,6 +152,37 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		data.Error = err.Error()
 	}
 	s.render(w, "login", data)
+}
+
+// handlePasswordLogin verifies a submitted password against s.password
+// (resolved once at startup - see resolvePassword) and, if it matches,
+// creates the same kind of session OIDC login does. Only reachable while
+// OIDC is disabled; requirePasswordSession is what actually gates access.
+func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	if s.effectiveOIDCConfig().Enabled {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	_ = r.ParseForm()
+	returnTo := cleanReturnTo(r.FormValue("return_to"))
+	attempt := r.FormValue("password")
+
+	if s.password == "" || subtle.ConstantTimeCompare([]byte(attempt), []byte(s.password)) != 1 {
+		s.render(w, "login", loginData{
+			Title:        "Sign in",
+			PasswordAuth: true,
+			ReturnTo:     returnTo,
+			Error:        "Incorrect password.",
+		})
+		return
+	}
+
+	if err := s.createAuthSession(w, r, effectiveOIDCConfig{}, "admin", "", nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, returnTo, http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path
 }
 
 func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +287,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.createAuthSession(w, r, cfg, identity); err != nil {
+	if err := s.createAuthSession(w, r, cfg, identity.UserName, identity.Email, identity.Groups); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -421,7 +478,7 @@ func (s *Server) currentAuthSession(r *http.Request) bool {
 	return true
 }
 
-func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg effectiveOIDCConfig, identity oidcIdentity) error {
+func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg effectiveOIDCConfig, userName, email string, groups []string) error {
 	id, err := randomURLToken(32)
 	if err != nil {
 		return err
@@ -431,9 +488,9 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	s.authMu.Lock()
 	s.cleanupAuthLocked(time.Now())
 	s.authSessions[id] = authSession{
-		UserName: identity.UserName,
-		Email:    identity.Email,
-		Groups:   identity.Groups,
+		UserName: userName,
+		Email:    email,
+		Groups:   groups,
 		Expires:  expires,
 	}
 	s.authMu.Unlock()
@@ -483,6 +540,48 @@ func (s *Server) cleanupAuthLocked(now time.Time) {
 			delete(s.oidcStates, state)
 		}
 	}
+}
+
+// resolvePassword determines the password-auth secret used whenever OIDC
+// is disabled, in order of precedence: COLDARR_PASSWORD_FILE (read from a
+// docker secret or bind-mounted file - trimmed, since mounted secrets
+// commonly carry a trailing newline), then COLDARR_PASSWORD, then - if
+// neither is set - a freshly generated one-time password. The generated
+// case is the only one that needs surfacing to the operator (via the
+// returned bool): it lives only in this process's memory and is gone the
+// moment it restarts.
+func resolvePassword() (password string, generated bool, err error) {
+	if path := strings.TrimSpace(os.Getenv(passwordFileEnvVar)); path != "" {
+		data, err := os.ReadFile(path) //nolint:gosec // path is the operator's own COLDARR_PASSWORD_FILE env var, never derived from a request
+		if err != nil {
+			return "", false, fmt.Errorf("reading %s %s: %w", passwordFileEnvVar, path, err)
+		}
+		pw := strings.TrimSpace(string(data))
+		if pw == "" {
+			return "", false, fmt.Errorf("%s %s is empty", passwordFileEnvVar, path)
+		}
+		return pw, false, nil
+	}
+	if pw := strings.TrimSpace(os.Getenv(passwordEnvVar)); pw != "" {
+		return pw, false, nil
+	}
+
+	b := make([]byte, generatedPasswordBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", false, fmt.Errorf("generating a random password: %w", err)
+	}
+	return hex.EncodeToString(b), true, nil
+}
+
+func logGeneratedPassword(password string) {
+	log.Printf("======================================================================")
+	log.Printf("OIDC is disabled and COLDARR_PASSWORD/COLDARR_PASSWORD_FILE aren't set -")
+	log.Printf("generated a random password for this run. It will NOT persist: a new one")
+	log.Printf("is generated every restart. Set COLDARR_PASSWORD (or COLDARR_PASSWORD_FILE")
+	log.Printf("to read it from a mounted file/docker secret) for a stable password.")
+	log.Printf("")
+	log.Printf("    password: %s", password)
+	log.Printf("======================================================================")
 }
 
 func randomURLToken(n int) (string, error) {
