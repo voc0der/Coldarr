@@ -46,7 +46,7 @@ func (c *Client) get(path string, query url.Values) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -70,7 +70,7 @@ func (c *Client) RefreshLibrary() error {
 	if err != nil {
 		return fmt.Errorf("POST /Library/Refresh: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("POST /Library/Refresh: unexpected status %d", resp.StatusCode)

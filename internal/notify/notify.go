@@ -90,7 +90,7 @@ func post(url, tag, title, body string, lvl Level) error {
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("POST %s: unexpected status %d", url, resp.StatusCode)

@@ -405,10 +405,10 @@ func tvTiers() []model.Tier {
 	}
 }
 
-func upcomingItem(id int, title, rootFolderPath string, sizeBytes int64) ItemEval {
+func upcomingItem(title, rootFolderPath string, sizeBytes int64) ItemEval {
 	return ItemEval{
 		Item: model.MediaItem{
-			ArrApp: "sonarr", ID: id, Type: model.TV, Title: title,
+			ArrApp: "sonarr", ID: 1, Type: model.TV, Title: title,
 			RootFolderPath: rootFolderPath, SizeBytes: sizeBytes, Upcoming: true,
 		},
 		Eval: scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"upcoming - not yet released/premiered"}},
@@ -422,7 +422,7 @@ func TestBuild_PromotesUpcomingItemOnColdBackToHot(t *testing.T) {
 			"/hot":   usage(1000*gib, 100*gib),
 			"/cold1": usage(1000*gib, 100*gib),
 		},
-		Items:   []ItemEval{upcomingItem(1, "Show A", "/cold1", 5*gib)},
+		Items:   []ItemEval{upcomingItem("Show A", "/cold1", 5*gib)},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
@@ -448,7 +448,7 @@ func TestBuild_UpcomingOnColdWarnsWhenNoHotRoom(t *testing.T) {
 			"/hot":   usage(100*gib, 99*gib), // ~1 GB free - not enough
 			"/cold1": usage(1000*gib, 100*gib),
 		},
-		Items:   []ItemEval{upcomingItem(1, "Show A", "/cold1", 5*gib)},
+		Items:   []ItemEval{upcomingItem("Show A", "/cold1", 5*gib)},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
@@ -473,7 +473,7 @@ func TestBuild_UpcomingAlreadyOnHotIsNotPromoted(t *testing.T) {
 			"/hot":   usage(1000*gib, 100*gib),
 			"/cold1": usage(1000*gib, 100*gib),
 		},
-		Items:   []ItemEval{upcomingItem(1, "Show A", "/hot", 5*gib)},
+		Items:   []ItemEval{upcomingItem("Show A", "/hot", 5*gib)},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
@@ -489,7 +489,7 @@ func TestBuild_UpcomingAlreadyOnHotIsNotPromoted(t *testing.T) {
 }
 
 func TestBuild_NonUpcomingOnColdIsNotPromoted(t *testing.T) {
-	item := upcomingItem(1, "Show A", "/cold1", 5*gib)
+	item := upcomingItem("Show A", "/cold1", 5*gib)
 	item.Item.Upcoming = false // e.g. a continuing series scored Hot for some other reason
 	item.Eval = scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"series is continuing/currently airing"}}
 
@@ -526,7 +526,7 @@ func TestBuild_PromotionFreesColdRoomForSubsequentPacking(t *testing.T) {
 			"/cold1": usage(100*gib, 95*gib), // at its 95% max already
 		},
 		Items: []ItemEval{
-			upcomingItem(1, "Show A (upcoming)", "/cold1", 10*gib),
+			upcomingItem("Show A (upcoming)", "/cold1", 10*gib),
 			{
 				Item: model.MediaItem{ArrApp: "sonarr", ID: 2, Type: model.TV, Title: "Show B", RootFolderPath: "/hot", SizeBytes: 5 * gib},
 				Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 80},

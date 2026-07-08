@@ -80,13 +80,13 @@ func (s *Store) save() error {
 	}
 
 	if dir := filepath.Dir(s.path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("creating history directory %s: %w", dir, err)
 		}
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing history %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {

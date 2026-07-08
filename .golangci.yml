@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - unconvert
+    - unparam
+  settings:
+    gosec:
+      excludes:
+        - G304 # file path from variable - config-driven paths are expected throughout
+  exclusions:
+    presets:
+      - common-false-positives
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

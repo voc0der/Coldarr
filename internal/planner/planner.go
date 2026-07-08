@@ -330,11 +330,11 @@ func applyDeltaToVolume(working map[string]diskusage.Usage, groups map[string][]
 }
 
 func applyDelta(u diskusage.Usage, deltaBytes int64) diskusage.Usage {
-	used := int64(u.UsedBytes) + deltaBytes
+	used := int64(u.UsedBytes) + deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
 	if used < 0 {
 		used = 0
 	}
-	free := int64(u.FreeBytes) - deltaBytes
+	free := int64(u.FreeBytes) - deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
 	if free < 0 {
 		free = 0
 	}

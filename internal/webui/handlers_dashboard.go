@@ -76,9 +76,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				row.StatusClass = "danger"
 			} else {
 				row.Available = true
-				row.UsedBytes = int64(status.Usage.UsedBytes)
-				row.FreeBytes = int64(status.Usage.FreeBytes)
-				row.TotalBytes = int64(status.Usage.TotalBytes)
+				row.UsedBytes = int64(status.Usage.UsedBytes)   //nolint:gosec // disk usage byte counts never approach int64 overflow range
+				row.FreeBytes = int64(status.Usage.FreeBytes)   //nolint:gosec // disk usage byte counts never approach int64 overflow range
+				row.TotalBytes = int64(status.Usage.TotalBytes) //nolint:gosec // disk usage byte counts never approach int64 overflow range
 				row.UsedPercent = status.Usage.UsedPercent
 				row.StatusMsg = "ok"
 				row.StatusClass = "ok"

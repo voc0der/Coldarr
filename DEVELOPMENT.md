@@ -23,12 +23,13 @@ go build ./...
 go vet ./...
 gofmt -l .          # should print nothing
 go test ./... -race
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
 ```
 
-Unit tests cover the planner, scoring, mover, and secrets packages. There
-are no automated tests for the web GUI (`internal/webui`) - it's a set of
-Go `html/template` pages with no JS framework, so verifying a UI change
-means actually running the server and looking at it:
+Unit tests cover every `internal/` package. `cmd/coldarr` (cobra command
+wiring) and most of `internal/webui` are the exception - `internal/webui`
+is a set of Go `html/template` pages with no JS framework, so verifying a
+UI change means actually running the server and looking at it:
 
 1. Build a throwaway `coldarr.yaml` pointing tiers at temp directories, and
    (if the change needs library data) seed a `history.json` and/or stand up
@@ -53,14 +54,28 @@ means actually running the server and looking at it:
 ## CI/CD
 
 - `.github/workflows/ci.yml` - on every PR and push to `main`: `go build`,
-  `go vet`, a `gofmt -l` check, `go test -race`, and a docker build (not
-  pushed) to catch Dockerfile breakage early.
+  `go vet`, a `gofmt -l` check, `go test -race`, `golangci-lint` (config in
+  `.golangci.yml` - standard linters plus `bodyclose`, `errorlint`,
+  `gosec`, `misspell`, `unconvert`, `unparam`), `govulncheck` against the
+  module and its dependencies, and a docker build (not pushed) to catch
+  Dockerfile breakage early.
+- `.github/dependabot.yml` - weekly grouped update PRs for Go modules,
+  GitHub Actions, and the Dockerfile's base images. Security alerts and
+  code scanning are configured separately under repo Settings > Security
+  (no workflow file needed for those).
 - `.github/workflows/release.yml` - on publishing a GitHub Release: builds
-  a multi-arch (amd64/arm64) image and pushes it to
-  `ghcr.io/voc0der/coldarr`, tagged with the release version, its
-  `major.minor`, and `latest` (skipped for prereleases). Also runnable
-  manually via `workflow_dispatch`. No extra secrets needed - it
-  authenticates to GHCR with the repo's built-in `GITHUB_TOKEN`.
+  a multi-arch (amd64/arm64) image and pushes it to both
+  `ghcr.io/voc0der/coldarr` and `docker.io/voc0der/coldarr`, tagged with
+  the release version, its `major.minor`, and `latest` (skipped for
+  prereleases). Also runnable manually via `workflow_dispatch`. GHCR
+  authenticates with the repo's built-in `GITHUB_TOKEN` - no setup needed.
+  Docker Hub needs two repo-level settings under Settings > Secrets and
+  variables > Actions:
+  - Variable `DOCKERHUB_USERNAME` - the Docker Hub username (`voc0der`)
+  - Secret `DOCKERHUB_TOKEN` - a Docker Hub access token (Account
+    Settings > Security > Personal access tokens on hub.docker.com; scope
+    it to "Read & Write" on the `coldarr` repo, not a full account
+    password)
 
 ## Contributing
 
@@ -102,3 +117,10 @@ build and publish the Docker image. To ship a new version:
 - GUI authentication
 - Editing policy thresholds (tags, cooldown, score threshold) through the
   GUI, not just tiers/connections/notifications/scheduler
+- Translations for the web GUI - it's English-only today, with strings
+  written directly into the `html/template` pages rather than pulled from
+  a message catalog. Planned approach is Weblate (hosted, free for open
+  source), which would need: extracting GUI strings into a catalog format
+  it can translate (e.g. go-i18n/gotext), a Weblate component pointed at
+  this repo, and a language switcher in the GUI. Not started - no catalog,
+  no Weblate project, no switcher yet.

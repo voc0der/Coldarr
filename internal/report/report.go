@@ -36,7 +36,7 @@ func fmtGBu(b uint64) string {
 // shared, and moving into one affects how much room the other has.
 func TierUsage(w io.Writer, inv *engine.Inventory) {
 	tw := newTabwriter(w)
-	fmt.Fprintln(tw, "TIER\tROLE\tPATH\tUSED\tFREE\tTOTAL\tUSED%\tTARGET%\tMAX%\tSTATUS")
+	_, _ = fmt.Fprintln(tw, "TIER\tROLE\tPATH\tUSED\tFREE\tTOTAL\tUSED%\tTARGET%\tMAX%\tSTATUS")
 
 	// Stable order: tiers as configured, paths as configured.
 	for _, tier := range inv.Tiers {
@@ -48,7 +48,7 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]
 			if status.Err != nil {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\t%s\t%s\tUNAVAILABLE: %v\n",
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\t%s\t%s\tUNAVAILABLE: %v\n",
 					tier.Name, tier.Role, path, targetCol, maxCol, status.Err)
 				continue
 			}
@@ -57,12 +57,12 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 			if siblings := inv.SharedVolumePaths(path); len(siblings) > 0 {
 				statusCol = fmt.Sprintf("ok (shares a disk with %s)", strings.Join(siblings, ", "))
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\t%s\n",
 				tier.Name, tier.Role, path, fmtGBu(u.UsedBytes), fmtGBu(u.FreeBytes), fmtGBu(u.TotalBytes),
 				u.UsedPercent, targetCol, maxCol, statusCol)
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // Warnings prints non-fatal problems encountered while building the
@@ -71,9 +71,9 @@ func Warnings(w io.Writer, warnings []string) {
 	if len(warnings) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nWarnings:")
+	_, _ = fmt.Fprintln(w, "\nWarnings:")
 	for _, warn := range warnings {
-		fmt.Fprintf(w, "  - %s\n", warn)
+		_, _ = fmt.Fprintf(w, "  - %s\n", warn)
 	}
 }
 
@@ -105,32 +105,32 @@ func Summary(w io.Writer, inv *engine.Inventory, topN int) {
 		}
 	}
 
-	fmt.Fprintf(w, "\nInventory: %d items (%d protected, %d hot, %d cold candidates)\n",
+	_, _ = fmt.Fprintf(w, "\nInventory: %d items (%d protected, %d hot, %d cold candidates)\n",
 		len(inv.Items), protected, hot, cold)
 
 	sort.Slice(coldOnHot, func(i, j int) bool { return coldOnHot[i].Eval.Score > coldOnHot[j].Eval.Score })
-	fmt.Fprintf(w, "\nTop cold candidates currently on hot storage (move first, cold destination room permitting):\n")
+	_, _ = fmt.Fprintf(w, "\nTop cold candidates currently on hot storage (move first, cold destination room permitting):\n")
 	tw := newTabwriter(w)
-	fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tSCORE\tWHY")
+	_, _ = fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tSCORE\tWHY")
 	for i, ie := range coldOnHot {
 		if i >= topN {
 			break
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f\t%s\n", ie.Item.Title, ie.Item.Type, fmtGB(ie.Item.SizeBytes), ie.Eval.Score, firstReason(ie.Eval.Reasons))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f\t%s\n", ie.Item.Title, ie.Item.Type, fmtGB(ie.Item.SizeBytes), ie.Eval.Score, firstReason(ie.Eval.Reasons))
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	if len(coldOnHot) == 0 {
-		fmt.Fprintln(w, "  (none)")
+		_, _ = fmt.Fprintln(w, "  (none)")
 	}
 
 	if len(hotOnCold) > 0 {
-		fmt.Fprintf(w, "\nItems that look misplaced (scored hot but currently on cold storage):\n")
+		_, _ = fmt.Fprintf(w, "\nItems that look misplaced (scored hot but currently on cold storage):\n")
 		tw := newTabwriter(w)
-		fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tCURRENT PATH\tWHY")
+		_, _ = fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tCURRENT PATH\tWHY")
 		for _, ie := range hotOnCold {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ie.Item.Title, ie.Item.Type, fmtGB(ie.Item.SizeBytes), ie.Item.RootFolderPath, firstReason(ie.Eval.Reasons))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", ie.Item.Title, ie.Item.Type, fmtGB(ie.Item.SizeBytes), ie.Item.RootFolderPath, firstReason(ie.Eval.Reasons))
 		}
-		tw.Flush()
+		_ = tw.Flush()
 	}
 }
 
@@ -145,24 +145,24 @@ func firstReason(reasons []string) string {
 // changes - callers decide separately whether to execute it.
 func Plan(w io.Writer, plan *planner.Plan) {
 	if len(plan.Entries) == 0 {
-		fmt.Fprintln(w, "\nNo moves needed - no cold-eligible items found on hot storage with room to accept them.")
+		_, _ = fmt.Fprintln(w, "\nNo moves needed - no cold-eligible items found on hot storage with room to accept them.")
 	} else {
 		var total int64
 		tw := newTabwriter(w)
-		fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tFROM\tTO\tSCORE\tWHY")
+		_, _ = fmt.Fprintln(tw, "TITLE\tTYPE\tSIZE\tFROM\tTO\tSCORE\tWHY")
 		for _, e := range plan.Entries {
 			total += e.Item.SizeBytes
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s (%s)\t%s (%s)\t%.1f\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s (%s)\t%s (%s)\t%.1f\t%s\n",
 				e.Item.Title, e.Item.Type, fmtGB(e.Item.SizeBytes), e.FromTier, e.FromPath, e.ToTier, e.ToPath, e.Score, firstReason(e.Reasons))
 		}
-		tw.Flush()
-		fmt.Fprintf(w, "\n%d items, %s total\n", len(plan.Entries), fmtGB(total))
+		_ = tw.Flush()
+		_, _ = fmt.Fprintf(w, "\n%d items, %s total\n", len(plan.Entries), fmtGB(total))
 	}
 
 	if len(plan.Warnings) > 0 {
-		fmt.Fprintln(w, "\nWarnings:")
+		_, _ = fmt.Fprintln(w, "\nWarnings:")
 		for _, warn := range plan.Warnings {
-			fmt.Fprintf(w, "  - %s\n", warn)
+			_, _ = fmt.Fprintf(w, "  - %s\n", warn)
 		}
 	}
 }
@@ -170,9 +170,9 @@ func Plan(w io.Writer, plan *planner.Plan) {
 // ProjectedUsage prints before/after usage for every path touched by the
 // plan (or all paths, if includeAll is true).
 func ProjectedUsage(w io.Writer, before map[string]diskusage.Usage, after map[string]diskusage.Usage, tiers []model.Tier) {
-	fmt.Fprintln(w, "\nProjected usage after plan:")
+	_, _ = fmt.Fprintln(w, "\nProjected usage after plan:")
 	tw := newTabwriter(w)
-	fmt.Fprintln(tw, "TIER\tPATH\tBEFORE\tAFTER")
+	_, _ = fmt.Fprintln(tw, "TIER\tPATH\tBEFORE\tAFTER")
 	for _, tier := range tiers {
 		for _, path := range tier.Paths {
 			b, ok := before[path]
@@ -183,8 +183,8 @@ func ProjectedUsage(w io.Writer, before map[string]diskusage.Usage, after map[st
 			if fmt.Sprintf("%.1f", b.UsedPercent) == fmt.Sprintf("%.1f", a.UsedPercent) {
 				continue
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%.1f%%\t%.1f%%\n", tier.Name, path, b.UsedPercent, a.UsedPercent)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%.1f%%\t%.1f%%\n", tier.Name, path, b.UsedPercent, a.UsedPercent)
 		}
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }

@@ -63,7 +63,7 @@ func newApplyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			fmt.Println("\nApplying - one move at a time per destination volume, so this can take a while for large plans:")
 			progress := e.Movers().Apply(plan, inv.VolumeOf())

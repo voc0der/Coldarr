@@ -141,7 +141,7 @@ func loadOrGenerateKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("generating encryption key: %w", err)
 	}
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("creating %s: %w", dir, err)
 		}
 	}
@@ -153,7 +153,7 @@ func loadOrGenerateKey(path string) ([]byte, error) {
 }
 
 func encrypt(key []byte, conn Connection) (encryptedBlob, error) {
-	plaintext, err := json.Marshal(conn)
+	plaintext, err := json.Marshal(conn) //nolint:gosec // marshaled only to be GCM-sealed below, never persisted or logged as-is
 	if err != nil {
 		return encryptedBlob{}, err
 	}

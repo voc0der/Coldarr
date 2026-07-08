@@ -74,7 +74,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "OIDC auth is enabled but not ready: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		if _, ok := s.currentAuthSession(r); ok {
+		if s.currentAuthSession(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -112,8 +112,8 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	if _, ok := s.currentAuthSession(r); ok {
-		http.Redirect(w, r, cleanReturnTo(r.URL.Query().Get("return_to")), http.StatusFound)
+	if s.currentAuthSession(r) {
+		http.Redirect(w, r, cleanReturnTo(r.URL.Query().Get("return_to")), http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path
 		return
 	}
 
@@ -170,7 +170,7 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		oidc.Nonce(nonce),
 		oauth2.S256ChallengeOption(verifier),
 	)
-	http.Redirect(w, r, authURL, http.StatusFound)
+	http.Redirect(w, r, authURL, http.StatusFound) //nolint:gosec // authURL is the configured OIDC provider's own authorization endpoint, not user input
 }
 
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
@@ -243,7 +243,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		delete(s.authSessions, c.Value)
 		s.authMu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
 		Name:     authSessionCookie,
 		Value:    "",
 		Path:     "/",
@@ -405,10 +405,10 @@ func validOIDCTokenAuthMethod(method string) bool {
 	}
 }
 
-func (s *Server) currentAuthSession(r *http.Request) (authSession, bool) {
+func (s *Server) currentAuthSession(r *http.Request) bool {
 	c, err := r.Cookie(authSessionCookie)
 	if err != nil || c.Value == "" {
-		return authSession{}, false
+		return false
 	}
 
 	now := time.Now()
@@ -416,13 +416,13 @@ func (s *Server) currentAuthSession(r *http.Request) (authSession, bool) {
 	defer s.authMu.Unlock()
 	sess, ok := s.authSessions[c.Value]
 	if !ok {
-		return authSession{}, false
+		return false
 	}
 	if now.After(sess.Expires) {
 		delete(s.authSessions, c.Value)
-		return authSession{}, false
+		return false
 	}
-	return sess, true
+	return true
 }
 
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg effectiveOIDCConfig, identity oidcIdentity) error {
@@ -442,7 +442,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	}
 	s.authMu.Unlock()
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
 		Name:     authSessionCookie,
 		Value:    id,
 		Path:     "/",

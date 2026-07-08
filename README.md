@@ -4,6 +4,13 @@
 
 <h1 align="center">Coldarr</h1>
 
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/voc0der/Coldarr" alt="License"></a>
+  <a href="https://github.com/voc0der/Coldarr/releases/latest"><img src="https://img.shields.io/github/v/release/voc0der/Coldarr" alt="Latest release"></a>
+  <a href="https://github.com/voc0der/Coldarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="https://hub.docker.com/r/voc0der/coldarr"><img src="https://img.shields.io/docker/pulls/voc0der/coldarr" alt="Docker pulls"></a>
+</p>
+
 <p align="center">A policy-based storage-tiering balancer for Radarr/Sonarr libraries.</p>
 
 Your hot storage is expensive and redundant; your cold/satellite drives are
