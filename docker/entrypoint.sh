@@ -7,6 +7,18 @@ set -e
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
+if [ "$(id -u)" != "0" ]; then
+  # Already running as a non-root user (`docker run --user`, a compose
+  # `user:` override, a rootless runtime, or a Kubernetes securityContext).
+  # None of the steps below are reachable without root, and none of them
+  # are needed either: file access is checked against the numeric uid/gid
+  # we already have, not against named /etc/passwd|group entries, so as
+  # long as that uid/gid already owns/matches /config there's nothing to
+  # fix up. PUID/PGID are ignored in this mode - the caller already chose
+  # the identity by starting the container this way.
+  exec /usr/local/bin/coldarr "$@"
+fi
+
 if ! getent group "$PGID" >/dev/null 2>&1; then
   addgroup -g "$PGID" coldarr
 fi

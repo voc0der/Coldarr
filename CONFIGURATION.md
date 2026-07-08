@@ -120,7 +120,7 @@ volume instead of the GUI, see [CLI.md](CLI.md#running-the-cli-in-docker).
 
 | Variable               | Purpose                                                          |
 | ---------------------- | ----------------------------------------------------------------- |
-| `PUID` / `PGID`        | uid/gid the process runs as, so it can read your bind mounts. Same convention as Radarr/Sonarr/Jellyfin images. Default `1000`/`1000`. |
+| `PUID` / `PGID`        | uid/gid the process runs as, so it can read your bind mounts. Same convention as Radarr/Sonarr/Jellyfin images. Default `1000`/`1000`. Ignored if the container is already started as non-root (`docker run --user`, compose `user:`, a rootless runtime, or a Kubernetes securityContext) - the entrypoint skips straight to running as whatever user it was given. |
 | `TZ`                   | container timezone, mostly cosmetic for log timestamps.           |
 | `COLDARR_CONFIG`       | path to the config file. Default `/config/coldarr.yaml` (via the image's `/config` working directory). |
 | `COLDARR_LISTEN_ADDR`  | address `serve` listens on. Default `:8478`.                      |
