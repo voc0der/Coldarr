@@ -110,6 +110,11 @@ main {
 h1 { font-size: 1.4rem; margin: 0 0 1rem; }
 h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
 
+.section-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 2rem 0 0.75rem; }
+.section-header h2 { margin: 0; }
+.section-header a { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--muted); text-decoration: none; }
+.section-header a:hover { color: var(--fg); text-decoration: underline; }
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);
