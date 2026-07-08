@@ -203,7 +203,7 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 	s.applyMu.Unlock()
 
 	go func() {
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 		progress.Wait()
 
 		if len(progress.Snapshot().Moved()) > 0 {

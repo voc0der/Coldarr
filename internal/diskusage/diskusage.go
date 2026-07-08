@@ -27,7 +27,7 @@ func Stat(path string) (Usage, error) {
 		return Usage{}, fmt.Errorf("statfs %s: %w", path, err)
 	}
 
-	bsize := uint64(stat.Bsize)
+	bsize := uint64(stat.Bsize) //nolint:gosec // block size is never negative in practice
 	total := stat.Blocks * bsize
 	free := stat.Bavail * bsize
 	used := total - stat.Bfree*bsize
@@ -71,7 +71,7 @@ func DeviceID(path string) (uint64, error) {
 	if !ok {
 		return 0, fmt.Errorf("cannot determine device for %s on this platform", path)
 	}
-	return uint64(stat.Dev), nil
+	return stat.Dev, nil
 }
 
 // IsMountPoint reports whether path is a distinct mount point from its

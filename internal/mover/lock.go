@@ -22,13 +22,13 @@ type Lock struct {
 func AcquireLock(dir string) (*Lock, error) {
 	path := filepath.Join(dir, ".apply.lock")
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening apply lock %s: %w", path, err)
 	}
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("another apply is already running - wait for it to finish before starting another")
 	}
 
@@ -38,6 +38,6 @@ func AcquireLock(dir string) (*Lock, error) {
 // Release releases the lock. Safe to call once; the kernel releases it
 // automatically on process exit even if this is never called.
 func (l *Lock) Release() error {
-	defer l.file.Close()
+	defer func() { _ = l.file.Close() }()
 	return syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 }

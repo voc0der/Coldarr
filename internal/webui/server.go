@@ -144,7 +144,7 @@ func (s *Server) ListenAndServe(opts ListenOptions) error {
 		log.Printf("coldarr web GUI trusting forwarded headers from %s", opts.TrustedReverseProxyCIDRs)
 	}
 
-	srv := &http.Server{Addr: opts.Addr, Handler: handler}
+	srv := &http.Server{Addr: opts.Addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	if opts.TLSCertFile != "" {
 		log.Printf("coldarr web GUI listening with HTTPS on %s", opts.Addr)
 		return srv.ListenAndServeTLS(opts.TLSCertFile, opts.TLSKeyFile)

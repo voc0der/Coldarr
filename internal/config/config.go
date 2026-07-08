@@ -216,13 +216,13 @@ func Save(path string, cfg *Config) error {
 	}
 
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("creating %s: %w", dir, err)
 		}
 	}
 
 	if existing, err := os.ReadFile(path); err == nil {
-		if err := os.WriteFile(path+".bak", existing, 0o644); err != nil {
+		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil { //nolint:gosec // path is the server's own configured config file location, never derived from a request
 			return fmt.Errorf("backing up %s: %w", path, err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -230,7 +230,7 @@ func Save(path string, cfg *Config) error {
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

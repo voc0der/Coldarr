@@ -112,7 +112,7 @@ func testTierDirs(t *testing.T) (dir, hotDir, coldDir string) {
 	hotDir = filepath.Join(dir, "hot")
 	coldDir = filepath.Join(dir, "cold")
 	for _, d := range []string{hotDir, coldDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
 	}
