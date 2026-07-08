@@ -23,6 +23,12 @@ services:
     container_name: coldarr
     ports:
       - "8478:8478"
+    # Optional - start the container already as a specific uid:gid instead
+    # of the default root-then-drop-to-PUID/PGID flow (useful for rootless
+    # runtimes or policies that forbid containers starting as root, e.g. a
+    # Kubernetes securityContext). When set, PUID/PGID below are ignored -
+    # make sure this uid:gid already owns ./config.
+    # user: "1000:1000"
     environment:
       PUID: "1000"
       PGID: "1000"
