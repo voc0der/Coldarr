@@ -1,12 +1,12 @@
 {{define "content"}}
 {{template "settings_subnav" .}}
-<h1>Tiers</h1>
-<p class="muted">A tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it. If two paths (even across different tiers) turn out to be the same physical volume, Coldarr detects that automatically and treats their capacity as shared - see "Shares volume with" below.</p>
+<h1>Storage tiers</h1>
+<p class="muted">A storage tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it. If two paths (even across different tiers) turn out to be the same physical volume, Coldarr detects that automatically and treats their capacity as shared - see "Shares volume with" below.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
 
-<p><a class="btn btn-primary" href="/settings/tiers/new">{{template "icon-plus"}} Add tier</a></p>
+<p><a class="btn btn-primary" href="/settings/tiers/new">{{template "icon-plus"}} Add storage tier</a></p>
 
 {{range .Tiers}}
 <div class="card">
@@ -14,7 +14,7 @@
     <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{if eq (print .Tier.Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Tier.Role}}</span></h2>
     <div class="btn-row">
       <a class="btn" href="/settings/tiers/{{.Tier.Name}}/edit">{{template "icon-pencil"}} Edit</a>
-      <form method="post" action="/settings/tiers/{{.Tier.Name}}/delete" onsubmit="return confirm('Delete tier {{.Tier.Name}}? This does not delete any media.')">
+      <form method="post" action="/settings/tiers/{{.Tier.Name}}/delete" onsubmit="return confirm('Delete storage tier {{.Tier.Name}}? This does not delete any media.')">
         <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Delete</button>
       </form>
     </div>
@@ -50,7 +50,7 @@
 {{else}}
 <div class="card empty-state">
   {{template "icon-tiers"}}
-  <div class="title">No tiers configured yet</div>
+  <div class="title">No storage tiers configured yet</div>
 </div>
 {{end}}
 {{end}}

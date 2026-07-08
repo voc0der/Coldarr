@@ -99,7 +99,7 @@ func (s *Server) tierListRows() []tierListRow {
 }
 
 func (s *Server) handleTiersPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "tiers", tiersData{Title: "Tiers", Tiers: s.tierListRows()})
+	s.render(w, "tiers", tiersData{Title: "Storage tiers", Tiers: s.tierListRows()})
 }
 
 type tierFormData struct {
@@ -114,7 +114,7 @@ type tierFormData struct {
 }
 
 func (s *Server) handleTierNewForm(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "tier_form", tierFormData{Title: "Add tier"})
+	s.render(w, "tier_form", tierFormData{Title: "Add storage tier"})
 }
 
 func (s *Server) handleTierEditForm(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func (s *Server) handleTierEditForm(w http.ResponseWriter, r *http.Request) {
 	for _, t := range cfg.Tiers {
 		if t.Name == name {
 			s.render(w, "tier_form", tierFormData{
-				Title:     "Edit tier",
+				Title:     "Edit storage tier",
 				Editing:   true,
 				OrigName:  t.Name,
 				Tier:      t,
@@ -205,20 +205,20 @@ func tierFormFromRequest(title string, editing bool, origName string, r *http.Re
 func (s *Server) handleTierCreate(w http.ResponseWriter, r *http.Request) {
 	tier, err := tierFromForm(r)
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Add tier", false, "", r, tier, err.Error()))
+		s.render(w, "tier_form", tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
 		return
 	}
 
 	err = s.updateTiers(func(tiers []model.Tier) ([]model.Tier, error) {
 		for _, t := range tiers {
 			if t.Name == tier.Name {
-				return nil, fmt.Errorf("a tier named %q already exists", tier.Name)
+				return nil, fmt.Errorf("a storage tier named %q already exists", tier.Name)
 			}
 		}
 		return append(tiers, tier), nil
 	})
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Add tier", false, "", r, tier, err.Error()))
+		s.render(w, "tier_form", tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
 		return
 	}
 
@@ -230,7 +230,7 @@ func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
 
 	tier, err := tierFromForm(r)
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Edit tier", true, origName, r, tier, err.Error()))
+		s.render(w, "tier_form", tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
 		return
 	}
 
@@ -244,17 +244,17 @@ func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if t.Name == tier.Name {
-				return nil, fmt.Errorf("a tier named %q already exists", tier.Name)
+				return nil, fmt.Errorf("a storage tier named %q already exists", tier.Name)
 			}
 			out = append(out, t)
 		}
 		if !found {
-			return nil, fmt.Errorf("tier %q not found", origName)
+			return nil, fmt.Errorf("storage tier %q not found", origName)
 		}
 		return out, nil
 	})
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Edit tier", true, origName, r, tier, err.Error()))
+		s.render(w, "tier_form", tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
 		return
 	}
 
@@ -274,7 +274,7 @@ func (s *Server) handleTierDelete(w http.ResponseWriter, r *http.Request) {
 		return out, nil
 	})
 	if err != nil {
-		s.render(w, "tiers", tiersData{Title: "Tiers", Error: err.Error(), Tiers: s.tierListRows()})
+		s.render(w, "tiers", tiersData{Title: "Storage tiers", Error: err.Error(), Tiers: s.tierListRows()})
 		return
 	}
 
