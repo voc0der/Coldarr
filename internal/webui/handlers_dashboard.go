@@ -17,6 +17,7 @@ type tierRow struct {
 	FreeBytes        int64
 	TotalBytes       int64
 	UsedPercent      float64
+	UsedPercentOver  bool // usage at or past the tier's ceiling (MaxPercent for cold, 100% for hot)
 	HasThresholds    bool // false for hot tiers - not steered toward a usage level
 	TargetPercent    float64
 	MaxPercent       float64
@@ -83,6 +84,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				row.StatusMsg = "ok"
 				row.StatusClass = "ok"
 				row.SharesVolumeWith = inv.SharedVolumePaths(path)
+				if row.HasThresholds {
+					row.UsedPercentOver = row.UsedPercent >= row.MaxPercent
+				} else {
+					row.UsedPercentOver = row.UsedPercent >= 100
+				}
 			}
 			data.Rows = append(data.Rows, row)
 		}
