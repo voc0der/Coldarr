@@ -13,8 +13,9 @@
 
 <p align="center">A policy-based storage-tiering balancer for Radarr/Sonarr libraries.</p>
 
-Your hot storage is expensive and redundant; your cold/satellite drives are
-cheap and not. Coldarr looks at your library (age, size, tags, quality
+Your hot storage is expensive, redundant, and always running out of
+space; your cold/satellite drives are cheap and built to absorb the
+overflow. Coldarr looks at your library (age, size, tags, quality
 profile, monitored state, Jellyfin Favorites) and your disk usage, decides
 what's safe to push to overflow storage, and asks Radarr/Sonarr to move it -
 so their databases stay the source of truth. Coldarr never touches files on
