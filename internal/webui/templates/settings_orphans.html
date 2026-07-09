@@ -1,0 +1,72 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Orphaned Storage</h1>
+<p class="muted">Folders sitting on a configured tier path that no longer correspond to anything Radarr, Sonarr, or Jellyfin still tracks - a deleted movie/series whose folder was never cleaned up, a failed import, a leftover from a prior reorganization. Something known to any one of those services is not an orphan, even if the others have never heard of it.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+{{if .Warnings}}
+<div class="alert alert-error">
+  {{range .Warnings}}<div>{{.}}</div>{{end}}
+</div>
+{{end}}
+
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between">
+    <p class="muted" style="margin:0">{{if .ScannedAt}}Last scanned: {{.ScannedAt}}{{else}}Never scanned yet.{{end}}</p>
+    <form method="post" action="/settings/orphans/scan">
+      <button type="submit" class="btn">{{template "icon-play"}} Scan now</button>
+    </form>
+  </div>
+  <p class="hint">This walks every configured tier path on disk, which can be slow on a large or slow cold tier - it never runs on its own just because you opened this page. Enable "Scan for Orphaned Storage" under Settings &gt; Scheduler to keep this current automatically.</p>
+</div>
+
+{{if .Tiers}}
+<div class="card">
+  <h2 style="margin-top:0">Tier writability</h2>
+  <p class="hint">Whether Coldarr could actually write to each tier path as of the last scan, tested directly rather than trusted from mount flags alone.</p>
+  <table>
+  <thead><tr><th>Path</th><th>Status</th></tr></thead>
+  <tbody>
+  {{range .Tiers}}
+  <tr>
+    <td class="mono">{{.Path}}</td>
+    {{if .Writable}}
+    <td><span class="badge badge-ok">{{template "icon-check-circle"}} writable</span></td>
+    {{else}}
+    <td><span class="badge badge-warn">{{template "icon-alert-triangle"}} read-only{{if .Error}} - {{.Error}}{{end}}</span></td>
+    {{end}}
+  </tr>
+  {{end}}
+  </tbody>
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between">
+    <h2 style="margin:0">Candidates</h2>
+    {{if .Candidates}}<p class="muted" style="margin:0">{{len .Candidates}} folder(s), {{gb .TotalBytes}} total</p>{{end}}
+  </div>
+  {{if .Candidates}}
+  <table>
+  <thead><tr><th>Path</th><th>Tier</th><th>Size</th></tr></thead>
+  <tbody>
+  {{range .Candidates}}
+  <tr>
+    <td class="mono">{{.Path}}</td>
+    <td>{{.TierName}} <span class="badge badge-muted">{{if eq .TierRole "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.TierRole}}</span></td>
+    <td>{{gb .SizeBytes}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+  </table>
+  {{else}}
+  <div class="empty-state">
+    {{template "icon-hdd"}}
+    <div class="title">{{if .ScannedAt}}No orphaned folders found{{else}}Not scanned yet{{end}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}

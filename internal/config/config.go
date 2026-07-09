@@ -84,6 +84,13 @@ type SchedulerConfig struct {
 	// once this has run at least once - enable it, or use its manual
 	// "Scan now" button, for that protection to take effect.
 	ScanCutoffs scheduler.Schedule `yaml:"scan_cutoffs"`
+	// ScanOrphans refreshes internal/orphans - folders sitting on a tier
+	// path that no service (Radarr, Sonarr, Jellyfin) still tracks - by
+	// walking every configured tier's paths on disk. Deliberately never
+	// done live on a page view (see orphans' package doc for why); the
+	// Settings > Orphaned Storage page only ever shows the last scan's
+	// results.
+	ScanOrphans scheduler.Schedule `yaml:"scan_orphans"`
 }
 
 type AuthConfig struct {
@@ -175,6 +182,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	}
 	if err := scheduler.Validate(cfg.ScanCutoffs); err != nil {
 		return fmt.Errorf("scheduler.scan_cutoffs: %w", err)
+	}
+	if err := scheduler.Validate(cfg.ScanOrphans); err != nil {
+		return fmt.Errorf("scheduler.scan_orphans: %w", err)
 	}
 	return nil
 }
@@ -287,6 +297,7 @@ func applyDefaults(cfg *Config) {
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
 	applyScheduleDefaults(&cfg.Scheduler.RefreshLinks, "01:00")
 	applyScheduleDefaults(&cfg.Scheduler.ScanCutoffs, "00:30")
+	applyScheduleDefaults(&cfg.Scheduler.ScanOrphans, "00:45")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

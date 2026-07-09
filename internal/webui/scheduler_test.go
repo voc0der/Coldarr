@@ -518,3 +518,102 @@ func TestHandleScanCutoffsNow_PopulatesCacheAndReportsSuccess(t *testing.T) {
 		t.Error("expected lastRanScanCutoffs to be recorded")
 	}
 }
+
+// TestTick_RunScheduledScanOrphans_PopulatesCache confirms the scheduled
+// "Scan for Orphaned Storage" task actually walks the configured tier
+// paths and persists what it finds to internal/orphans, and that a folder
+// with no matching Radarr/Sonarr/Jellyfin record is reported while the
+// tier root itself never mistakenly appears.
+func TestTick_RunScheduledScanOrphans_PopulatesCache(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	orphanPath := filepath.Join(coldDir, "Orphaned Movie")
+	if err := os.MkdirAll(orphanPath, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanPath, "movie.mkv"), make([]byte, 100), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	srv.cfg.Scheduler.ScanOrphans = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+
+	now := time.Now()
+	srv.tick(now)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.orphanStore.Get().ScannedAt.IsZero() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	snap := srv.orphanStore.Get()
+	if snap.ScannedAt.IsZero() {
+		t.Fatal("orphan cache was never refreshed")
+	}
+
+	found := false
+	for _, c := range snap.Candidates {
+		if c.Path == orphanPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %q reported as an orphan, got %+v", orphanPath, snap.Candidates)
+	}
+
+	if got := srv.getLastRanScanOrphans(); got.IsZero() || !got.Equal(now) {
+		t.Errorf("lastRanScanOrphans = %v, want %v", got, now)
+	}
+
+	notifications := apprise.notifications()
+	if len(notifications) == 0 {
+		t.Fatal("expected a notification summarizing the scan")
+	}
+	if !strings.Contains(notifications[0]["title"], "Orphaned storage scan finished") {
+		t.Errorf("notification title = %q, want to contain %q", notifications[0]["title"], "Orphaned storage scan finished")
+	}
+}
+
+// TestHandleScanOrphansNow_PopulatesCacheAndReportsSuccess confirms the
+// manual "Scan now" trigger runs the same scan synchronously and reports
+// it inline.
+func TestHandleScanOrphansNow_PopulatesCacheAndReportsSuccess(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+
+	orphanPath := filepath.Join(coldDir, "Orphaned Movie")
+	if err := os.MkdirAll(orphanPath, 0o750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/scheduler/scan_orphans/run", nil)
+	rec := httptest.NewRecorder()
+	srv.handleScanOrphansNow(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Orphaned storage scan finished") {
+		t.Errorf("response body missing success message: %s", rec.Body.String())
+	}
+
+	snap := srv.orphanStore.Get()
+	if snap.ScannedAt.IsZero() {
+		t.Error("expected the orphan cache to be refreshed after handleScanOrphansNow")
+	}
+	found := false
+	for _, c := range snap.Candidates {
+		if c.Path == orphanPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %q reported as an orphan, got %+v", orphanPath, snap.Candidates)
+	}
+	if srv.getLastRanScanOrphans().IsZero() {
+		t.Error("expected lastRanScanOrphans to be recorded")
+	}
+}
