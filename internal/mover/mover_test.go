@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,54 @@ import (
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/planner"
 )
+
+// fakeRadarrMoveServer returns a Radarr-shaped test server that records
+// every move (PUT /api/v3/movie/editor) into callOrder and truthfully
+// answers RescanMovie/GetMovieSize based on the most recent move each
+// movie ID actually received. Tests that only care about move ordering
+// (not exercising a size mismatch specifically) can rely on this to
+// satisfy confirmLanded's ground-truth check (see mover.go) without
+// re-implementing routing for every endpoint by hand.
+func fakeRadarrMoveServer(t *testing.T, mu *sync.Mutex, callOrder *[]string) *httptest.Server {
+	t.Helper()
+	lastPath := map[int]string{}
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v3/movie/editor":
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				MovieIDs       []int  `json:"movieIds"`
+				RootFolderPath string `json:"rootFolderPath"`
+			}
+			_ = json.Unmarshal(body, &req)
+
+			mu.Lock()
+			for _, id := range req.MovieIDs {
+				lastPath[id] = req.RootFolderPath
+				*callOrder = append(*callOrder, fmt.Sprintf("%d@%s", id, req.RootFolderPath))
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v3/command/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v3/movie/"):
+			id, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/api/v3/movie/"))
+			mu.Lock()
+			path := lastPath[id]
+			mu.Unlock()
+			// sizeOnDisk 0 is fine here: these tests leave Item.SizeBytes
+			// unset, so sizeLanded's "no usable expected size" fallback
+			// accepts it - size-matching itself is covered by
+			// TestSettle_RejectsPathMatchButShortSize below.
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "sizeOnDisk": 0, "path": path})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
 
 func TestSettleTracker_DoesNotSettleBeforeGrowth(t *testing.T) {
 	tr := newSettleTracker(100, 100) // targetGrowth = 90
@@ -104,20 +154,7 @@ func TestApply_SerializesSameVolumeButParallelAcrossVolumes(t *testing.T) {
 		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			MovieIDs       []int  `json:"movieIds"`
-			RootFolderPath string `json:"rootFolderPath"`
-		}
-		_ = json.Unmarshal(body, &req)
-
-		mu.Lock()
-		callOrder = append(callOrder, fmt.Sprintf("%d@%s", req.MovieIDs[0], req.RootFolderPath))
-		mu.Unlock()
-
-		w.WriteHeader(http.StatusOK)
-	}))
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
 	defer srv.Close()
 
 	hist, err := history.Load(t.TempDir() + "/history.json")
@@ -214,20 +251,7 @@ func TestApply_FillingWaitsForFreeingAcrossDifferentVolumes(t *testing.T) {
 		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			MovieIDs       []int  `json:"movieIds"`
-			RootFolderPath string `json:"rootFolderPath"`
-		}
-		_ = json.Unmarshal(body, &req)
-
-		mu.Lock()
-		callOrder = append(callOrder, fmt.Sprintf("%d@%s", req.MovieIDs[0], req.RootFolderPath))
-		mu.Unlock()
-
-		w.WriteHeader(http.StatusOK)
-	}))
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
 	defer srv.Close()
 
 	hist, err := history.Load(t.TempDir() + "/history.json")
@@ -320,20 +344,7 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			MovieIDs       []int  `json:"movieIds"`
-			RootFolderPath string `json:"rootFolderPath"`
-		}
-		_ = json.Unmarshal(body, &req)
-
-		mu.Lock()
-		callOrder = append(callOrder, fmt.Sprintf("%d@%s", req.MovieIDs[0], req.RootFolderPath))
-		mu.Unlock()
-
-		w.WriteHeader(http.StatusOK)
-	}))
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
 	defer srv.Close()
 
 	hist, err := history.Load(t.TempDir() + "/history.json")
@@ -490,6 +501,102 @@ func TestSettle_ConfirmsViaRescanWhenUsageNeverGrows(t *testing.T) {
 	mu.Unlock()
 	if got == 0 {
 		t.Fatal("expected at least one rescan call as the fallback confirmation path - settle() must not rely on disk-usage growth alone")
+	}
+}
+
+// TestSettle_RejectsPathMatchButShortSize proves confirmLanded checks the
+// rescanned size, not just the path. Disk usage here looks fully grown
+// and stable from the very first check - the exact false-positive signal
+// that let Coldarr previously declare a move "done" - and Radarr already
+// reports the item's path as the destination too. But the file is still
+// far short of its expected size (genuinely mid-copy), so the move must
+// not be marked done until the reported size actually catches up.
+func TestSettle_RejectsPathMatchButShortSize(t *testing.T) {
+	const toPath = "/cold/movies"
+	const wantSize = int64(1_000_000)
+
+	statFunc := func(path string) (diskusage.Usage, error) {
+		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+	}
+
+	var mu sync.Mutex
+	reportedSize := int64(10) // far short of wantSize - still copying
+	rescanCalls := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v3/movie/editor":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			mu.Lock()
+			rescanCalls++
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/movie/1":
+			mu.Lock()
+			size := reportedSize
+			mu.Unlock()
+			// Path already matches the destination even though the file
+			// is still short - the exact scenario a path-only check
+			// would have wrongly accepted.
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "sizeOnDisk": size, "path": toPath + "/Item1"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  2,
+		SettleMaxWait:       time.Hour,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Item1", SizeBytes: wantSize}, ToTier: "cold", ToPath: toPath},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+
+	// Give it many settle-check intervals' worth of real time while the
+	// reported size stays short - disk usage and path both already look
+	// "correct" on every single check, so if either alone were trusted
+	// this would already be marked done.
+	time.Sleep(50 * time.Millisecond)
+	if progress.Snapshot().Done {
+		t.Fatal("must not settle while Radarr reports the file far short of its expected size")
+	}
+	mu.Lock()
+	calls := rescanCalls
+	mu.Unlock()
+	if calls == 0 {
+		t.Fatal("expected confirmLanded to actually have been checking via rescan")
+	}
+
+	mu.Lock()
+	reportedSize = wantSize
+	mu.Unlock()
+
+	waitFor(t, func() bool { return progress.Snapshot().Done })
+
+	snap := progress.Snapshot()
+	if failed := snap.Failed(); len(failed) != 0 {
+		t.Fatalf("expected no failures, got %+v", failed)
+	}
+	if moved := snap.Moved(); len(moved) != 1 {
+		t.Fatalf("expected the item moved once its reported size actually matched, got %d", len(moved))
 	}
 }
 

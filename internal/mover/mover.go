@@ -272,16 +272,23 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 // trusting the API response alone - true regardless of exactly how
 // Radarr/Sonarr implement the move internally.
 //
-// Disk-usage growth can't tell a finished move that added no measurable
-// usage - the item was already sitting at (or very near) the destination,
-// or landed via a same-volume rename - from one that simply hasn't
-// started yet, so a move like that would otherwise wait out the full
-// maxWait (hours, by default) every single time before ever being marked
-// done, even though it's already sitting there correctly. Once growth
-// looks stalled for a while, this also asks Radarr/Sonarr directly (via
-// confirmLanded) whether it now considers the item moved - not on every
-// check, since a rescan is comparatively expensive and unnecessary for
-// the common case of a normal, growing transfer.
+// Disk usage looking stable is a hint, never proof: a transfer can
+// plateau for many seconds - a write-cache flush, the destination's own
+// housekeeping, a network stall - while genuinely still in progress, and
+// that plateau looks identical to a finished transfer from disk usage
+// alone. Every path to "settled" below is therefore gated on
+// confirmLanded actually agreeing with Radarr/Sonarr before returning;
+// the disk-usage tracker only decides when it's worth paying for that
+// check, not whether the move is done. A confirmLanded failure resets
+// the stability count rather than looping immediately, so a stalled
+// rescan doesn't get hammered every single interval.
+//
+// Disk-usage growth also can't tell a finished move that added no
+// measurable usage - the item was already sitting at (or very near) the
+// destination, or landed via a same-volume rename - from one that simply
+// hasn't started yet, so that case is tracked separately (noGrowthChecks)
+// rather than through the growth-based tracker, which never reports
+// stability before any growth at all.
 func (m *Movers) settle(entry planner.MoveEntry) {
 	interval := m.SettleCheckInterval
 	if interval <= 0 {
@@ -314,8 +321,13 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 		if err != nil {
 			return
 		}
+
 		if tracker.observe(u.UsedBytes, stableTarget) {
-			return
+			if m.confirmLanded(entry) {
+				return
+			}
+			tracker.stableCount = 0
+			continue
 		}
 
 		if tracker.grown {
@@ -323,8 +335,11 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 			continue
 		}
 		noGrowthChecks++
-		if noGrowthChecks >= stableTarget && m.confirmLanded(entry) {
-			return
+		if noGrowthChecks >= stableTarget {
+			if m.confirmLanded(entry) {
+				return
+			}
+			noGrowthChecks = 0
 		}
 	}
 }
@@ -332,26 +347,50 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 // confirmLanded asks Radarr/Sonarr to rescan the item's folder - forcing
 // it to recompute the item's location/size from the real filesystem
 // rather than a possibly-stale cached value - and reports whether it now
-// considers the item's path to be under entry.ToPath. This is the
-// ground-truth fallback settle() reaches for once disk-usage growth looks
-// stalled; see settle's doc comment for why growth alone isn't enough.
+// considers the item fully landed: its path under entry.ToPath, AND its
+// freshly-rescanned size actually matching what was planned (see
+// sizeLanded). Checking the path alone isn't enough: Radarr/Sonarr can
+// update an item's recorded path before the underlying file transfer is
+// completely finished, so a path-only check can say "landed" while the
+// file is still short. This is the ground-truth check settle() gates
+// every "looks done" signal on; see settle's doc comment for why disk
+// usage alone isn't enough either.
 func (m *Movers) confirmLanded(entry planner.MoveEntry) bool {
 	switch entry.Item.ArrApp {
 	case "radarr":
 		if err := m.Radarr.RescanMovie(entry.Item.ID); err != nil {
 			return false
 		}
-		_, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
-		return err == nil && found && isUnderPath(path, entry.ToPath)
+		size, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
+		return err == nil && found && isUnderPath(path, entry.ToPath) && sizeLanded(size, entry.Item.SizeBytes)
 	case "sonarr":
 		if err := m.Sonarr.RescanSeries(entry.Item.ID); err != nil {
 			return false
 		}
-		_, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
-		return err == nil && found && isUnderPath(path, entry.ToPath)
+		size, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
+		return err == nil && found && isUnderPath(path, entry.ToPath) && sizeLanded(size, entry.Item.SizeBytes)
 	default:
 		return false
 	}
+}
+
+// sizeLanded reports whether gotBytes - Radarr/Sonarr's freshly-rescanned,
+// real read of the file on disk - is close enough to wantBytes (the
+// item's expected size from the plan) to trust the transfer is actually
+// finished, rather than a partial file that merely happens to already
+// sit at the right path. A plain move never legitimately shrinks a file,
+// so anything meaningfully short of wantBytes means it's still copying;
+// a small tolerance absorbs harmless slack (e.g. a filesystem block-size
+// rounding difference between how Coldarr and Radarr/Sonarr each compute
+// "size on disk"), not genuine incompleteness.
+func sizeLanded(gotBytes, wantBytes int64) bool {
+	if wantBytes <= 0 {
+		// No usable expected size to compare against - fall back to
+		// trusting the rescanned path alone rather than blocking forever
+		// on a check that can never be satisfied.
+		return true
+	}
+	return gotBytes >= wantBytes*99/100
 }
 
 // isUnderPath reports whether path is root itself or a descendant of it.
