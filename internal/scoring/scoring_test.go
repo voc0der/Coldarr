@@ -128,6 +128,38 @@ func TestEvaluate_QualityCutoffNotMetIgnoredWhenUnmonitored(t *testing.T) {
 	}
 }
 
+func TestEvaluate_MonitoredMissingFileStaysHot(t *testing.T) {
+	now := time.Now()
+	for _, mt := range []model.MediaType{model.Movie, model.TV} {
+		item := model.MediaItem{
+			Type:      mt,
+			Added:     now.AddDate(-5, 0, 0), // old enough to clear grace period
+			Tags:      []string{"cold-ok"},   // and tagged cold-ok
+			Monitored: true,
+			HasFile:   false, // never downloaded - nothing on disk to judge coldness of
+		}
+		eval := Evaluate(item, basePolicy(), now)
+		if eval.Decision != Hot {
+			t.Fatalf("%s: expected Hot for a monitored item with no file yet despite old age/cold-ok tag, got %v (score %.1f)", mt, eval.Decision, eval.Score)
+		}
+	}
+}
+
+func TestEvaluate_UnmonitoredMissingFileIsScoredNotProtected(t *testing.T) {
+	now := time.Now()
+	item := model.MediaItem{
+		Type:      model.Movie,
+		Added:     now.AddDate(-5, 0, 0),
+		Tags:      []string{"cold-ok"},
+		Monitored: false,
+		HasFile:   false,
+	}
+	eval := Evaluate(item, basePolicy(), now)
+	if eval.Decision != Cold {
+		t.Fatalf("expected Cold for an unmonitored item with no file (nothing will ever download it), got %v (score %.1f, reasons %v)", eval.Decision, eval.Score, eval.Reasons)
+	}
+}
+
 func TestEvaluate_ColdOkTagPushesToCold(t *testing.T) {
 	now := time.Now()
 	item := model.MediaItem{

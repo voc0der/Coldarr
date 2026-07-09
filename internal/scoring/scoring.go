@@ -65,6 +65,9 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 	if item.Monitored && item.QualityCutoffNotMet {
 		return Evaluation{Decision: Hot, Reasons: []string{"quality cutoff not met - expect this file to be replaced with an upgrade"}}
 	}
+	if item.Monitored && !item.HasFile {
+		return Evaluation{Decision: Hot, Reasons: []string{"monitored but no file yet - nothing downloaded to judge coldness of"}}
+	}
 
 	age := now.Sub(item.Added)
 	graceCutoff := time.Duration(policy.HotGraceDays) * dayHours * time.Hour
@@ -115,9 +118,12 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 		reasons = append(reasons, fmt.Sprintf("low-priority quality profile %q", item.QualityProfileName))
 	}
 
-	if !item.Monitored || !item.HasFile {
+	// A monitored-but-missing item never reaches this far - it's returned
+	// Hot above - so by this point !HasFile can only coincide with
+	// !Monitored anyway; this is really just the unmonitored bonus.
+	if !item.Monitored {
 		score += scoreUnmonitored
-		reasons = append(reasons, "unmonitored or missing file")
+		reasons = append(reasons, "unmonitored")
 	}
 
 	if score >= policy.ColdScoreThreshold {

@@ -20,7 +20,9 @@ type PolicyConfig struct {
 	// regardless of what its score says.
 	CooldownDays int `yaml:"cooldown_days"`
 	// MinMoveSizeGB filters out items too small to be worth the risk of
-	// a move.
+	// a move. Defaults to 1 if unset - zero would let a stray near-zero-
+	// size item (e.g. one Coldarr otherwise fails to recognize as not
+	// yet downloaded) through the planner's size check unfiltered.
 	MinMoveSizeGB float64 `yaml:"min_move_size_gb"`
 	// HotGraceDays keeps recently-added items on hot storage regardless
 	// of score.
@@ -280,6 +282,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Policy.ColdScoreThreshold == 0 {
 		cfg.Policy.ColdScoreThreshold = 40
+	}
+	if cfg.Policy.MinMoveSizeGB == 0 {
+		cfg.Policy.MinMoveSizeGB = 1
 	}
 	if cfg.History.Path == "" {
 		cfg.History.Path = "./coldarr-history.json"

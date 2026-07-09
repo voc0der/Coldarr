@@ -48,6 +48,21 @@ func TestApplyDefaults_PreservesExplicitSchedule(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_MinMoveSizeGB(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+
+	if cfg.Policy.MinMoveSizeGB != 1 {
+		t.Fatalf("MinMoveSizeGB = %v, want 1 (a stray near-zero-size item must not slip through the planner's size filter unfiltered)", cfg.Policy.MinMoveSizeGB)
+	}
+
+	cfg2 := &Config{Policy: PolicyConfig{MinMoveSizeGB: 5}}
+	applyDefaults(cfg2)
+	if cfg2.Policy.MinMoveSizeGB != 5 {
+		t.Fatalf("applyDefaults overwrote an explicitly configured MinMoveSizeGB: %v", cfg2.Policy.MinMoveSizeGB)
+	}
+}
+
 func TestApplyDefaults_AuthOIDC(t *testing.T) {
 	cfg := &Config{}
 	applyDefaults(cfg)
