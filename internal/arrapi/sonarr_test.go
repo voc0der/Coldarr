@@ -21,6 +21,8 @@ func TestSonarrClient_FetchSeries(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 		case "/api/v3/queue":
 			_, _ = w.Write([]byte(`{"records": []}`))
+		case "/api/v3/wanted/cutoff":
+			_, _ = w.Write([]byte(`{"records": [{"seriesId": 3}], "totalRecords": 1}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -59,6 +61,39 @@ func TestSonarrClient_FetchSeries(t *testing.T) {
 	continuing := items[byID[3]]
 	if continuing.Ended || continuing.Upcoming {
 		t.Errorf("continuing show: Ended=%v Upcoming=%v, want both false", continuing.Ended, continuing.Upcoming)
+	}
+	if !continuing.QualityCutoffNotMet {
+		t.Error("series 3 is in the fake wanted/cutoff response, must report QualityCutoffNotMet = true")
+	}
+	if ended.QualityCutoffNotMet {
+		t.Error("series 1 is not in the fake wanted/cutoff response, must report QualityCutoffNotMet = false")
+	}
+}
+
+func TestSonarrClient_CutoffUnmetSeriesIDs_Paginates(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"records": [{"seriesId": 1}, {"seriesId": 2}], "totalRecords": 3}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"records": [{"seriesId": 3}], "totalRecords": 3}`))
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer srv.Close()
+
+	unmet, err := NewSonarrClient(srv.URL, "key").CutoffUnmetSeriesIDs()
+	if err != nil {
+		t.Fatalf("CutoffUnmetSeriesIDs: %v", err)
+	}
+	if pages != 2 {
+		t.Fatalf("expected 2 pages fetched, got %d", pages)
+	}
+	if !unmet[1] || !unmet[2] || !unmet[3] {
+		t.Fatalf("unexpected result: %+v", unmet)
 	}
 }
 

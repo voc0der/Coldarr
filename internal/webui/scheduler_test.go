@@ -80,6 +80,9 @@ func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 	mux.HandleFunc("GET /api/v3/queue", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"records": []map[string]any{}})
 	})
+	mux.HandleFunc("GET /api/v3/wanted/cutoff", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"records": []map[string]any{}, "totalRecords": 0})
+	})
 	mux.HandleFunc("PUT /api/v3/movie/editor", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)

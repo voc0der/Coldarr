@@ -86,6 +86,12 @@ type MediaItem struct {
 	QualityProfileName string
 	Monitored          bool
 	HasFile            bool
+	// QualityCutoffNotMet is true if the current file doesn't meet its
+	// quality profile's upgrade cutoff - the owning Arr app will keep
+	// searching and eventually replace it, so the folder's contents (and
+	// size) aren't settled yet. Only meaningful alongside Monitored: an
+	// unmonitored item won't actually be searched even if this is true.
+	QualityCutoffNotMet bool
 
 	// Ended is only meaningful for TV: true once a series has finished
 	// airing (Sonarr status "ended"), false while continuing/upcoming.

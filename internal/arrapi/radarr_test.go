@@ -53,6 +53,8 @@ func TestRadarrClient_FetchMovies(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id": 10, "name": "HD-1080p"}]`))
 		case "/api/v3/queue":
 			_, _ = w.Write([]byte(`{"records": [{"movieId": 2}]}`))
+		case "/api/v3/wanted/cutoff":
+			_, _ = w.Write([]byte(`{"records": [{"id": 1}], "totalRecords": 1}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -86,12 +88,46 @@ func TestRadarrClient_FetchMovies(t *testing.T) {
 		t.Error("movie 1 is not in the fake queue, must not be marked InActiveQueue")
 	}
 
+	if !released.QualityCutoffNotMet {
+		t.Error("movie 1 is in the fake wanted/cutoff response, must report QualityCutoffNotMet = true")
+	}
+
 	unreleased := items[byID[2]]
 	if !unreleased.Upcoming {
 		t.Error("a movie with status \"tba\" must be marked Upcoming")
 	}
 	if !unreleased.InActiveQueue {
 		t.Error("movie 2 is in the fake queue, must be marked InActiveQueue")
+	}
+	if unreleased.QualityCutoffNotMet {
+		t.Error("movie 2 is not in the fake wanted/cutoff response, must report QualityCutoffNotMet = false")
+	}
+}
+
+func TestRadarrClient_CutoffUnmetMovieIDs_Paginates(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"records": [{"id": 1}, {"id": 2}], "totalRecords": 3}`))
+		case "2":
+			_, _ = w.Write([]byte(`{"records": [{"id": 3}], "totalRecords": 3}`))
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer srv.Close()
+
+	unmet, err := NewRadarrClient(srv.URL, "key").CutoffUnmetMovieIDs()
+	if err != nil {
+		t.Fatalf("CutoffUnmetMovieIDs: %v", err)
+	}
+	if pages != 2 {
+		t.Fatalf("expected 2 pages fetched, got %d", pages)
+	}
+	if !unmet[1] || !unmet[2] || !unmet[3] {
+		t.Fatalf("unexpected result: %+v", unmet)
 	}
 }
 
