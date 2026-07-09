@@ -36,7 +36,8 @@ type scheduleFormView struct {
 	// schedule period before ever seeing a result is a poor first-run
 	// experience (refresh_links: the Links column would otherwise stay
 	// empty; scan_cutoffs: quality-cutoff protection would otherwise
-	// silently sit inactive until the schedule fires).
+	// silently sit inactive until the schedule fires; scan_orphans: the
+	// Orphaned Storage page would otherwise stay empty).
 	ShowRunNow  bool
 	RunNowLabel string
 }
@@ -48,6 +49,7 @@ type schedulerData struct {
 	RescanCold   scheduleFormView
 	RefreshLinks scheduleFormView
 	ScanCutoffs  scheduleFormView
+	ScanOrphans  scheduleFormView
 }
 
 func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule, lastRun time.Time) scheduleFormView {
@@ -64,6 +66,8 @@ func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule
 	case "refresh_links":
 		view.ShowRunNow, view.RunNowLabel = true, "Refresh now"
 	case "scan_cutoffs":
+		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
+	case "scan_orphans":
 		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
 	}
 	if !lastRun.IsZero() {
@@ -88,6 +92,9 @@ func (s *Server) schedulerData() schedulerData {
 		ScanCutoffs: s.scheduleView("scan_cutoffs", "Scan Quality Cutoffs",
 			`Checks which movies/series have a file that doesn't meet its quality profile's upgrade cutoff, so scoring can keep those on hot storage (Radarr/Sonarr are still going to replace that file). This calls Radarr/Sonarr's own wanted/cutoff lookup, which can be slow on a large library - that's exactly why it only ever runs here, on a schedule (or via "Scan now" below), never live on a Dashboard/Plan page view. Until this has run at least once, every item is treated as cutoff-met.`,
 			cfg.Scheduler.ScanCutoffs, s.getLastRanScanCutoffs()),
+		ScanOrphans: s.scheduleView("scan_orphans", "Scan for Orphaned Storage",
+			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, or Jellyfin still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers). This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
+			cfg.Scheduler.ScanOrphans, s.getLastRanScanOrphans()),
 	}
 }
 
@@ -97,7 +104,7 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" {
+	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" && task != "scan_orphans" {
 		http.NotFound(w, r)
 		return
 	}
@@ -131,6 +138,10 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanCutoffs.Label, data.ScanCutoffs.Hint, data.ScanCutoffs.LastRan
 			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
 			data.ScanCutoffs = submitted
+		case "scan_orphans":
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanOrphans.Label, data.ScanOrphans.Hint, data.ScanOrphans.LastRan
+			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
+			data.ScanOrphans = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return
@@ -425,5 +436,83 @@ func (s *Server) handleScanCutoffsNow(w http.ResponseWriter, r *http.Request) {
 	s.recordScanCutoffsRan(time.Now())
 	data := s.schedulerData()
 	data.Saved = "Quality-cutoff scan finished."
+	s.render(w, "settings_scheduler", data)
+}
+
+// runScheduledScanOrphans refreshes internal/orphans - which folders on a
+// configured tier path no service (Radarr, Sonarr, Jellyfin) still tracks
+// - by walking every tier path on disk. This is the only place that walk
+// happens besides the manual "Scan now" button: never live on a page
+// view, since it's a filesystem walk that can be slow on a large or slow
+// cold tier. Only called from tick() when scheduler.Due says it's time.
+func (s *Server) runScheduledScanOrphans(now time.Time) {
+	if !s.scanOrphansMu.TryLock() {
+		log.Printf("scheduler: scan-orphaned-storage is due, but a previous scan is still running - skipping this tick")
+		return
+	}
+	defer s.scanOrphansMu.Unlock()
+
+	s.recordScanOrphansRan(now)
+	n := s.notifier()
+
+	eng, err := s.newEngine()
+	if err != nil {
+		log.Printf("scheduler: scan-orphaned-storage: %v", err)
+		n.Summary("Orphaned storage scan failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	if err := s.orphanStore.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient(), eng.Cfg.Tiers); err != nil {
+		log.Printf("scheduler: scan-orphaned-storage: %v", err)
+		n.Summary("Orphaned storage scan failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	snap := s.orphanStore.Get()
+	n.Summary("Orphaned storage scan finished",
+		fmt.Sprintf("%s folder(s) found with no matching service record", n.Bold(strconv.Itoa(len(snap.Candidates)))),
+		notify.LevelSuccess)
+}
+
+// scanOrphansNow acquires scanOrphansMu (like a scheduled run, best-effort
+// via TryLock so two manual clicks - or a manual click racing a scheduled
+// tick - can't scan concurrently), runs the scan synchronously, and
+// records it like a genuine run on success. Shared by both places an
+// operator can trigger this by hand: the Scheduler settings page's
+// "Scan now" (handleScanOrphansNow) and the Orphaned Storage page's own
+// convenience button (handleOrphansScanNow) - each renders its own page
+// afterward rather than duplicating this logic.
+func (s *Server) scanOrphansNow() error {
+	if !s.scanOrphansMu.TryLock() {
+		return fmt.Errorf("a scan is already in progress - try again shortly")
+	}
+	defer s.scanOrphansMu.Unlock()
+
+	eng, err := s.newEngine()
+	if err == nil {
+		err = s.orphanStore.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient(), eng.Cfg.Tiers)
+	}
+	if err != nil {
+		return err
+	}
+
+	s.recordScanOrphansRan(time.Now())
+	return nil
+}
+
+// handleScanOrphansNow is the Scheduler settings page's manual counterpart
+// to runScheduledScanOrphans - since the schedule (like every schedule in
+// this app) defaults to off, the Orphaned Storage page would otherwise
+// stay empty indefinitely unless an operator also knew to wait.
+func (s *Server) handleScanOrphansNow(w http.ResponseWriter, r *http.Request) {
+	if err := s.scanOrphansNow(); err != nil {
+		data := s.schedulerData()
+		data.ScanOrphans.Error = err.Error()
+		s.render(w, "settings_scheduler", data)
+		return
+	}
+
+	data := s.schedulerData()
+	data.Saved = "Orphaned storage scan finished."
 	s.render(w, "settings_scheduler", data)
 }

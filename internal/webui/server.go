@@ -21,15 +21,17 @@ import (
 	"github.com/vocoder/coldarr/internal/linkcache"
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/mover"
+	"github.com/vocoder/coldarr/internal/orphans"
 	"github.com/vocoder/coldarr/internal/scheduler"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 type Server struct {
-	cfgPath   string
-	connStore *secrets.Store
-	linkCache *linkcache.Store
-	pages     map[string]*template.Template
+	cfgPath     string
+	connStore   *secrets.Store
+	linkCache   *linkcache.Store
+	orphanStore *orphans.Store
+	pages       map[string]*template.Template
 
 	mu  sync.RWMutex
 	cfg *config.Config
@@ -60,10 +62,12 @@ type Server struct {
 	lastRunRescan       time.Time
 	lastRunRefreshLinks time.Time
 	lastRunScanCutoffs  time.Time
+	lastRunScanOrphans  time.Time
 	lastRanPlan         time.Time
 	lastRanRescan       time.Time
 	lastRanRefreshLinks time.Time
 	lastRanScanCutoffs  time.Time
+	lastRanScanOrphans  time.Time
 	// rescanMu keeps a scheduled "Rescan Cold Storage" tick from
 	// overlapping itself. It's read-only and independent of applyMu -
 	// unlike a scheduled Plan run, it never competes with a manual Apply
@@ -77,6 +81,11 @@ type Server struct {
 	// is also checked (via TryLock, best-effort) by runScheduledPlan's
 	// own pre-plan scan so the two never hit Radarr/Sonarr concurrently.
 	scanCutoffsMu sync.Mutex
+	// scanOrphansMu is rescanMu's counterpart for the "Scan for Orphaned
+	// Storage" task - keeps a scheduled scan from overlapping itself. Not
+	// checked by runScheduledPlan: unlike quality cutoffs, an unattended
+	// apply has no need for fresh orphan data.
+	scanOrphansMu sync.Mutex
 
 	authMu       sync.Mutex
 	authSessions map[string]authSession
@@ -103,11 +112,16 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	if err != nil {
 		return nil, err
 	}
+	orphanStore, err := orphans.Load(orphanCachePath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		cfgPath:      cfgPath,
 		cfg:          cfg,
 		connStore:    connStore,
 		linkCache:    linkCache,
+		orphanStore:  orphanStore,
 		pages:        pages,
 		authSessions: map[string]authSession{},
 		oidcStates:   map[string]oidcLoginState{},
@@ -134,6 +148,13 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 // to point elsewhere.
 func linkCachePath(cfgPath string) string {
 	return filepath.Join(filepath.Dir(cfgPath), "coldarr-linkcache.json")
+}
+
+// orphanCachePath derives the orphan-scan cache file's location the same
+// way linkCachePath does - alongside the config file, not a separately
+// configurable path.
+func orphanCachePath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "coldarr-orphans.json")
 }
 
 type ListenOptions struct {
@@ -216,7 +237,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /settings/scheduler", s.handleSchedulerPage)
 	mux.HandleFunc("POST /settings/scheduler/refresh_links/run", s.handleRefreshLinksNow)
 	mux.HandleFunc("POST /settings/scheduler/scan_cutoffs/run", s.handleScanCutoffsNow)
+	mux.HandleFunc("POST /settings/scheduler/scan_orphans/run", s.handleScanOrphansNow)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
+
+	mux.HandleFunc("GET /settings/orphans", s.handleOrphansPage)
+	mux.HandleFunc("POST /settings/orphans/scan", s.handleOrphansScanNow)
 
 	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
 	mux.HandleFunc("POST /settings/auth", s.handleAuthSave)
@@ -349,6 +374,9 @@ func (s *Server) StartScheduler() {
 	if cfg.Scheduler.ScanCutoffs.Enabled {
 		s.touchScanCutoffsSchedule(now)
 	}
+	if cfg.Scheduler.ScanOrphans.Enabled {
+		s.touchScanOrphansSchedule(now)
+	}
 
 	go func() {
 		ticker := time.NewTicker(tickInterval())
@@ -387,6 +415,9 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.RefreshLinks, s.getLastRunRefreshLinks(), now) {
 		s.runScheduledRefreshLinks(now)
 	}
+	if scheduler.Due(cfg.Scheduler.ScanOrphans, s.getLastRunScanOrphans(), now) {
+		s.runScheduledScanOrphans(now)
+	}
 }
 
 func (s *Server) getLastRunPlan() time.Time {
@@ -413,6 +444,12 @@ func (s *Server) getLastRunScanCutoffs() time.Time {
 	return s.lastRunScanCutoffs
 }
 
+func (s *Server) getLastRunScanOrphans() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRunScanOrphans
+}
+
 func (s *Server) getLastRanPlan() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
@@ -435,6 +472,12 @@ func (s *Server) getLastRanScanCutoffs() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
 	return s.lastRanScanCutoffs
+}
+
+func (s *Server) getLastRanScanOrphans() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRanScanOrphans
 }
 
 // touchPlanSchedule resets run_plan's due-check anchor without recording
@@ -462,6 +505,12 @@ func (s *Server) touchRefreshLinksSchedule(t time.Time) {
 func (s *Server) touchScanCutoffsSchedule(t time.Time) {
 	s.schedMu.Lock()
 	s.lastRunScanCutoffs = t
+	s.schedMu.Unlock()
+}
+
+func (s *Server) touchScanOrphansSchedule(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunScanOrphans = t
 	s.schedMu.Unlock()
 }
 
@@ -497,9 +546,17 @@ func (s *Server) recordScanCutoffsRan(t time.Time) {
 	s.schedMu.Unlock()
 }
 
+func (s *Server) recordScanOrphansRan(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunScanOrphans = t
+	s.lastRanScanOrphans = t
+	s.schedMu.Unlock()
+}
+
 // updateSchedule validates and persists a single named task's schedule
-// ("run_plan", "rescan_cold", "refresh_links", or "scan_cutoffs"), then
-// always resets that task's due-check anchor to now - whether enabling,
+// ("run_plan", "rescan_cold", "refresh_links", "scan_cutoffs", or
+// "scan_orphans"), then always resets that task's due-check anchor to now
+// - whether enabling,
 // disabling, or just adjusting the time - so saving a schedule can never
 // itself trigger an immediate unattended run as a surprise side effect.
 // This does not touch the "last ran" fact shown on the settings page -
@@ -520,6 +577,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		updated.Scheduler.RefreshLinks = sched
 	case "scan_cutoffs":
 		updated.Scheduler.ScanCutoffs = sched
+	case "scan_orphans":
+		updated.Scheduler.ScanOrphans = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()
@@ -538,6 +597,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		s.touchRefreshLinksSchedule(now)
 	case "scan_cutoffs":
 		s.touchScanCutoffsSchedule(now)
+	case "scan_orphans":
+		s.touchScanOrphansSchedule(now)
 	}
 	return nil
 }

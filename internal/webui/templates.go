@@ -26,6 +26,7 @@ var pageNames = []string{
 	"settings_auth",
 	"settings_notifications",
 	"settings_scheduler",
+	"settings_orphans",
 	"plan",
 	"history",
 	"verify_status",
