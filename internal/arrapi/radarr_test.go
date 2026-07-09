@@ -221,3 +221,48 @@ func TestIsNotFound(t *testing.T) {
 		t.Error("a 404 StatusError must be reported as not-found")
 	}
 }
+
+// TestRadarrClient_ActiveMoveCommands proves the counting rules that make
+// this the reliable "is anything still physically copying" signal: only
+// queued/started commands count, only move-type commands count (matched
+// case-insensitively by name), and completed/failed leftovers in the
+// command list are ignored.
+func TestRadarrClient_ActiveMoveCommands(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/command" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": "MoveMovie", "status": "started"},
+			{"id": 2, "name": "MoveMovie", "status": "queued"},
+			{"id": 3, "name": "MoveMovie", "status": "completed"},    // finished - not active
+			{"id": 4, "name": "RefreshMovie", "status": "started"},   // not a move
+			{"id": 5, "name": "movescanfolder", "status": "started"}, // hypothetical: name-contains-move counts
+		})
+	}))
+	defer srv.Close()
+
+	n, err := NewRadarrClient(srv.URL, "key").ActiveMoveCommands()
+	if err != nil {
+		t.Fatalf("ActiveMoveCommands: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("ActiveMoveCommands = %d, want 3 (started + queued + name-contains-move)", n)
+	}
+}
+
+// TestRadarrClient_ActiveMoveCommands_ErrorIsError pins the fail-safe
+// direction: a failure to read the command queue must surface as an
+// error, never as "0 active moves" - callers treat an error as "cannot
+// prove it's safe to move," and silently returning idle here would
+// reopen the exact overlapping-writes hole this exists to close.
+func TestRadarrClient_ActiveMoveCommands_ErrorIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if _, err := NewRadarrClient(srv.URL, "key").ActiveMoveCommands(); err == nil {
+		t.Fatal("expected an error when the command queue can't be read")
+	}
+}

@@ -58,6 +58,18 @@ type fakeRadarr struct {
 	mu          sync.Mutex
 	editorCalls []map[string]any
 	cutoffCalls int
+	// activeMoveCommands is how many started move commands GET
+	// /api/v3/command reports - the signal ArrMovesInFlight uses to
+	// detect moves still physically running inside Radarr (possibly
+	// dispatched by a Coldarr process that no longer exists). Zero, the
+	// default, means idle: safe to plan and apply.
+	activeMoveCommands int
+}
+
+func (f *fakeRadarr) setActiveMoveCommands(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.activeMoveCommands = n
 }
 
 func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
@@ -94,6 +106,16 @@ func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 		f.editorCalls = append(f.editorCalls, body)
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("GET /api/v3/command", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		n := f.activeMoveCommands
+		f.mu.Unlock()
+		cmds := make([]map[string]any, 0, n)
+		for i := 0; i < n; i++ {
+			cmds = append(cmds, map[string]any{"id": i + 1, "name": "MoveMovie", "status": "started"})
+		}
+		_ = json.NewEncoder(w).Encode(cmds)
 	})
 	f.Server = httptest.NewServer(mux)
 	t.Cleanup(f.Close)
@@ -279,6 +301,111 @@ func TestTick_RunScheduledPlan_SkipsWhenApplyAlreadyInFlight(t *testing.T) {
 	}
 	if got := srv.getLastRunPlan(); !got.IsZero() {
 		t.Errorf("lastRunPlan = %v, want zero - a skipped tick must not update the due-check anchor", got)
+	}
+}
+
+// TestTick_RunScheduledPlan_SkipsWhileArrStillExecutingMoves covers the
+// gap the in-memory guard above can't: move commands already inside
+// Radarr keep physically copying even if the Coldarr process that
+// dispatched them has since restarted - leaving currentRun empty and the
+// flock free, exactly the post-restart state in which a real deployment
+// had a scheduled tick pile new moves onto drives still receiving a
+// previous run's files. The tick must skip (and not mark the run done, so
+// it retries) purely because Radarr's command queue says moves are still
+// running.
+func TestTick_RunScheduledPlan_SkipsWhileArrStillExecutingMoves(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+
+	// No apply is running in this process and no lock is held - only
+	// Radarr itself knows moves are still executing.
+	radarr.setActiveMoveCommands(2)
+
+	now := time.Now()
+	srv.tick(now)
+
+	// The refusal is synchronous (it happens before any apply goroutine
+	// is spawned), but give any wrongly-started apply a moment to make
+	// its editor call so a regression fails loudly instead of racing.
+	time.Sleep(50 * time.Millisecond)
+
+	if got := len(radarr.calls()); got != 0 {
+		t.Errorf("radarr editor calls = %d, want 0 - scheduler must not start new moves while Radarr reports move commands still running", got)
+	}
+	if got := srv.getLastRunPlan(); !got.IsZero() {
+		t.Errorf("lastRunPlan = %v, want zero - the skipped tick must retry once Arr moves drain", got)
+	}
+
+	// Once Radarr drains, the next tick must proceed normally.
+	radarr.setActiveMoveCommands(0)
+	srv.tick(now)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(radarr.calls()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(radarr.calls()); got != 1 {
+		t.Errorf("radarr editor calls after Arr went idle = %d, want 1 - the gate must not permanently block applies", got)
+	}
+}
+
+// TestStartApply_RefusesWhileArrStillExecutingMoves pins the same
+// protection on the manual "Apply this plan" path: even with a valid,
+// freshly-built plan in hand and no other Coldarr apply running,
+// startApply must refuse while Radarr reports move commands in flight.
+func TestStartApply_RefusesWhileArrStillExecutingMoves(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	eng, err := srv.newEngine()
+	if err != nil {
+		t.Fatalf("newEngine: %v", err)
+	}
+	now := time.Now()
+	inv, err := eng.BuildInventory(now)
+	if err != nil {
+		t.Fatalf("BuildInventory: %v", err)
+	}
+	plan, err := eng.BuildPlan(inv, now)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Entries) == 0 {
+		t.Fatal("test setup: expected at least one planned move")
+	}
+
+	radarr.setActiveMoveCommands(1)
+	if _, err := srv.startApply(eng, inv, plan); err == nil {
+		t.Fatal("expected startApply to refuse while Radarr reports a move command still running")
+	}
+	if got := len(radarr.calls()); got != 0 {
+		t.Errorf("radarr editor calls = %d, want 0 - the refused apply must not have dispatched anything", got)
+	}
+}
+
+// TestBuildPlanData_RefusesWhileArrStillExecutingMoves pins the Plan
+// page itself: a dry-run preview computed from mid-move disk numbers is
+// exactly the "here's a new plan!" trap that had an operator apply plan
+// after plan while the previous one was still copying. The page must
+// show the refusal instead of a plan.
+func TestBuildPlanData_RefusesWhileArrStillExecutingMoves(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	radarr.setActiveMoveCommands(1)
+
+	data := srv.buildPlanData()
+	if data.Error == "" {
+		t.Fatal("expected the Plan page to refuse with an explanation while Radarr reports moves in flight")
+	}
+	if len(data.Entries) != 0 {
+		t.Errorf("plan entries = %d, want 0 - no plan may be shown while Arr-side moves are running", len(data.Entries))
 	}
 }
 
