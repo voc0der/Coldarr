@@ -45,18 +45,26 @@ type Input struct {
 type MoveEntry struct {
 	Item     model.MediaItem
 	FromTier string
-	// FromRole is the role of FromTier - the mover uses this to sequence
-	// execution (see internal/mover): every move that frees cold capacity
-	// (FromRole == RoleCold) must fully land before any move that
-	// consumes cold capacity (FromRole == RoleHot) begins, since cold
-	// tiers are packed close enough to their ceiling that writing before
-	// freeing can fail outright.
+	// FromRole is the role FromTier had - descriptive metadata for
+	// whether this is a reclaim (cold) or an ordinary fill (hot).
+	// Execution order is driven by Phase below, not this field.
 	FromRole model.TierRole
 	FromPath string
 	ToTier   string
 	ToPath   string
-	Score    float64
-	Reasons  []string
+	// Phase is a strictly increasing sequence number Build assigns as it
+	// resolves mutual space dependencies between reclaims and fills (see
+	// the comment above the round loop in Build): an entry with a lower
+	// Phase may free space (or otherwise change conditions) that a
+	// higher-Phase entry's placement depended on. The mover (see
+	// internal/mover) executes phases in ascending order, waiting for
+	// each one to fully land on disk before starting the next - it
+	// cannot just group by direction, since a later round's reclaim can
+	// depend on an earlier round's fill having actually happened, not
+	// merely having been planned.
+	Phase   int
+	Score   float64
+	Reasons []string
 }
 
 type Plan struct {
@@ -105,75 +113,133 @@ func Build(in Input) (*Plan, error) {
 		}
 	}
 
-	// Reclaims run first: an item that isn't actually settled yet - either
-	// upcoming (about to start actively receiving new episodes/a release)
-	// or monitored with an unmet quality cutoff (its file is still going
-	// to be replaced with an upgrade) - has no business sitting on cold
-	// storage, which Coldarr packs tight toward its target/max on purpose.
-	// Cold is the worst possible place for something that might still
-	// grow: there's no headroom, and Radarr/Sonarr will replace the file
-	// wherever it happens to live. This also frees the cold space it was
-	// occupying before the hot->cold pass below considers what else has
-	// room to move in - so a reclaimed slot gets backfilled by the next
-	// coldest hot-eligible item in this same pass.
-	for _, r := range misplacedOnCold(in.Items, coldPaths) {
-		fromTier := coldPaths[r.Item.Item.RootFolderPath]
+	// Reclaims (cold->hot, for items misplaced on cold - see
+	// misplacedOnCold) and fills (hot->cold, ordinary cold-eligible items
+	// - see coldCandidates) can each depend on space the other frees: a
+	// fill needs cold room a reclaim frees, and a reclaim needs hot room
+	// a fill frees. Neither candidate list is sorted by who depends on
+	// whom, so both passes run repeatedly in rounds against the same
+	// working usage, retrying whatever didn't fit last time, until a
+	// full round places nothing new. Since every still-pending candidate
+	// gets a genuine retry every round, nothing lands in a later round
+	// unless it truly couldn't have fit any earlier one - so the Phase
+	// each entry is stamped with (see MoveEntry.Phase) never
+	// over-serializes the mover's actual execution beyond what the real
+	// dependency requires.
+	pendingReclaims := misplacedOnCold(in.Items, coldPaths)
+	pendingFills := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
 
-		destTier, destPath, ok := pickHotDestination(in.Tiers, working, r.Item.Item.Type, r.Item.Item.SizeBytes)
-		if !ok {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back (%s, %.2f GB): %s", r.Item.Item.Title, r.Item.Item.Type, gb(r.Item.Item.SizeBytes), r.Reason))
-			continue
+	// maxRounds is a defensive bound, not an expected path: each round
+	// that makes progress places at least one more candidate, so the
+	// loop naturally terminates (via the break below) well before this
+	// many iterations. It exists only to guarantee termination even if a
+	// future change broke that invariant.
+	maxRounds := len(pendingReclaims) + len(pendingFills) + 1
+	phase := 0
+	for round := 0; round < maxRounds; round++ {
+		var reclaimEntries, fillEntries []MoveEntry
+		var reclaimsProgressed, fillsProgressed bool
+
+		reclaimEntries, pendingReclaims, reclaimsProgressed = attemptReclaims(pendingReclaims, in.Tiers, working, volumeGroups, phase)
+		plan.Entries = append(plan.Entries, reclaimEntries...)
+		phase++
+
+		fillEntries, pendingFills, fillsProgressed = attemptFills(pendingFills, hotPaths, in.Tiers, working, volumeGroups, phase)
+		plan.Entries = append(plan.Entries, fillEntries...)
+		phase++
+
+		if !reclaimsProgressed && !fillsProgressed {
+			break
 		}
-
-		plan.Entries = append(plan.Entries, MoveEntry{
-			Item:     r.Item.Item,
-			FromTier: fromTier.Name,
-			FromRole: fromTier.Role,
-			FromPath: r.Item.Item.RootFolderPath,
-			ToTier:   destTier.Name,
-			ToPath:   destPath,
-			Reasons:  []string{r.Reason},
-		})
-
-		applyDeltaToVolume(working, volumeGroups, r.Item.Item.RootFolderPath, -r.Item.Item.SizeBytes)
-		applyDeltaToVolume(working, volumeGroups, destPath, r.Item.Item.SizeBytes)
 	}
 
-	candidates := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
-
-	for _, c := range candidates {
-		fromTier := hotPaths[c.Item.RootFolderPath]
-
-		destTier, destPath, ok := pickDestination(in.Tiers, working, c.Item.Type, c.Item.SizeBytes)
-		if !ok {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no cold destination has room for %q (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
-			continue
-		}
-
-		plan.Entries = append(plan.Entries, MoveEntry{
-			Item:     c.Item,
-			FromTier: fromTier.Name,
-			FromRole: fromTier.Role,
-			FromPath: c.Item.RootFolderPath,
-			ToTier:   destTier.Name,
-			ToPath:   destPath,
-			Score:    c.Eval.Score,
-			Reasons:  c.Eval.Reasons,
-		})
-
-		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
-		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
+	// Whatever is still pending after a full round made no progress
+	// genuinely doesn't fit no matter the ordering - warn once, for the
+	// final leftovers only (not per-round, which would misreport
+	// candidates that go on to succeed in a later round).
+	for _, r := range pendingReclaims {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back (%s, %.2f GB): %s", r.Item.Item.Title, r.Item.Item.Type, gb(r.Item.Item.SizeBytes), r.Reason))
+	}
+	for _, c := range pendingFills {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("no cold destination has room for %q (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
 	}
 
 	plan.FinalUsage = working
 	return plan, nil
 }
 
+// attemptReclaims tries to place every still-pending reclaim candidate
+// against the current working usage, stamping each successfully-placed
+// entry with phase (see MoveEntry.Phase). Returns the entries placed
+// this call, whichever candidates still have nowhere to go, and whether
+// any progress was made this call.
+func attemptReclaims(pending []misplacedOnColdItem, tiers []model.Tier, working map[string]diskusage.Usage, volumeGroups map[string][]string, phase int) (entries []MoveEntry, stillPending []misplacedOnColdItem, progressed bool) {
+	for _, r := range pending {
+		destTier, destPath, ok := pickHotDestination(tiers, working, r.Item.Item.Type, r.Item.Item.SizeBytes)
+		if !ok {
+			stillPending = append(stillPending, r)
+			continue
+		}
+
+		entries = append(entries, MoveEntry{
+			Item:     r.Item.Item,
+			FromTier: r.FromTier.Name,
+			FromRole: r.FromTier.Role,
+			FromPath: r.Item.Item.RootFolderPath,
+			ToTier:   destTier.Name,
+			ToPath:   destPath,
+			Phase:    phase,
+			Reasons:  []string{r.Reason},
+		})
+		progressed = true
+
+		applyDeltaToVolume(working, volumeGroups, r.Item.Item.RootFolderPath, -r.Item.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, destPath, r.Item.Item.SizeBytes)
+	}
+	return entries, stillPending, progressed
+}
+
+// attemptFills tries to place every still-pending fill candidate against
+// the current working usage, stamping each successfully-placed entry
+// with phase (see MoveEntry.Phase). Returns the entries placed this
+// call, whichever candidates still have nowhere to go, and whether any
+// progress was made this call.
+func attemptFills(pending []ItemEval, hotPaths map[string]model.Tier, tiers []model.Tier, working map[string]diskusage.Usage, volumeGroups map[string][]string, phase int) (entries []MoveEntry, stillPending []ItemEval, progressed bool) {
+	for _, c := range pending {
+		fromTier := hotPaths[c.Item.RootFolderPath]
+
+		destTier, destPath, ok := pickDestination(tiers, working, c.Item.Type, c.Item.SizeBytes)
+		if !ok {
+			stillPending = append(stillPending, c)
+			continue
+		}
+
+		entries = append(entries, MoveEntry{
+			Item:     c.Item,
+			FromTier: fromTier.Name,
+			FromRole: fromTier.Role,
+			FromPath: c.Item.RootFolderPath,
+			ToTier:   destTier.Name,
+			ToPath:   destPath,
+			Phase:    phase,
+			Score:    c.Eval.Score,
+			Reasons:  c.Eval.Reasons,
+		})
+		progressed = true
+
+		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
+	}
+	return entries, stillPending, progressed
+}
+
 // misplacedOnColdItem pairs an item that needs to be pulled back from cold
-// storage with the specific reason it doesn't belong there.
+// storage with the specific reason it doesn't belong there and the cold
+// tier it currently occupies.
 type misplacedOnColdItem struct {
-	Item   ItemEval
-	Reason string
+	Item     ItemEval
+	Reason   string
+	FromTier model.Tier
 }
 
 // misplacedOnCold returns every item currently sitting on a cold-tier path
@@ -202,14 +268,15 @@ type misplacedOnColdItem struct {
 func misplacedOnCold(items []ItemEval, coldPaths map[string]model.Tier) []misplacedOnColdItem {
 	var out []misplacedOnColdItem
 	for _, it := range items {
-		if _, onColdPath := coldPaths[it.Item.RootFolderPath]; !onColdPath {
+		fromTier, onColdPath := coldPaths[it.Item.RootFolderPath]
+		if !onColdPath {
 			continue
 		}
 		switch {
 		case it.Item.Upcoming:
-			out = append(out, misplacedOnColdItem{Item: it, Reason: "upcoming - misplaced on cold storage, moving back before it's released"})
+			out = append(out, misplacedOnColdItem{Item: it, Reason: "upcoming - misplaced on cold storage, moving back before it's released", FromTier: fromTier})
 		case it.Item.Monitored && it.Item.QualityCutoffNotMet:
-			out = append(out, misplacedOnColdItem{Item: it, Reason: "quality cutoff not met - misplaced on cold storage, moving back so the eventual upgrade lands on fast storage"})
+			out = append(out, misplacedOnColdItem{Item: it, Reason: "quality cutoff not met - misplaced on cold storage, moving back so the eventual upgrade lands on fast storage", FromTier: fromTier})
 		}
 	}
 	return out

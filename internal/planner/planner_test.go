@@ -664,3 +664,95 @@ func TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking(t *testin
 		t.Fatalf("expected both the reclaim and the freed-up hot->cold move, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
 }
+
+// TestBuild_ReclaimSucceedsAfterFillFreesHotRoom proves the reverse
+// dependency from TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking:
+// hot only has 3 GB free - not enough for the 10 GB reclaim - until an
+// 8 GB fill (moving something else off hot to cold, which has plenty of
+// room) frees up more. The reclaim can only succeed in a later round
+// than the fill, and its MoveEntry.Phase must reflect that so the mover
+// executes the fill first for real, not just on paper.
+func TestBuild_ReclaimSucceedsAfterFillFreesHotRoom(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 97*gib),   // 3 GB free
+			"/cold1": usage(1000*gib, 100*gib), // plenty of room
+		},
+		Items: []ItemEval{
+			cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib),
+			{
+				Item: model.MediaItem{ArrApp: "sonarr", ID: 2, Type: model.TV, Title: "Show B", RootFolderPath: "/hot", SizeBytes: 8 * gib},
+				Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 80},
+			},
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Warnings) != 0 {
+		t.Fatalf("expected no warnings once both resolve, got %v", plan.Warnings)
+	}
+	if len(plan.Entries) != 2 {
+		t.Fatalf("expected both the fill and the reclaim it enables, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+
+	var fillPhase, reclaimPhase int
+	var foundFill, foundReclaim bool
+	for _, e := range plan.Entries {
+		switch e.Item.Title {
+		case "Show B":
+			foundFill = true
+			fillPhase = e.Phase
+			if e.FromTier != "hot" || e.ToTier != "cold-tv" {
+				t.Errorf("fill entry has wrong direction: %+v", e)
+			}
+		case "Show A (grow-risk)":
+			foundReclaim = true
+			reclaimPhase = e.Phase
+			if e.FromTier != "cold-tv" || e.ToTier != "hot" {
+				t.Errorf("reclaim entry has wrong direction: %+v", e)
+			}
+		}
+	}
+	if !foundFill || !foundReclaim {
+		t.Fatalf("expected both Show A and Show B in the plan, got %+v", plan.Entries)
+	}
+	if fillPhase >= reclaimPhase {
+		t.Errorf("expected the fill's Phase (%d) strictly before the reclaim's Phase (%d) - the reclaim depends on the fill having already freed hot room", fillPhase, reclaimPhase)
+	}
+}
+
+// TestBuild_StillWarnsWhenNoRoundEverMakesRoom confirms a reclaim that
+// can never fit - hot has zero free room and nothing exists to ever
+// free any - ends up as a warning and the loop terminates, rather than
+// spinning or silently vanishing.
+func TestBuild_StillWarnsWhenNoRoundEverMakesRoom(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 100*gib), // completely full
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{cutoffUnmetItem("Show A", "/cold1", 10*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no moves when hot never has room, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatal("expected a warning when the reclaim never fits in any round")
+	}
+}

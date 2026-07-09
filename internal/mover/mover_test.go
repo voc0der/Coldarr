@@ -187,12 +187,12 @@ func TestApply_SerializesSameVolumeButParallelAcrossVolumes(t *testing.T) {
 }
 
 // TestApply_FillingWaitsForFreeingAcrossDifferentVolumes proves the other
-// safety property added for near-full cold tiers: a move that frees cold
-// capacity (FromRole == RoleCold, e.g. reclaiming a grow-risk item back to
-// hot) must fully land and settle before any move that consumes cold
-// capacity (FromRole == RoleHot) starts writing - even though they land on
-// entirely different volumes and, absent this ordering, would be free to
-// run fully concurrently like TestApply_SerializesSameVolumeButParallelAcrossVolumes
+// safety property added for near-full cold tiers: a lower-Phase move
+// (e.g. reclaiming a grow-risk item back to hot, freeing cold capacity a
+// later move depends on) must fully land and settle before any
+// higher-Phase move starts writing - even though they land on entirely
+// different volumes and, absent this ordering, would be free to run
+// fully concurrently like TestApply_SerializesSameVolumeButParallelAcrossVolumes
 // above proves for same-phase moves.
 func TestApply_FillingWaitsForFreeingAcrossDifferentVolumes(t *testing.T) {
 	var mu sync.Mutex
@@ -245,8 +245,8 @@ func TestApply_FillingWaitsForFreeingAcrossDifferentVolumes(t *testing.T) {
 
 	plan := &planner.Plan{
 		Entries: []planner.MoveEntry{
-			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Reclaimed"}, FromRole: model.RoleCold, ToTier: "hot", ToPath: "/hot"},
-			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Backfilled"}, FromRole: model.RoleHot, ToTier: "cold", ToPath: "/cold"},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Reclaimed"}, ToTier: "hot", ToPath: "/hot", Phase: 0},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Backfilled"}, ToTier: "cold", ToPath: "/cold", Phase: 1},
 		},
 	}
 
@@ -287,6 +287,133 @@ func TestApply_FillingWaitsForFreeingAcrossDifferentVolumes(t *testing.T) {
 	i1, i2 := indexOf(finalCalls, "1@/hot"), indexOf(finalCalls, "2@/cold")
 	if i1 < 0 || i2 < 0 || i1 > i2 {
 		t.Fatalf("expected the freeing move (1) called before the filling move (2), got order %v", finalCalls)
+	}
+}
+
+// TestApply_ThreePhasesExecuteInStrictOrder proves genuine N-phase
+// sequencing (not just the 2-phase free/fill case above): three entries
+// on three different destination volumes, phases 0/1/2, each gated so it
+// only settles once explicitly released. Phase 1 must never start before
+// phase 0 is released, and phase 2 must never start before phase 1 is
+// released - this is what lets a fixpoint-planned entry (see
+// planner.Build) that only became possible because an earlier round's
+// move already landed for real, not just on paper.
+func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+	blocked := map[string]bool{}
+	gate0 := make(chan struct{})
+	gate1 := make(chan struct{})
+	gate2 := make(chan struct{})
+	gateFor := map[string]chan struct{}{"/p0": gate0, "/p1": gate1, "/p2": gate2}
+
+	statFunc := func(path string) (diskusage.Usage, error) {
+		mu.Lock()
+		gate, hasGate := gateFor[path]
+		shouldBlock := hasGate && !blocked[path]
+		blocked[path] = true
+		mu.Unlock()
+
+		if shouldBlock {
+			<-gate
+		}
+		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			MovieIDs       []int  `json:"movieIds"`
+			RootFolderPath string `json:"rootFolderPath"`
+		}
+		_ = json.Unmarshal(body, &req)
+
+		mu.Lock()
+		callOrder = append(callOrder, fmt.Sprintf("%d@%s", req.MovieIDs[0], req.RootFolderPath))
+		mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Item0"}, ToTier: "t0", ToPath: "/p0", Phase: 0},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Item1"}, ToTier: "t1", ToPath: "/p1", Phase: 1},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 3, Title: "Item2"}, ToTier: "t2", ToPath: "/p2", Phase: 2},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(callOrder) >= 1
+	})
+	mu.Lock()
+	got := append([]string(nil), callOrder...)
+	mu.Unlock()
+	if !contains(got, "1@/p0") {
+		t.Fatalf("expected phase 0's move to have started, got %v", got)
+	}
+	if contains(got, "2@/p1") || contains(got, "3@/p2") {
+		t.Fatalf("phase 1/2 must not start before phase 0 settles, got %v", got)
+	}
+
+	close(gate0)
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(callOrder) >= 2
+	})
+	mu.Lock()
+	got = append([]string(nil), callOrder...)
+	mu.Unlock()
+	if !contains(got, "2@/p1") {
+		t.Fatalf("expected phase 1's move to have started once phase 0 settled, got %v", got)
+	}
+	if contains(got, "3@/p2") {
+		t.Fatalf("phase 2 must not start before phase 1 settles, got %v", got)
+	}
+
+	close(gate1)
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(callOrder) >= 3
+	})
+
+	close(gate2)
+	progress.Wait()
+
+	snap := progress.Snapshot()
+	if failed := snap.Failed(); len(failed) != 0 {
+		t.Fatalf("expected no failures, got %+v", failed)
+	}
+	if moved := snap.Moved(); len(moved) != 3 {
+		t.Fatalf("expected all 3 items moved, got %d", len(moved))
+	}
+
+	mu.Lock()
+	finalCalls := append([]string(nil), callOrder...)
+	mu.Unlock()
+	i0, i1, i2 := indexOf(finalCalls, "1@/p0"), indexOf(finalCalls, "2@/p1"), indexOf(finalCalls, "3@/p2")
+	if i0 < 0 || i1 < 0 || i2 < 0 || !(i0 < i1 && i1 < i2) {
+		t.Fatalf("expected strict phase order 0 < 1 < 2, got %v", finalCalls)
 	}
 }
 
