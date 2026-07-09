@@ -233,6 +233,14 @@ func (s *SonarrClient) CutoffUnmetSeriesIDs() (map[int]bool, error) {
 	return unmet, nil
 }
 
+// ActiveMoveCommands returns how many move-type commands Sonarr currently
+// has queued or running - see activeMoveCommands for why this is the only
+// reliable signal that a previously-requested relocation is still
+// physically copying, independent of which process asked for it.
+func (s *SonarrClient) ActiveMoveCommands() (int, error) {
+	return s.c.activeMoveCommands()
+}
+
 type seriesEditorRequest struct {
 	SeriesIDs      []int  `json:"seriesIds"`
 	RootFolderPath string `json:"rootFolderPath"`

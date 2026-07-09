@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,50 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 // point elsewhere (same reasoning as internal/webui's linkCachePath).
 func cutoffCachePath(historyPath string) string {
 	return filepath.Join(filepath.Dir(historyPath), "coldarr-cutoffcache.json")
+}
+
+// ArrMovesInFlight reports whether Radarr or Sonarr is still executing (or
+// has queued) any move command - regardless of who requested it or
+// whether the requesting process is even alive anymore. Coldarr's own
+// apply lock is an flock that the kernel releases the moment Coldarr's
+// process exits, but move commands already handed to Radarr/Sonarr keep
+// physically copying files entirely on their own; after a Coldarr crash
+// or restart, this is the ONLY signal that those writes are still
+// happening. Every apply entry point must refuse to start - and any
+// freshly-built plan should be distrusted - while this reports true:
+// disk-usage numbers taken mid-move are garbage, and starting new moves
+// on top of in-flight ones is how destination drives get overfilled. An
+// error from either app is returned as an error, not treated as idle -
+// "can't tell" must fail toward not moving anything.
+func (e *Engine) ArrMovesInFlight() (bool, string, error) {
+	total := 0
+	var parts []string
+
+	if e.Radarr != nil {
+		n, err := e.Radarr.ActiveMoveCommands()
+		if err != nil {
+			return false, "", fmt.Errorf("checking radarr for in-flight moves: %w", err)
+		}
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("Radarr is still executing %d move command(s)", n))
+		}
+		total += n
+	}
+	if e.Sonarr != nil {
+		n, err := e.Sonarr.ActiveMoveCommands()
+		if err != nil {
+			return false, "", fmt.Errorf("checking sonarr for in-flight moves: %w", err)
+		}
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("Sonarr is still executing %d move command(s)", n))
+		}
+		total += n
+	}
+
+	if total == 0 {
+		return false, "", nil
+	}
+	return true, strings.Join(parts, "; ") + " - these keep running even across Coldarr restarts. Wait for them to finish before planning or applying anything.", nil
 }
 
 // PathStatus is the result of checking one configured tier path: either

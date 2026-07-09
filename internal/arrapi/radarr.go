@@ -236,6 +236,14 @@ func (r *RadarrClient) CutoffUnmetMovieIDs() (map[int]bool, error) {
 	return unmet, nil
 }
 
+// ActiveMoveCommands returns how many move-type commands Radarr currently
+// has queued or running - see activeMoveCommands for why this is the only
+// reliable signal that a previously-requested relocation is still
+// physically copying, independent of which process asked for it.
+func (r *RadarrClient) ActiveMoveCommands() (int, error) {
+	return r.c.activeMoveCommands()
+}
+
 type movieEditorRequest struct {
 	MovieIDs       []int  `json:"movieIds"`
 	RootFolderPath string `json:"rootFolderPath"`

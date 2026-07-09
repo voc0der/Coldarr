@@ -112,10 +112,42 @@ func (c *client) do(method, path string, query url.Values, body interface{}, out
 
 // commandResource is the subset of Radarr/Sonarr's command-queue resource
 // (POST/GET /api/v3/command) that callers need to trigger a command and
-// poll it to completion.
+// poll it to completion, plus Name for recognizing what a listed command
+// actually is (see activeMoveCommands).
 type commandResource struct {
 	ID     int    `json:"id"`
+	Name   string `json:"name"`
 	Status string `json:"status"`
+}
+
+// activeMoveCommands returns how many move-type commands Radarr/Sonarr is
+// currently executing or has queued. Bulk root-folder relocations
+// (movie/editor, series/editor with moveFiles) run as commands in this
+// queue - NOT as records in /api/v3/queue, which only tracks
+// downloads/imports - so this, not the download queue, is the only place
+// an in-flight move is visible from outside. Critically, these commands
+// keep running inside Radarr/Sonarr even if the process that requested
+// them (Coldarr) has since crashed or restarted, so callers use this to
+// detect "a previous run's moves are still physically copying" before
+// trusting disk numbers or starting new moves. Matched by name substring
+// rather than an exact allow-list so renamed/added move-type commands in
+// future Radarr/Sonarr versions fail toward caution (a false positive
+// merely delays an apply; a false negative overlaps writes).
+func (c *client) activeMoveCommands() (int, error) {
+	var cmds []commandResource
+	if err := c.get("/api/v3/command", nil, &cmds); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, cmd := range cmds {
+		if cmd.Status != "queued" && cmd.Status != "started" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(cmd.Name), "move") {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // runCommand starts a Radarr/Sonarr command (e.g. a folder rescan) and

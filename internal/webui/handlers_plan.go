@@ -48,6 +48,20 @@ func (s *Server) buildPlanData() planData {
 		return data
 	}
 
+	// A plan computed while Radarr/Sonarr are still physically executing
+	// earlier move commands is built from mid-move disk numbers - it will
+	// happily propose stuffing a drive whose real free space is already
+	// spoken for. Refuse to show one at all rather than show one with a
+	// caveat: an operator (or the scheduler) acting on it is exactly how
+	// destinations get overfilled.
+	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+		data.Error = err.Error()
+		return data
+	} else if busy {
+		data.Error = detail
+		return data
+	}
+
 	now := time.Now()
 	inv, err := eng.BuildInventory(now)
 	if err != nil {
@@ -191,6 +205,18 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 // send a notification) calls progress.Wait() again itself -
 // mover.Progress supports any number of independent waiters.
 func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *planner.Plan) (*mover.Progress, error) {
+	// The flock below only guards against a concurrently *running* Coldarr
+	// apply - it dies with Coldarr's process, while move commands already
+	// handed to Radarr/Sonarr keep physically copying on their own. This
+	// check is what actually prevents starting a new run on top of a
+	// previous run's still-in-flight moves after a crash or restart. A
+	// failed check refuses the apply rather than assuming idle.
+	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+		return nil, err
+	} else if busy {
+		return nil, fmt.Errorf("refusing to apply: %s", detail)
+	}
+
 	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))
 	if err != nil {
 		return nil, err

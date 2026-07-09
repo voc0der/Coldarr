@@ -183,6 +183,20 @@ func (s *Server) runScheduledPlan(now time.Time) {
 		return
 	}
 
+	// Same reasoning as the in-flight guard above, but for moves running
+	// inside Radarr/Sonarr themselves - which survive Coldarr restarts,
+	// making them invisible to currentRun. Skip without recordPlanRan so
+	// the tick retries once they've drained, exactly like the guard above;
+	// startApply would also refuse, but checking here avoids building (and
+	// half-acting on) a plan from mid-move disk numbers at all.
+	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+		log.Printf("scheduler: run-plan: %v - skipping this tick", err)
+		return
+	} else if busy {
+		log.Printf("scheduler: run-plan is due, but %s - skipping this tick, will retry next tick", detail)
+		return
+	}
+
 	// Scan quality cutoffs first, so an actual unattended apply acts on
 	// current data even if the "Scan Quality Cutoffs" schedule itself is
 	// off. Best-effort: if another scan is already in flight, or this one
