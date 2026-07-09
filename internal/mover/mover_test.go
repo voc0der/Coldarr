@@ -148,7 +148,7 @@ func TestApply_SerializesSameVolumeButParallelAcrossVolumes(t *testing.T) {
 
 	progress := m.Apply(plan, volumeOf)
 
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(callOrder) >= 2
@@ -252,7 +252,7 @@ func TestApply_FillingWaitsForFreeingAcrossDifferentVolumes(t *testing.T) {
 
 	progress := m.Apply(plan, nil)
 
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(callOrder) >= 1
@@ -359,7 +359,7 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 
 	progress := m.Apply(plan, nil)
 
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(callOrder) >= 1
@@ -375,7 +375,7 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 	}
 
 	close(gate0)
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(callOrder) >= 2
@@ -391,7 +391,7 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 	}
 
 	close(gate1)
-	waitFor(t, 2*time.Second, func() bool {
+	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(callOrder) >= 3
@@ -412,7 +412,7 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 	finalCalls := append([]string(nil), callOrder...)
 	mu.Unlock()
 	i0, i1, i2 := indexOf(finalCalls, "1@/p0"), indexOf(finalCalls, "2@/p1"), indexOf(finalCalls, "3@/p2")
-	if i0 < 0 || i1 < 0 || i2 < 0 || !(i0 < i1 && i1 < i2) {
+	if i0 < 0 || i1 < 0 || i2 < 0 || i0 >= i1 || i1 >= i2 {
 		t.Fatalf("expected strict phase order 0 < 1 < 2, got %v", finalCalls)
 	}
 }
@@ -475,7 +475,7 @@ func TestSettle_ConfirmsViaRescanWhenUsageNeverGrows(t *testing.T) {
 	}
 
 	progress := m.Apply(plan, nil)
-	waitFor(t, 2*time.Second, func() bool { return progress.Snapshot().Done })
+	waitFor(t, func() bool { return progress.Snapshot().Done })
 
 	snap := progress.Snapshot()
 	if failed := snap.Failed(); len(failed) != 0 {
@@ -493,9 +493,9 @@ func TestSettle_ConfirmsViaRescanWhenUsageNeverGrows(t *testing.T) {
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
