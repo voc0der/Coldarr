@@ -225,10 +225,10 @@ func TestRefresh_ProbesWritability(t *testing.T) {
 	readOnlyParent := t.TempDir()
 	readOnlyDir := filepath.Join(readOnlyParent, "ro")
 	mustMkdir(t, readOnlyDir)
-	if err := os.Chmod(readOnlyDir, 0o500); err != nil {
+	if err := os.Chmod(readOnlyDir, 0o500); err != nil { //nolint:gosec // directory perms (need +x to stat/list), simulating a read-only mount for this test only
 		t.Fatalf("Chmod: %v", err)
 	}
-	defer func() { _ = os.Chmod(readOnlyDir, 0o700) }() // so t.TempDir() cleanup can remove it
+	defer func() { _ = os.Chmod(readOnlyDir, 0o700) }() //nolint:gosec // restoring so t.TempDir() cleanup can remove it
 
 	s, err := Load(t.TempDir() + "/orphans.json")
 	if err != nil {
