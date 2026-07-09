@@ -54,6 +54,11 @@ type NotificationsConfig struct {
 	// file, per cold-storage path checked) alongside the summary every
 	// task always sends. Off by default to keep notifications low-noise.
 	Verbose bool `yaml:"verbose"`
+	// Markdown formats notification bodies with Markdown (bold labels,
+	// code-spans for paths/titles/errors) and tells Apprise to render the
+	// body as Markdown rather than plain text. Off by default since not
+	// every Apprise target renders Markdown.
+	Markdown bool `yaml:"markdown"`
 	// Tag restricts delivery to whatever Apprise notification target(s)
 	// are registered under this tag on the receiving end. Many Apprise
 	// API deployments route entirely by tag and fail a request that

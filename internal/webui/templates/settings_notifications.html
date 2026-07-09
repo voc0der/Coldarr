@@ -22,6 +22,10 @@
       <input type="checkbox" id="verbose" name="verbose" {{if .Verbose}}checked{{end}}>
       <label for="verbose" style="font-weight:400">Verbose - also send one notification per item (moved file, cold-storage path checked), not just a summary</label>
     </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="markdown" name="markdown" {{if .Markdown}}checked{{end}}>
+      <label for="markdown" style="font-weight:400">Markdown - format messages with Markdown (bold labels, code spans for paths/titles) instead of plain text</label>
+    </div>
     <div class="btn-row">
       <button type="submit" class="btn btn-primary">Save</button>
       <button type="button" class="btn" hx-post="/settings/notifications/test" hx-include="closest form" hx-target="#notify-test-result" hx-swap="innerHTML">{{template "icon-bell"}} Send test notification</button>

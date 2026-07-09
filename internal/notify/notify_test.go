@@ -90,7 +90,7 @@ func TestTest_ReturnsErrorOnFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := Test(srv.URL, ""); err == nil {
+	if err := Test(srv.URL, "", false); err == nil {
 		t.Fatal("Test() returned nil error for a 500 response, want an error")
 	}
 }
@@ -98,7 +98,7 @@ func TestTest_ReturnsErrorOnFailure(t *testing.T) {
 func TestTest_Success(t *testing.T) {
 	srv, received := captureServer(t)
 
-	if err := Test(srv.URL, ""); err != nil {
+	if err := Test(srv.URL, "", false); err != nil {
 		t.Fatalf("Test() = %v, want nil", err)
 	}
 	select {
@@ -108,6 +108,25 @@ func TestTest_Success(t *testing.T) {
 		}
 		if p.Tag != "" {
 			t.Fatalf("payload.Tag = %q, want empty when no tag configured", p.Tag)
+		}
+		if p.Format != "" {
+			t.Fatalf("payload.Format = %q, want empty when markdown=false", p.Format)
+		}
+	default:
+		t.Fatal("Test() did not send a notification")
+	}
+}
+
+func TestTest_Markdown(t *testing.T) {
+	srv, received := captureServer(t)
+
+	if err := Test(srv.URL, "", true); err != nil {
+		t.Fatalf("Test() = %v, want nil", err)
+	}
+	select {
+	case p := <-received:
+		if p.Format != "markdown" {
+			t.Fatalf("payload.Format = %q, want %q", p.Format, "markdown")
 		}
 	default:
 		t.Fatal("Test() did not send a notification")
@@ -133,7 +152,7 @@ func TestNotifier_Summary_IncludesTagWhenSet(t *testing.T) {
 func TestTest_IncludesTagWhenSet(t *testing.T) {
 	srv, received := captureServer(t)
 
-	if err := Test(srv.URL, "mobile"); err != nil {
+	if err := Test(srv.URL, "mobile", false); err != nil {
 		t.Fatalf("Test() = %v, want nil", err)
 	}
 	select {
@@ -143,5 +162,55 @@ func TestTest_IncludesTagWhenSet(t *testing.T) {
 		}
 	default:
 		t.Fatal("Test() did not send a notification")
+	}
+}
+
+func TestNotifier_BoldCodeJoinLines_PassThroughWhenMarkdownOff(t *testing.T) {
+	n := &Notifier{}
+	if got := n.Bold("temphdd_path2"); got != "temphdd_path2" {
+		t.Fatalf("Bold() = %q, want unchanged", got)
+	}
+	if got := n.Code("/data/tv"); got != "/data/tv" {
+		t.Fatalf("Code() = %q, want unchanged", got)
+	}
+	if got := n.JoinLines([]string{"a", "b"}); got != "a; b" {
+		t.Fatalf("JoinLines() = %q, want %q", got, "a; b")
+	}
+}
+
+func TestNotifier_Bold_EscapesEmphasisCharsWhenMarkdownOn(t *testing.T) {
+	n := &Notifier{Markdown: true}
+	if got, want := n.Bold("temphdd_path2"), "**temphdd\\_path2**"; got != want {
+		t.Fatalf("Bold() = %q, want %q", got, want)
+	}
+}
+
+func TestNotifier_Code_DoesNotEscapeWhenMarkdownOn(t *testing.T) {
+	n := &Notifier{Markdown: true}
+	if got, want := n.Code("/data/tv_shows"), "`/data/tv_shows`"; got != want {
+		t.Fatalf("Code() = %q, want %q", got, want)
+	}
+}
+
+func TestNotifier_JoinLines_UsesBrWhenMarkdownOn(t *testing.T) {
+	n := &Notifier{Markdown: true}
+	if got, want := n.JoinLines([]string{"a", "b"}), "a<br/>b"; got != want {
+		t.Fatalf("JoinLines() = %q, want %q", got, want)
+	}
+}
+
+func TestNotifier_Summary_IncludesFormatWhenMarkdown(t *testing.T) {
+	srv, received := captureServer(t)
+
+	n := &Notifier{URL: srv.URL, Markdown: true}
+	n.Summary("title", "**body**", LevelInfo)
+
+	select {
+	case p := <-received:
+		if p.Format != "markdown" {
+			t.Fatalf("payload.Format = %q, want %q", p.Format, "markdown")
+		}
+	default:
+		t.Fatal("Summary() did not send a notification")
 	}
 }
