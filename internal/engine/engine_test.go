@@ -118,12 +118,18 @@ func TestBuildInventory_JellyfinFavoriteMarksItem(t *testing.T) {
 	radarr := radarrServer(t, moviePath)
 	defer radarr.Close()
 
+	// Jellyfin reports a Movie's Path as the video file itself, one level
+	// inside the folder Radarr manages - not the folder. If Coldarr ever
+	// goes back to matching Jellyfin Path against Radarr's (folder) Path
+	// verbatim, this file-vs-folder mismatch must make the favorite match
+	// fail, catching the regression this test exists to prevent.
+	movieFilePath := filepath.Join(moviePath, "Movie A.mkv")
 	jf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/Users":
 			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
 		case "/Users/u1/Items":
-			_, _ = w.Write([]byte(`{"Items": [{"Id": "j1", "Path": "` + moviePath + `"}]}`))
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "j1", "Path": "` + movieFilePath + `", "Type": "Movie"}]}`))
 		default:
 			t.Errorf("unexpected jellyfin path %s", r.URL.Path)
 		}
