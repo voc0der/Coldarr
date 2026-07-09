@@ -11,18 +11,20 @@
 // different load profile than steady, one-at-a-time movement. Hot storage
 // (a read source, not a write target) isn't throttled at all.
 //
-// A plan can also contain moves that free cold capacity (e.g. reclaiming a
-// grow-risk item back to hot) alongside moves that consume it (packing a
-// hot-eligible item onto cold). Since cold tiers routinely run within
-// fractions of a percent of their ceiling, writing before freeing can fail
-// outright - so every freeing move is run to completion, settled, before
-// any filling move begins, regardless of which volumes they land on. See
-// Apply.
+// A plan can also contain moves that free capacity (e.g. reclaiming a
+// grow-risk item back to hot) that other moves in the same plan depend on
+// - a fill might only be possible because an earlier reclaim freed cold
+// room, and a reclaim might only be possible because an earlier fill freed
+// hot room. The planner resolves this by stamping each entry with a Phase
+// number reflecting real dependency order (see planner.MoveEntry.Phase),
+// and Apply executes phases strictly in that order, waiting for one to
+// fully land - including settling - before the next begins. See Apply.
 package mover
 
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +32,6 @@ import (
 	"github.com/vocoder/coldarr/internal/arrapi"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/history"
-	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/planner"
 )
 
@@ -160,27 +161,30 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 // it is treated as its own single-path volume, never merged with another
 // path unless they're known for certain to share a device.
 //
-// Execution runs in two sequential phases so that any move freeing cold
-// capacity (entry.FromRole == model.RoleCold) fully lands - including its
-// settle - before any move consuming cold capacity (FromRole ==
-// model.RoleHot) starts writing. See the package doc for why. Within each
-// phase, moves are grouped and run exactly as before: serialized per
-// destination volume, concurrent across different volumes.
+// Execution runs in as many sequential phases as the plan actually needs,
+// in ascending planner.MoveEntry.Phase order - a later phase never starts
+// until every earlier phase has fully landed on disk (including
+// settling), since the planner may only have found some later-phase
+// entries a valid move because an earlier phase's entries free the space
+// they need. Within a phase, moves are grouped and run exactly as before:
+// serialized per destination volume, concurrent across different volumes.
 func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
 	progress := newProgress(plan)
 
-	var freeing, filling []int
+	byPhase := map[int][]int{}
 	for i, e := range plan.Entries {
-		if e.FromRole == model.RoleCold {
-			freeing = append(freeing, i)
-		} else {
-			filling = append(filling, i)
-		}
+		byPhase[e.Phase] = append(byPhase[e.Phase], i)
 	}
+	phases := make([]int, 0, len(byPhase))
+	for p := range byPhase {
+		phases = append(phases, p)
+	}
+	sort.Ints(phases)
 
 	go func() {
-		m.runPhase(plan, freeing, progress, volumeOf)
-		m.runPhase(plan, filling, progress, volumeOf)
+		for _, p := range phases {
+			m.runPhase(plan, byPhase[p], progress, volumeOf)
+		}
 		progress.markDone()
 	}()
 
