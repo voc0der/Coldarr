@@ -62,6 +62,9 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 	if item.Upcoming {
 		return Evaluation{Decision: Hot, Reasons: []string{"upcoming - not yet released/premiered"}}
 	}
+	if item.Monitored && item.QualityCutoffNotMet {
+		return Evaluation{Decision: Hot, Reasons: []string{"quality cutoff not met - expect this file to be replaced with an upgrade"}}
+	}
 
 	age := now.Sub(item.Added)
 	graceCutoff := time.Duration(policy.HotGraceDays) * dayHours * time.Hour

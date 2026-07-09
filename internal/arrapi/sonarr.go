@@ -3,6 +3,7 @@ package arrapi
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -51,27 +52,38 @@ type sonarrQueuePage struct {
 	Records []sonarrQueueRecord `json:"records"`
 }
 
+type sonarrWantedCutoffRecord struct {
+	SeriesID int `json:"seriesId"`
+}
+
+type sonarrWantedCutoffPage struct {
+	Records      []sonarrWantedCutoffRecord `json:"records"`
+	TotalRecords int                        `json:"totalRecords"`
+}
+
 // FetchSeries returns every series Sonarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
-// The four lookups it needs are independent, so they run concurrently -
-// sequentially they add up to four round trips of network latency on
+// The five lookups it needs are independent, so they run concurrently -
+// sequentially they add up to five round trips of network latency on
 // every plan/dashboard page load.
 func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	var (
-		series   []sonarrSeries
-		tags     []tagResource
-		profiles []qualityProfileResource
-		busy     map[int]bool
+		series      []sonarrSeries
+		tags        []tagResource
+		profiles    []qualityProfileResource
+		busy        map[int]bool
+		cutoffUnmet map[int]bool
 
-		seriesErr, tagsErr, profilesErr, busyErr error
+		seriesErr, tagsErr, profilesErr, busyErr, cutoffErr error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() { defer wg.Done(); seriesErr = s.c.get("/api/v3/series", nil, &series) }()
 	go func() { defer wg.Done(); tagsErr = s.c.get("/api/v3/tag", nil, &tags) }()
 	go func() { defer wg.Done(); profilesErr = s.c.get("/api/v3/qualityprofile", nil, &profiles) }()
 	go func() { defer wg.Done(); busy, busyErr = s.BusySeriesIDs() }()
+	go func() { defer wg.Done(); cutoffUnmet, cutoffErr = s.CutoffUnmetSeriesIDs() }()
 	wg.Wait()
 
 	if seriesErr != nil {
@@ -85,6 +97,9 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	}
 	if busyErr != nil {
 		return nil, busyErr
+	}
+	if cutoffErr != nil {
+		return nil, cutoffErr
 	}
 
 	tagByID := make(map[int]string, len(tags))
@@ -102,23 +117,24 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		ended := sr.Ended || sr.Status == "ended"
 		upcoming := sr.Status == "upcoming"
 		items = append(items, model.MediaItem{
-			ArrApp:             "sonarr",
-			ID:                 sr.ID,
-			Type:               model.TV,
-			Title:              sr.Title,
-			TitleSlug:          sr.TitleSlug,
-			Path:               sr.Path,
-			RootFolderPath:     sr.RootFolderPath,
-			SizeBytes:          sr.Statistics.SizeOnDisk,
-			Added:              sr.Added,
-			Tags:               tagLabels(sr.Tags, tagByID),
-			QualityProfileName: profileByID[sr.QualityProfileID],
-			Monitored:          sr.Monitored,
-			HasFile:            sr.Statistics.EpisodeFileCount > 0,
-			Ended:              ended,
-			Upcoming:           upcoming,
-			LastAired:          sr.PreviousAiring,
-			InActiveQueue:      busy[sr.ID],
+			ArrApp:              "sonarr",
+			ID:                  sr.ID,
+			Type:                model.TV,
+			Title:               sr.Title,
+			TitleSlug:           sr.TitleSlug,
+			Path:                sr.Path,
+			RootFolderPath:      sr.RootFolderPath,
+			SizeBytes:           sr.Statistics.SizeOnDisk,
+			Added:               sr.Added,
+			Tags:                tagLabels(sr.Tags, tagByID),
+			QualityProfileName:  profileByID[sr.QualityProfileID],
+			Monitored:           sr.Monitored,
+			HasFile:             sr.Statistics.EpisodeFileCount > 0,
+			Ended:               ended,
+			Upcoming:            upcoming,
+			LastAired:           sr.PreviousAiring,
+			InActiveQueue:       busy[sr.ID],
+			QualityCutoffNotMet: cutoffUnmet[sr.ID],
 		})
 	}
 	return items, nil
@@ -183,6 +199,40 @@ func (s *SonarrClient) BusySeriesIDs() (map[int]bool, error) {
 		}
 	}
 	return busy, nil
+}
+
+// CutoffUnmetSeriesIDs returns the set of series IDs with at least one
+// episode file that doesn't meet its quality profile's upgrade cutoff -
+// Sonarr will keep searching for a better release for those episodes, so
+// the series' folder (and size) isn't settled yet. Restricted to
+// monitored episodes since that's the only case Sonarr actually searches.
+// Paginates through the whole result set: unlike Radarr's movie-level
+// cutoff, Sonarr's is per-episode, so a large library can easily have
+// more cutoff-unmet episodes than fit on one page.
+func (s *SonarrClient) CutoffUnmetSeriesIDs() (map[int]bool, error) {
+	const pageSize = 250
+	unmet := map[int]bool{}
+	fetched := 0
+	for page := 1; ; page++ {
+		q := url.Values{}
+		q.Set("page", strconv.Itoa(page))
+		q.Set("pageSize", strconv.Itoa(pageSize))
+		q.Set("monitored", "true")
+		var got sonarrWantedCutoffPage
+		if err := s.c.get("/api/v3/wanted/cutoff", q, &got); err != nil {
+			return nil, err
+		}
+		for _, rec := range got.Records {
+			if rec.SeriesID != 0 {
+				unmet[rec.SeriesID] = true
+			}
+		}
+		fetched += len(got.Records)
+		if len(got.Records) == 0 || fetched >= got.TotalRecords {
+			break
+		}
+	}
+	return unmet, nil
 }
 
 type seriesEditorRequest struct {

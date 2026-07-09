@@ -3,6 +3,7 @@ package arrapi
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -59,27 +60,38 @@ type radarrQueuePage struct {
 	Records []radarrQueueRecord `json:"records"`
 }
 
+type radarrWantedCutoffRecord struct {
+	ID int `json:"id"`
+}
+
+type radarrWantedCutoffPage struct {
+	Records      []radarrWantedCutoffRecord `json:"records"`
+	TotalRecords int                        `json:"totalRecords"`
+}
+
 // FetchMovies returns every movie Radarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
-// The four lookups it needs are independent, so they run concurrently -
-// sequentially they add up to four round trips of network latency on
+// The five lookups it needs are independent, so they run concurrently -
+// sequentially they add up to five round trips of network latency on
 // every plan/dashboard page load.
 func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	var (
-		movies   []radarrMovie
-		tags     []tagResource
-		profiles []qualityProfileResource
-		busy     map[int]bool
+		movies      []radarrMovie
+		tags        []tagResource
+		profiles    []qualityProfileResource
+		busy        map[int]bool
+		cutoffUnmet map[int]bool
 
-		moviesErr, tagsErr, profilesErr, busyErr error
+		moviesErr, tagsErr, profilesErr, busyErr, cutoffErr error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() { defer wg.Done(); moviesErr = r.c.get("/api/v3/movie", nil, &movies) }()
 	go func() { defer wg.Done(); tagsErr = r.c.get("/api/v3/tag", nil, &tags) }()
 	go func() { defer wg.Done(); profilesErr = r.c.get("/api/v3/qualityprofile", nil, &profiles) }()
 	go func() { defer wg.Done(); busy, busyErr = r.BusyMovieIDs() }()
+	go func() { defer wg.Done(); cutoffUnmet, cutoffErr = r.CutoffUnmetMovieIDs() }()
 	wg.Wait()
 
 	if moviesErr != nil {
@@ -93,6 +105,9 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	}
 	if busyErr != nil {
 		return nil, busyErr
+	}
+	if cutoffErr != nil {
+		return nil, cutoffErr
 	}
 
 	tagByID := make(map[int]string, len(tags))
@@ -108,21 +123,22 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	items := make([]model.MediaItem, 0, len(movies))
 	for _, m := range movies {
 		items = append(items, model.MediaItem{
-			ArrApp:             "radarr",
-			ID:                 m.ID,
-			Type:               model.Movie,
-			Title:              m.Title,
-			TitleSlug:          m.TitleSlug,
-			Path:               m.Path,
-			RootFolderPath:     m.RootFolderPath,
-			SizeBytes:          m.SizeOnDisk,
-			Added:              m.Added,
-			Tags:               tagLabels(m.Tags, tagByID),
-			QualityProfileName: profileByID[m.QualityProfileID],
-			Monitored:          m.Monitored,
-			HasFile:            m.HasFile,
-			Upcoming:           upcomingMovieStatuses[m.Status],
-			InActiveQueue:      busy[m.ID],
+			ArrApp:              "radarr",
+			ID:                  m.ID,
+			Type:                model.Movie,
+			Title:               m.Title,
+			TitleSlug:           m.TitleSlug,
+			Path:                m.Path,
+			RootFolderPath:      m.RootFolderPath,
+			SizeBytes:           m.SizeOnDisk,
+			Added:               m.Added,
+			Tags:                tagLabels(m.Tags, tagByID),
+			QualityProfileName:  profileByID[m.QualityProfileID],
+			Monitored:           m.Monitored,
+			HasFile:             m.HasFile,
+			Upcoming:            upcomingMovieStatuses[m.Status],
+			InActiveQueue:       busy[m.ID],
+			QualityCutoffNotMet: cutoffUnmet[m.ID],
 		})
 	}
 	return items, nil
@@ -189,6 +205,37 @@ func (r *RadarrClient) BusyMovieIDs() (map[int]bool, error) {
 		}
 	}
 	return busy, nil
+}
+
+// CutoffUnmetMovieIDs returns the set of movie IDs whose current file
+// doesn't meet its quality profile's upgrade cutoff - Radarr will keep
+// searching for a better release for these, so the file (and folder size)
+// isn't settled yet. Restricted to monitored movies since that's the only
+// case Radarr actually searches. Paginates through the whole result set:
+// a large library after a profile change can plausibly have more
+// cutoff-unmet movies than fit on one page.
+func (r *RadarrClient) CutoffUnmetMovieIDs() (map[int]bool, error) {
+	const pageSize = 250
+	unmet := map[int]bool{}
+	fetched := 0
+	for page := 1; ; page++ {
+		q := url.Values{}
+		q.Set("page", strconv.Itoa(page))
+		q.Set("pageSize", strconv.Itoa(pageSize))
+		q.Set("monitored", "true")
+		var got radarrWantedCutoffPage
+		if err := r.c.get("/api/v3/wanted/cutoff", q, &got); err != nil {
+			return nil, err
+		}
+		for _, rec := range got.Records {
+			unmet[rec.ID] = true
+		}
+		fetched += len(got.Records)
+		if len(got.Records) == 0 || fetched >= got.TotalRecords {
+			break
+		}
+	}
+	return unmet, nil
 }
 
 type movieEditorRequest struct {

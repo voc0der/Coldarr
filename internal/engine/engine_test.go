@@ -44,6 +44,8 @@ func radarrServer(t *testing.T, moviePath string) *httptest.Server {
 			_, _ = w.Write([]byte(`[]`))
 		case "/api/v3/queue":
 			_, _ = w.Write([]byte(`{"records": []}`))
+		case "/api/v3/wanted/cutoff":
+			_, _ = w.Write([]byte(`{"records": [], "totalRecords": 0}`))
 		default:
 			t.Errorf("unexpected radarr path %s", r.URL.Path)
 		}

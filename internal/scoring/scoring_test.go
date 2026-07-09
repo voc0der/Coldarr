@@ -92,6 +92,42 @@ func TestEvaluate_UpcomingStaysHot(t *testing.T) {
 	}
 }
 
+func TestEvaluate_QualityCutoffNotMetStaysHot(t *testing.T) {
+	now := time.Now()
+	for _, mt := range []model.MediaType{model.Movie, model.TV} {
+		item := model.MediaItem{
+			Type:                mt,
+			Added:               now.AddDate(-5, 0, 0), // old enough to clear grace period
+			Tags:                []string{"cold-ok"},   // and tagged cold-ok
+			SizeBytes:           500 << 30,             // and big - would otherwise easily clear the threshold
+			Monitored:           true,
+			HasFile:             true,
+			QualityCutoffNotMet: true,
+		}
+		eval := Evaluate(item, basePolicy(), now)
+		if eval.Decision != Hot {
+			t.Fatalf("%s: expected Hot for a cutoff-not-met item despite old age/cold-ok tag/size, got %v (score %.1f)", mt, eval.Decision, eval.Score)
+		}
+	}
+}
+
+func TestEvaluate_QualityCutoffNotMetIgnoredWhenUnmonitored(t *testing.T) {
+	now := time.Now()
+	item := model.MediaItem{
+		Type:                model.Movie,
+		Added:               now.AddDate(-5, 0, 0),
+		Tags:                []string{"cold-ok"},
+		SizeBytes:           500 << 30,
+		Monitored:           false,
+		HasFile:             true,
+		QualityCutoffNotMet: true,
+	}
+	eval := Evaluate(item, basePolicy(), now)
+	if eval.Decision != Cold {
+		t.Fatalf("expected Cold for an unmonitored item (cutoff-not-met doesn't matter - it won't be searched), got %v (score %.1f, reasons %v)", eval.Decision, eval.Score, eval.Reasons)
+	}
+}
+
 func TestEvaluate_ColdOkTagPushesToCold(t *testing.T) {
 	now := time.Now()
 	item := model.MediaItem{
