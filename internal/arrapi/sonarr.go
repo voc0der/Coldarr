@@ -63,27 +63,29 @@ type sonarrWantedCutoffPage struct {
 
 // FetchSeries returns every series Sonarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
-// The five lookups it needs are independent, so they run concurrently -
-// sequentially they add up to five round trips of network latency on
-// every plan/dashboard page load.
+// The four lookups it needs are independent, so they run concurrently -
+// sequentially they add up to four round trips of network latency on
+// every plan/dashboard page load. QualityCutoffNotMet is deliberately not
+// set here - it comes from internal/cutoffcache instead, since Sonarr's
+// /wanted/cutoff (see CutoffUnmetSeriesIDs) is too slow on real libraries
+// to fetch live on every page view; the engine layer fills it in from the
+// cache after calling this.
 func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	var (
-		series      []sonarrSeries
-		tags        []tagResource
-		profiles    []qualityProfileResource
-		busy        map[int]bool
-		cutoffUnmet map[int]bool
+		series   []sonarrSeries
+		tags     []tagResource
+		profiles []qualityProfileResource
+		busy     map[int]bool
 
-		seriesErr, tagsErr, profilesErr, busyErr, cutoffErr error
+		seriesErr, tagsErr, profilesErr, busyErr error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(4)
 	go func() { defer wg.Done(); seriesErr = s.c.get("/api/v3/series", nil, &series) }()
 	go func() { defer wg.Done(); tagsErr = s.c.get("/api/v3/tag", nil, &tags) }()
 	go func() { defer wg.Done(); profilesErr = s.c.get("/api/v3/qualityprofile", nil, &profiles) }()
 	go func() { defer wg.Done(); busy, busyErr = s.BusySeriesIDs() }()
-	go func() { defer wg.Done(); cutoffUnmet, cutoffErr = s.CutoffUnmetSeriesIDs() }()
 	wg.Wait()
 
 	if seriesErr != nil {
@@ -97,9 +99,6 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	}
 	if busyErr != nil {
 		return nil, busyErr
-	}
-	if cutoffErr != nil {
-		return nil, cutoffErr
 	}
 
 	tagByID := make(map[int]string, len(tags))
@@ -117,24 +116,23 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 		ended := sr.Ended || sr.Status == "ended"
 		upcoming := sr.Status == "upcoming"
 		items = append(items, model.MediaItem{
-			ArrApp:              "sonarr",
-			ID:                  sr.ID,
-			Type:                model.TV,
-			Title:               sr.Title,
-			TitleSlug:           sr.TitleSlug,
-			Path:                sr.Path,
-			RootFolderPath:      sr.RootFolderPath,
-			SizeBytes:           sr.Statistics.SizeOnDisk,
-			Added:               sr.Added,
-			Tags:                tagLabels(sr.Tags, tagByID),
-			QualityProfileName:  profileByID[sr.QualityProfileID],
-			Monitored:           sr.Monitored,
-			HasFile:             sr.Statistics.EpisodeFileCount > 0,
-			Ended:               ended,
-			Upcoming:            upcoming,
-			LastAired:           sr.PreviousAiring,
-			InActiveQueue:       busy[sr.ID],
-			QualityCutoffNotMet: cutoffUnmet[sr.ID],
+			ArrApp:             "sonarr",
+			ID:                 sr.ID,
+			Type:               model.TV,
+			Title:              sr.Title,
+			TitleSlug:          sr.TitleSlug,
+			Path:               sr.Path,
+			RootFolderPath:     sr.RootFolderPath,
+			SizeBytes:          sr.Statistics.SizeOnDisk,
+			Added:              sr.Added,
+			Tags:               tagLabels(sr.Tags, tagByID),
+			QualityProfileName: profileByID[sr.QualityProfileID],
+			Monitored:          sr.Monitored,
+			HasFile:            sr.Statistics.EpisodeFileCount > 0,
+			Ended:              ended,
+			Upcoming:           upcoming,
+			LastAired:          sr.PreviousAiring,
+			InActiveQueue:      busy[sr.ID],
 		})
 	}
 	return items, nil

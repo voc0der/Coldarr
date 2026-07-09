@@ -59,9 +59,11 @@ type Server struct {
 	lastRunPlan         time.Time
 	lastRunRescan       time.Time
 	lastRunRefreshLinks time.Time
+	lastRunScanCutoffs  time.Time
 	lastRanPlan         time.Time
 	lastRanRescan       time.Time
 	lastRanRefreshLinks time.Time
+	lastRanScanCutoffs  time.Time
 	// rescanMu keeps a scheduled "Rescan Cold Storage" tick from
 	// overlapping itself. It's read-only and independent of applyMu -
 	// unlike a scheduled Plan run, it never competes with a manual Apply
@@ -70,6 +72,11 @@ type Server struct {
 	// refreshLinksMu is rescanMu's counterpart for the "Refresh Links
 	// cache" task - keeps a scheduled refresh from overlapping itself.
 	refreshLinksMu sync.Mutex
+	// scanCutoffsMu is rescanMu's counterpart for the "Scan Quality
+	// Cutoffs" task - keeps a scheduled scan from overlapping itself, and
+	// is also checked (via TryLock, best-effort) by runScheduledPlan's
+	// own pre-plan scan so the two never hit Radarr/Sonarr concurrently.
+	scanCutoffsMu sync.Mutex
 
 	authMu       sync.Mutex
 	authSessions map[string]authSession
@@ -208,6 +215,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /settings/scheduler", s.handleSchedulerPage)
 	mux.HandleFunc("POST /settings/scheduler/refresh_links/run", s.handleRefreshLinksNow)
+	mux.HandleFunc("POST /settings/scheduler/scan_cutoffs/run", s.handleScanCutoffsNow)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
 
 	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
@@ -338,6 +346,9 @@ func (s *Server) StartScheduler() {
 	if cfg.Scheduler.RefreshLinks.Enabled {
 		s.touchRefreshLinksSchedule(now)
 	}
+	if cfg.Scheduler.ScanCutoffs.Enabled {
+		s.touchScanCutoffsSchedule(now)
+	}
 
 	go func() {
 		ticker := time.NewTicker(tickInterval())
@@ -364,6 +375,9 @@ func tickInterval() time.Duration {
 func (s *Server) tick(now time.Time) {
 	cfg := s.currentConfig()
 
+	if scheduler.Due(cfg.Scheduler.ScanCutoffs, s.getLastRunScanCutoffs(), now) {
+		s.runScheduledScanCutoffs(now)
+	}
 	if scheduler.Due(cfg.Scheduler.RunPlan, s.getLastRunPlan(), now) {
 		s.runScheduledPlan(now)
 	}
@@ -393,6 +407,12 @@ func (s *Server) getLastRunRefreshLinks() time.Time {
 	return s.lastRunRefreshLinks
 }
 
+func (s *Server) getLastRunScanCutoffs() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRunScanCutoffs
+}
+
 func (s *Server) getLastRanPlan() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
@@ -409,6 +429,12 @@ func (s *Server) getLastRanRefreshLinks() time.Time {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
 	return s.lastRanRefreshLinks
+}
+
+func (s *Server) getLastRanScanCutoffs() time.Time {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return s.lastRanScanCutoffs
 }
 
 // touchPlanSchedule resets run_plan's due-check anchor without recording
@@ -430,6 +456,12 @@ func (s *Server) touchRescanSchedule(t time.Time) {
 func (s *Server) touchRefreshLinksSchedule(t time.Time) {
 	s.schedMu.Lock()
 	s.lastRunRefreshLinks = t
+	s.schedMu.Unlock()
+}
+
+func (s *Server) touchScanCutoffsSchedule(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunScanCutoffs = t
 	s.schedMu.Unlock()
 }
 
@@ -458,13 +490,20 @@ func (s *Server) recordRefreshLinksRan(t time.Time) {
 	s.schedMu.Unlock()
 }
 
+func (s *Server) recordScanCutoffsRan(t time.Time) {
+	s.schedMu.Lock()
+	s.lastRunScanCutoffs = t
+	s.lastRanScanCutoffs = t
+	s.schedMu.Unlock()
+}
+
 // updateSchedule validates and persists a single named task's schedule
-// ("run_plan", "rescan_cold", or "refresh_links"), then always resets that
-// task's due-check anchor to now - whether enabling, disabling, or just
-// adjusting the time - so saving a schedule can never itself trigger an
-// immediate unattended run as a surprise side effect. This does not touch
-// the "last ran" fact shown on the settings page - only a genuine run
-// does that.
+// ("run_plan", "rescan_cold", "refresh_links", or "scan_cutoffs"), then
+// always resets that task's due-check anchor to now - whether enabling,
+// disabling, or just adjusting the time - so saving a schedule can never
+// itself trigger an immediate unattended run as a surprise side effect.
+// This does not touch the "last ran" fact shown on the settings page -
+// only a genuine run does that.
 func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 	if err := scheduler.Validate(sched); err != nil {
 		return err
@@ -479,6 +518,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		updated.Scheduler.RescanCold = sched
 	case "refresh_links":
 		updated.Scheduler.RefreshLinks = sched
+	case "scan_cutoffs":
+		updated.Scheduler.ScanCutoffs = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()
@@ -495,6 +536,8 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 		s.touchRescanSchedule(now)
 	case "refresh_links":
 		s.touchRefreshLinksSchedule(now)
+	case "scan_cutoffs":
+		s.touchScanCutoffsSchedule(now)
 	}
 	return nil
 }

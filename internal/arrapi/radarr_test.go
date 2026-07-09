@@ -53,8 +53,6 @@ func TestRadarrClient_FetchMovies(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id": 10, "name": "HD-1080p"}]`))
 		case "/api/v3/queue":
 			_, _ = w.Write([]byte(`{"records": [{"movieId": 2}]}`))
-		case "/api/v3/wanted/cutoff":
-			_, _ = w.Write([]byte(`{"records": [{"id": 1}], "totalRecords": 1}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -88,19 +86,12 @@ func TestRadarrClient_FetchMovies(t *testing.T) {
 		t.Error("movie 1 is not in the fake queue, must not be marked InActiveQueue")
 	}
 
-	if !released.QualityCutoffNotMet {
-		t.Error("movie 1 is in the fake wanted/cutoff response, must report QualityCutoffNotMet = true")
-	}
-
 	unreleased := items[byID[2]]
 	if !unreleased.Upcoming {
 		t.Error("a movie with status \"tba\" must be marked Upcoming")
 	}
 	if !unreleased.InActiveQueue {
 		t.Error("movie 2 is in the fake queue, must be marked InActiveQueue")
-	}
-	if unreleased.QualityCutoffNotMet {
-		t.Error("movie 2 is not in the fake wanted/cutoff response, must report QualityCutoffNotMet = false")
 	}
 }
 
