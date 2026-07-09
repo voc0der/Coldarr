@@ -56,11 +56,15 @@ func fakeRadarrMoveServer(t *testing.T, mu *sync.Mutex, callOrder *[]string) *ht
 			mu.Lock()
 			path := lastPath[id]
 			mu.Unlock()
-			// sizeOnDisk 0 is fine here: these tests leave Item.SizeBytes
-			// unset, so sizeLanded's "no usable expected size" fallback
-			// accepts it - size-matching itself is covered by
-			// TestSettle_RejectsPathMatchButShortSize below.
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "sizeOnDisk": 0, "path": path})
+			// A large sentinel sizeOnDisk keeps this helper generic: it
+			// satisfies sizeLanded for any reasonably-sized test fixture
+			// regardless of whether that test cares about Item.SizeBytes,
+			// so callers can drive verifyRoom's pre-flight check (which
+			// does care) without also having to hand-wire a size that
+			// tracks each item's real progress. Size-mismatch itself is
+			// covered precisely by TestSettle_RejectsPathMatchButShortSize
+			// below, which uses its own bespoke server instead of this one.
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "sizeOnDisk": int64(1) << 40, "path": path})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -124,6 +128,179 @@ func TestVolumeKey(t *testing.T) {
 	}
 	if volumeKey("/unknown1", volumeOf) == volumeKey("/unknown2", volumeOf) {
 		t.Fatal("paths with no known device must never be merged with each other")
+	}
+}
+
+// TestVerifyRoom_RejectsWhenNotEnoughRealFreeSpace and its sibling below
+// exercise verifyRoom directly, in isolation from the rest of Apply's
+// machinery: it's a pure function of "what does the destination actually
+// report right now," so it doesn't need a fake Radarr server or a full
+// plan to prove its core logic.
+func TestVerifyRoom_RejectsWhenNotEnoughRealFreeSpace(t *testing.T) {
+	m := &Movers{
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 95, FreeBytes: 5}, nil
+		},
+	}
+	entry := planner.MoveEntry{Item: model.MediaItem{Title: "Big Movie", SizeBytes: 50}, ToPath: "/cold"}
+
+	if err := m.verifyRoom(entry); err == nil {
+		t.Fatal("expected verifyRoom to refuse a move whose destination doesn't actually have room")
+	}
+}
+
+func TestVerifyRoom_AllowsWhenRealFreeSpaceIsSufficient(t *testing.T) {
+	m := &Movers{
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 40, FreeBytes: 60}, nil
+		},
+	}
+	entry := planner.MoveEntry{Item: model.MediaItem{Title: "Small Movie", SizeBytes: 50}, ToPath: "/cold"}
+
+	if err := m.verifyRoom(entry); err != nil {
+		t.Fatalf("expected verifyRoom to allow a move with sufficient real free space, got %v", err)
+	}
+}
+
+// TestVerifyRoom_SkipsCheckWhenSizeUnknown documents the deliberate
+// fail-open behavior for the one case verifyRoom can't meaningfully
+// judge: an item with no recorded size at all. Refusing every such move
+// would turn a data gap into a blanket outage; there's nothing to check
+// against, so it defers to whatever upstream already decided.
+func TestVerifyRoom_SkipsCheckWhenSizeUnknown(t *testing.T) {
+	m := &Movers{
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 99, FreeBytes: 1}, nil
+		},
+	}
+	entry := planner.MoveEntry{Item: model.MediaItem{Title: "Unknown Size"}, ToPath: "/cold"} // SizeBytes: 0
+
+	if err := m.verifyRoom(entry); err != nil {
+		t.Fatalf("expected verifyRoom not to block on an item with no usable size, got %v", err)
+	}
+}
+
+// TestApply_RefusesMoveWhenRealFreeSpaceIsInsufficient proves the
+// pre-flight capacity check is actually wired into Apply's real execution
+// path, not just unit-tested in isolation: an entry whose destination
+// doesn't actually have room right now is marked Failed and Radarr is
+// never even asked to move it. This is the same class of gap as
+// settle()'s post-move confirmation (see TestSettle_RejectsPathMatchButShortSize
+// above) - trusting the plan's precomputed capacity math instead of
+// reality - but at the moment just before a move starts rather than after.
+func TestApply_RefusesMoveWhenRealFreeSpaceIsInsufficient(t *testing.T) {
+	statFunc := func(path string) (diskusage.Usage, error) {
+		return diskusage.Usage{TotalBytes: 100, UsedBytes: 99, FreeBytes: 1}, nil
+	}
+
+	var mu sync.Mutex
+	moveAttempted := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/api/v3/movie/editor" {
+			mu.Lock()
+			moveAttempted = true
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Too Big", SizeBytes: 50}, ToTier: "cold", ToPath: "/cold"},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	attempted := moveAttempted
+	mu.Unlock()
+	if attempted {
+		t.Fatal("expected Radarr to never be asked to move an item that doesn't actually fit")
+	}
+
+	snap := progress.Snapshot()
+	if failed := snap.Failed(); len(failed) != 1 {
+		t.Fatalf("expected the entry to be marked failed, got %+v", snap.Entries)
+	}
+	if moved := snap.Moved(); len(moved) != 0 {
+		t.Fatalf("expected nothing moved, got %d", len(moved))
+	}
+}
+
+// TestApply_LaterSameVolumeEntryFailsWithoutBlockingEarlierSuccess proves
+// the pre-flight check is re-evaluated fresh for each entry in a
+// same-volume sequential group, not just once for the whole group: the
+// first item has real room and succeeds; by the time the second item's
+// turn comes up, real free space has dropped below what it needs (drift
+// between the plan's snapshot and reality), and it's refused - without
+// that failure retroactively affecting the first item's already-recorded
+// success. Partial progress within a volume group must survive a later
+// entry in that same group failing its pre-flight check.
+func TestApply_LaterSameVolumeEntryFailsWithoutBlockingEarlierSuccess(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+
+	// /cold has enough free room (60) for either single item (50) - but
+	// not both. By the time item2's pre-flight check runs (strictly
+	// after item1's move has been recorded), real free space has already
+	// dropped to 10.
+	statFunc := func(path string) (diskusage.Usage, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(callOrder) == 0 {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 40, FreeBytes: 60}, nil
+		}
+		return diskusage.Usage{TotalBytes: 100, UsedBytes: 90, FreeBytes: 10}, nil
+	}
+
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Item1", SizeBytes: 50}, ToTier: "cold", ToPath: "/cold"},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Item2", SizeBytes: 50}, ToTier: "cold", ToPath: "/cold"},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	snap := progress.Snapshot()
+	if moved := snap.Moved(); len(moved) != 1 || moved[0].Entry.Item.ID != 1 {
+		t.Fatalf("expected exactly item1 moved, got %+v", snap.Entries)
+	}
+	if failed := snap.Failed(); len(failed) != 1 || failed[0].Entry.Item.ID != 2 {
+		t.Fatalf("expected exactly item2 failed, got %+v", snap.Entries)
 	}
 }
 
@@ -516,7 +693,11 @@ func TestSettle_RejectsPathMatchButShortSize(t *testing.T) {
 	const wantSize = int64(1_000_000)
 
 	statFunc := func(path string) (diskusage.Usage, error) {
-		return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+		// Plenty of free space, so verifyRoom's pre-flight check (see
+		// mover.go) lets the move proceed - this test is specifically
+		// about settle()'s post-move confirmation, not the pre-flight
+		// capacity check.
+		return diskusage.Usage{TotalBytes: 10_000_000, UsedBytes: 5_000_000, FreeBytes: 5_000_000, UsedPercent: 50}, nil
 	}
 
 	var mu sync.Mutex
