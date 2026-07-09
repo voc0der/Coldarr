@@ -415,6 +415,17 @@ func upcomingItem(title, rootFolderPath string, sizeBytes int64) ItemEval {
 	}
 }
 
+func cutoffUnmetItem(title, rootFolderPath string, sizeBytes int64) ItemEval {
+	return ItemEval{
+		Item: model.MediaItem{
+			ArrApp: "sonarr", ID: 1, Type: model.TV, Title: title,
+			RootFolderPath: rootFolderPath, SizeBytes: sizeBytes,
+			Monitored: true, QualityCutoffNotMet: true,
+		},
+		Eval: scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"quality cutoff not met - expect this file to be replaced with an upgrade"}},
+	}
+}
+
 func TestBuild_PromotesUpcomingItemOnColdBackToHot(t *testing.T) {
 	in := Input{
 		Tiers: tvTiers(),
@@ -543,5 +554,113 @@ func TestBuild_PromotionFreesColdRoomForSubsequentPacking(t *testing.T) {
 	}
 	if len(plan.Entries) != 2 {
 		t.Fatalf("expected both the promotion and the freed-up hot->cold move, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+func TestBuild_PromotesQualityCutoffUnmetItemOnColdBackToHot(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{cutoffUnmetItem("Show A", "/cold1", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected 1 reclaim move, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	e := plan.Entries[0]
+	if e.FromTier != "cold-tv" || e.FromPath != "/cold1" || e.ToTier != "hot" || e.ToPath != "/hot" {
+		t.Fatalf("unexpected move direction: %+v", e)
+	}
+	if e.FromRole != model.RoleCold {
+		t.Fatalf("expected FromRole to be recorded as cold, got %q", e.FromRole)
+	}
+}
+
+func TestBuild_QualityCutoffUnmetAlreadyOnHotIsNotPromoted(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{cutoffUnmetItem("Show A", "/hot", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no move for a cutoff-unmet item already on hot, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+func TestBuild_UnmonitoredCutoffUnmetOnColdIsNotPromoted(t *testing.T) {
+	item := cutoffUnmetItem("Show A", "/cold1", 5*gib)
+	item.Item.Monitored = false // Radarr/Sonarr won't actually search for an upgrade
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{item},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no move for an unmonitored cutoff-unmet item, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+func TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking(t *testing.T) {
+	// Same shape as TestBuild_PromotionFreesColdRoomForSubsequentPacking,
+	// but for the quality-cutoff reclaim path: a cold tier at its ceiling,
+	// holding one grow-risk item that needs to leave and one genuinely
+	// cold-eligible item on hot waiting for room.
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(100*gib, 95*gib), // at its 95% max already
+		},
+		Items: []ItemEval{
+			cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib),
+			{
+				Item: model.MediaItem{ArrApp: "sonarr", ID: 2, Type: model.TV, Title: "Show B", RootFolderPath: "/hot", SizeBytes: 5 * gib},
+				Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 80},
+			},
+		},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 2 {
+		t.Fatalf("expected both the reclaim and the freed-up hot->cold move, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
 }

@@ -45,6 +45,13 @@ type Input struct {
 type MoveEntry struct {
 	Item     model.MediaItem
 	FromTier string
+	// FromRole is the role of FromTier - the mover uses this to sequence
+	// execution (see internal/mover): every move that frees cold capacity
+	// (FromRole == RoleCold) must fully land before any move that
+	// consumes cold capacity (FromRole == RoleHot) begins, since cold
+	// tiers are packed close enough to their ceiling that writing before
+	// freeing can fail outright.
+	FromRole model.TierRole
 	FromPath string
 	ToTier   string
 	ToPath   string
@@ -98,32 +105,38 @@ func Build(in Input) (*Plan, error) {
 		}
 	}
 
-	// Promotions run first: an upcoming item has no business sitting on
-	// cold storage - it's about to start actively receiving new episodes/
-	// a release, and needs to be back on fast storage before that
-	// happens, not packed away on a slow satellite drive. This also
-	// frees the cold space it was occupying before the hot->cold pass
-	// below considers what else has room to move in.
-	for _, c := range upcomingOnCold(in.Items, coldPaths) {
-		fromTier := coldPaths[c.Item.RootFolderPath]
+	// Reclaims run first: an item that isn't actually settled yet - either
+	// upcoming (about to start actively receiving new episodes/a release)
+	// or monitored with an unmet quality cutoff (its file is still going
+	// to be replaced with an upgrade) - has no business sitting on cold
+	// storage, which Coldarr packs tight toward its target/max on purpose.
+	// Cold is the worst possible place for something that might still
+	// grow: there's no headroom, and Radarr/Sonarr will replace the file
+	// wherever it happens to live. This also frees the cold space it was
+	// occupying before the hot->cold pass below considers what else has
+	// room to move in - so a reclaimed slot gets backfilled by the next
+	// coldest hot-eligible item in this same pass.
+	for _, r := range misplacedOnCold(in.Items, coldPaths) {
+		fromTier := coldPaths[r.Item.Item.RootFolderPath]
 
-		destTier, destPath, ok := pickHotDestination(in.Tiers, working, c.Item.Type, c.Item.SizeBytes)
+		destTier, destPath, ok := pickHotDestination(in.Tiers, working, r.Item.Item.Type, r.Item.Item.SizeBytes)
 		if !ok {
-			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back before it's released (%s, %.2f GB)", c.Item.Title, c.Item.Type, gb(c.Item.SizeBytes)))
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back (%s, %.2f GB): %s", r.Item.Item.Title, r.Item.Item.Type, gb(r.Item.Item.SizeBytes), r.Reason))
 			continue
 		}
 
 		plan.Entries = append(plan.Entries, MoveEntry{
-			Item:     c.Item,
+			Item:     r.Item.Item,
 			FromTier: fromTier.Name,
-			FromPath: c.Item.RootFolderPath,
+			FromRole: fromTier.Role,
+			FromPath: r.Item.Item.RootFolderPath,
 			ToTier:   destTier.Name,
 			ToPath:   destPath,
-			Reasons:  []string{"upcoming - misplaced on cold storage, moving back before it's released"},
+			Reasons:  []string{r.Reason},
 		})
 
-		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
-		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, r.Item.Item.RootFolderPath, -r.Item.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, destPath, r.Item.Item.SizeBytes)
 	}
 
 	candidates := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
@@ -140,6 +153,7 @@ func Build(in Input) (*Plan, error) {
 		plan.Entries = append(plan.Entries, MoveEntry{
 			Item:     c.Item,
 			FromTier: fromTier.Name,
+			FromRole: fromTier.Role,
 			FromPath: c.Item.RootFolderPath,
 			ToTier:   destTier.Name,
 			ToPath:   destPath,
@@ -155,24 +169,48 @@ func Build(in Input) (*Plan, error) {
 	return plan, nil
 }
 
-// upcomingOnCold returns every item that hasn't been released/premiered
-// yet but is currently sitting on a cold-tier path - likely because it was
-// imported straight into a root folder Coldarr had previously packed with
-// older, already-cold-eligible content, or because a prior season/cut of
-// it was moved to cold before this one was announced. Not gated by
-// cooldown or minimum move size: unlike the coldness ranking below, this
-// is a correctness fix, not a stylistic rebalance, and it's a one-time
-// transition per item (once it's released it's no longer "upcoming").
-func upcomingOnCold(items []ItemEval, coldPaths map[string]model.Tier) []ItemEval {
-	var out []ItemEval
+// misplacedOnColdItem pairs an item that needs to be pulled back from cold
+// storage with the specific reason it doesn't belong there.
+type misplacedOnColdItem struct {
+	Item   ItemEval
+	Reason string
+}
+
+// misplacedOnCold returns every item currently sitting on a cold-tier path
+// whose contents aren't actually settled yet, so cold - which Coldarr packs
+// tight toward its target/max on purpose - is the worst possible place for
+// it:
+//
+//   - Upcoming: hasn't been released/premiered yet, and is about to start
+//     actively receiving new episodes/a release. Likely on cold because it
+//     was imported straight into a root folder Coldarr had previously
+//     packed with older, already-cold-eligible content, or because a prior
+//     season/cut of it was moved to cold before this one was announced.
+//
+//   - Monitored with an unmet quality cutoff: the owning Arr app will keep
+//     searching and eventually replace the file with a bigger upgrade,
+//     wherever it happens to live. It may have reached cold before this
+//     check existed, or become grow-risk afterward (a series un-ends, a
+//     quality profile's cutoff changes) - either way, leaving it on an
+//     already near-full cold tier risks that tier overflowing once the
+//     upgrade lands.
+//
+// Not gated by cooldown or minimum move size: unlike the coldness ranking
+// below, this is a correctness fix, not a stylistic rebalance, and it's a
+// one-time transition per item (once it's released, or upgraded to meet
+// its cutoff, it no longer matches either condition).
+func misplacedOnCold(items []ItemEval, coldPaths map[string]model.Tier) []misplacedOnColdItem {
+	var out []misplacedOnColdItem
 	for _, it := range items {
-		if !it.Item.Upcoming {
-			continue
-		}
 		if _, onColdPath := coldPaths[it.Item.RootFolderPath]; !onColdPath {
 			continue
 		}
-		out = append(out, it)
+		switch {
+		case it.Item.Upcoming:
+			out = append(out, misplacedOnColdItem{Item: it, Reason: "upcoming - misplaced on cold storage, moving back before it's released"})
+		case it.Item.Monitored && it.Item.QualityCutoffNotMet:
+			out = append(out, misplacedOnColdItem{Item: it, Reason: "quality cutoff not met - misplaced on cold storage, moving back so the eventual upgrade lands on fast storage"})
+		}
 	}
 	return out
 }

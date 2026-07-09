@@ -10,6 +10,14 @@
 // simultaneous large writes across several files/drives is a very
 // different load profile than steady, one-at-a-time movement. Hot storage
 // (a read source, not a write target) isn't throttled at all.
+//
+// A plan can also contain moves that free cold capacity (e.g. reclaiming a
+// grow-risk item back to hot) alongside moves that consume it (packing a
+// hot-eligible item onto cold). Since cold tiers routinely run within
+// fractions of a percent of their ceiling, writing before freeing can fail
+// outright - so every freeing move is run to completion, settled, before
+// any filling move begins, regardless of which volumes they land on. See
+// Apply.
 package mover
 
 import (
@@ -22,6 +30,7 @@ import (
 	"github.com/vocoder/coldarr/internal/arrapi"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/history"
+	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/planner"
 )
 
@@ -150,13 +159,43 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 // physical volume (see internal/diskusage.DeviceID) - a path missing from
 // it is treated as its own single-path volume, never merged with another
 // path unless they're known for certain to share a device.
+//
+// Execution runs in two sequential phases so that any move freeing cold
+// capacity (entry.FromRole == model.RoleCold) fully lands - including its
+// settle - before any move consuming cold capacity (FromRole ==
+// model.RoleHot) starts writing. See the package doc for why. Within each
+// phase, moves are grouped and run exactly as before: serialized per
+// destination volume, concurrent across different volumes.
 func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
 	progress := newProgress(plan)
 
+	var freeing, filling []int
+	for i, e := range plan.Entries {
+		if e.FromRole == model.RoleCold {
+			freeing = append(freeing, i)
+		} else {
+			filling = append(filling, i)
+		}
+	}
+
+	go func() {
+		m.runPhase(plan, freeing, progress, volumeOf)
+		m.runPhase(plan, filling, progress, volumeOf)
+		progress.markDone()
+	}()
+
+	return progress
+}
+
+// runPhase groups the given plan-entry indices by destination volume and
+// runs each group's moves serially, with different volumes proceeding
+// concurrently; it blocks until every move in this phase has finished
+// (including settling).
+func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress, volumeOf map[string]uint64) {
 	groups := map[string][]int{}
 	var order []string
-	for i, e := range plan.Entries {
-		key := volumeKey(e.ToPath, volumeOf)
+	for _, i := range indices {
+		key := volumeKey(plan.Entries[i].ToPath, volumeOf)
 		if _, ok := groups[key]; !ok {
 			order = append(order, key)
 		}
@@ -165,22 +204,16 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 
 	var wg sync.WaitGroup
 	for _, key := range order {
-		indices := groups[key]
+		groupIndices := groups[key]
 		wg.Add(1)
-		go func(indices []int) {
+		go func(groupIndices []int) {
 			defer wg.Done()
-			for _, i := range indices {
+			for _, i := range groupIndices {
 				m.runOne(plan.Entries[i], progress, i)
 			}
-		}(indices)
+		}(groupIndices)
 	}
-
-	go func() {
-		wg.Wait()
-		progress.markDone()
-	}()
-
-	return progress
+	wg.Wait()
 }
 
 func volumeKey(path string, volumeOf map[string]uint64) string {
