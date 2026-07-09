@@ -32,7 +32,7 @@
   </form>
   {{if .ShowRunNow}}
   <form method="post" action="/settings/scheduler/{{.Task}}/run" style="margin-top:0.75rem">
-    <button type="submit" class="btn">Refresh now</button>
+    <button type="submit" class="btn">{{.RunNowLabel}}</button>
   </form>
   {{end}}
 </div>

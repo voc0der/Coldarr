@@ -14,6 +14,7 @@ import (
 
 	"github.com/vocoder/coldarr/internal/arrapi"
 	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/cutoffcache"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/history"
 	"github.com/vocoder/coldarr/internal/jellyfin"
@@ -25,10 +26,19 @@ import (
 )
 
 type Engine struct {
-	Cfg          *config.Config
-	Radarr       *arrapi.RadarrClient
-	Sonarr       *arrapi.SonarrClient
-	History      *history.Store
+	Cfg     *config.Config
+	Radarr  *arrapi.RadarrClient
+	Sonarr  *arrapi.SonarrClient
+	History *history.Store
+	// CutoffCache holds which items have an unmet quality-profile cutoff
+	// (see internal/cutoffcache) - read in BuildInventory, but never
+	// refreshed there. Refreshing means live-fetching Radarr/Sonarr's
+	// wanted/cutoff list, which is too slow on real libraries to do on
+	// every plan/dashboard page load; it only ever happens from the
+	// "Scan Quality Cutoffs" scheduled task or its manual "Scan now"
+	// trigger. A cache that's never been refreshed just means every item
+	// is treated as cutoff-met, same as before this feature existed.
+	CutoffCache  *cutoffcache.Store
 	jellyfinConn secrets.Connection
 	jellyfinOK   bool
 }
@@ -59,7 +69,21 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 	}
 	e.History = hist
 
+	cutoffCache, err := cutoffcache.Load(cutoffCachePath(cfg.History.Path))
+	if err != nil {
+		return nil, err
+	}
+	e.CutoffCache = cutoffCache
+
 	return e, nil
+}
+
+// cutoffCachePath derives the quality-cutoff cache's location alongside
+// the history file - not a separately configurable path, since it's
+// purely an internal cache rather than something an operator needs to
+// point elsewhere (same reasoning as internal/webui's linkCachePath).
+func cutoffCachePath(historyPath string) string {
+	return filepath.Join(filepath.Dir(historyPath), "coldarr-cutoffcache.json")
 }
 
 // PathStatus is the result of checking one configured tier path: either
@@ -243,9 +267,20 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 	items = append(items, movies...)
 	items = append(items, series...)
 
+	cutoffSnap := e.CutoffCache.Get()
+	if cutoffSnap.RefreshedAt.IsZero() && (e.Radarr != nil || e.Sonarr != nil) {
+		inv.Warnings = append(inv.Warnings, `Quality-cutoff status has never been scanned - items whose file doesn't meet its quality profile's cutoff won't be kept on hot storage for that reason yet. Enable or manually run "Scan Quality Cutoffs" under Settings > Scheduler.`)
+	}
+
 	for _, it := range items {
 		if favorites[filepath.Clean(it.Path)] {
 			it.JellyfinFavorite = true
+		}
+		switch it.ArrApp {
+		case "radarr":
+			it.QualityCutoffNotMet = cutoffSnap.RadarrUnmetIDs[it.ID]
+		case "sonarr":
+			it.QualityCutoffNotMet = cutoffSnap.SonarrUnmetIDs[it.ID]
 		}
 		eval := scoring.Evaluate(it, e.Cfg.Policy, now)
 		inv.Items = append(inv.Items, planner.ItemEval{Item: it, Eval: eval})

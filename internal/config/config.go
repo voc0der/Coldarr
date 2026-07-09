@@ -68,14 +68,22 @@ type NotificationsConfig struct {
 	Tag string `yaml:"tag"`
 }
 
-// SchedulerConfig holds the recurrence for each of Coldarr's three
+// SchedulerConfig holds the recurrence for each of Coldarr's four
 // schedulable tasks. All default to disabled - an unattended apply,
-// cold-storage rescan, or Links-cache refresh only ever runs if
-// explicitly turned on.
+// cold-storage rescan, Links-cache refresh, or quality-cutoff scan only
+// ever runs if explicitly turned on.
 type SchedulerConfig struct {
 	RunPlan      scheduler.Schedule `yaml:"run_plan"`
 	RescanCold   scheduler.Schedule `yaml:"rescan_cold"`
 	RefreshLinks scheduler.Schedule `yaml:"refresh_links"`
+	// ScanCutoffs refreshes internal/cutoffcache - which items have an
+	// unmet quality-profile cutoff - by calling Radarr/Sonarr's
+	// wanted/cutoff endpoint. Deliberately never done live on a
+	// Dashboard/Plan page view (see cutoffcache's package doc for why),
+	// so scoring only actually keeps a cutoff-unmet item on hot storage
+	// once this has run at least once - enable it, or use its manual
+	// "Scan now" button, for that protection to take effect.
+	ScanCutoffs scheduler.Schedule `yaml:"scan_cutoffs"`
 }
 
 type AuthConfig struct {
@@ -164,6 +172,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	}
 	if err := scheduler.Validate(cfg.RefreshLinks); err != nil {
 		return fmt.Errorf("scheduler.refresh_links: %w", err)
+	}
+	if err := scheduler.Validate(cfg.ScanCutoffs); err != nil {
+		return fmt.Errorf("scheduler.scan_cutoffs: %w", err)
 	}
 	return nil
 }
@@ -275,6 +286,7 @@ func applyDefaults(cfg *Config) {
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
 	applyScheduleDefaults(&cfg.Scheduler.RefreshLinks, "01:00")
+	applyScheduleDefaults(&cfg.Scheduler.ScanCutoffs, "00:30")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

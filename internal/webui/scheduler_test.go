@@ -57,6 +57,7 @@ type fakeRadarr struct {
 	*httptest.Server
 	mu          sync.Mutex
 	editorCalls []map[string]any
+	cutoffCalls int
 }
 
 func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
@@ -81,6 +82,9 @@ func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 		_ = json.NewEncoder(w).Encode(map[string]any{"records": []map[string]any{}})
 	})
 	mux.HandleFunc("GET /api/v3/wanted/cutoff", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.cutoffCalls++
+		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"records": []map[string]any{}, "totalRecords": 0})
 	})
 	mux.HandleFunc("PUT /api/v3/movie/editor", func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,12 @@ func (f *fakeRadarr) calls() []map[string]any {
 	out := make([]map[string]any, len(f.editorCalls))
 	copy(out, f.editorCalls)
 	return out
+}
+
+func (f *fakeRadarr) cutoffHits() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cutoffCalls
 }
 
 // testTierDirs creates the hot/cold directories a test's tiers point at,
@@ -400,5 +410,111 @@ func TestTick_RunScheduledRefreshLinks_PopulatesCache(t *testing.T) {
 	}
 	if reloaded.Get().RefreshedAt.IsZero() {
 		t.Errorf("reloaded link cache RefreshedAt is zero - Refresh did not persist to disk")
+	}
+}
+
+// TestTick_RunScheduledScanCutoffs_PopulatesCache confirms the scheduled
+// "Scan Quality Cutoffs" task actually calls Radarr's wanted/cutoff
+// endpoint and persists the result to internal/cutoffcache, so BuildInventory
+// can read it without ever hitting Radarr/Sonarr live itself (see
+// TestBuildInventory_NeverHitsWantedCutoffLive in internal/engine).
+func TestTick_RunScheduledScanCutoffs_PopulatesCache(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	srv.cfg.Scheduler.ScanCutoffs = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+
+	now := time.Now()
+	srv.tick(now)
+
+	deadline := time.Now().Add(3 * time.Second)
+	cacheRefreshed := func() bool {
+		eng, err := srv.newEngine()
+		return err == nil && !eng.CutoffCache.Get().RefreshedAt.IsZero()
+	}
+	for !cacheRefreshed() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !cacheRefreshed() {
+		t.Fatal("quality-cutoff cache was never refreshed")
+	}
+
+	if radarr.cutoffHits() == 0 {
+		t.Error("expected the scheduled scan to have called Radarr's wanted/cutoff endpoint")
+	}
+	if got := srv.getLastRanScanCutoffs(); got.IsZero() || !got.Equal(now) {
+		t.Errorf("lastRanScanCutoffs = %v, want %v", got, now)
+	}
+
+	notifications := apprise.notifications()
+	if len(notifications) == 0 {
+		t.Fatal("expected a notification summarizing the scan")
+	}
+	if !strings.Contains(notifications[0]["title"], "Quality-cutoff scan finished") {
+		t.Errorf("notification title = %q, want to contain %q", notifications[0]["title"], "Quality-cutoff scan finished")
+	}
+}
+
+// TestTick_RunScheduledPlan_ScansCutoffsFirst confirms an unattended
+// "Run the Plan" tick always scans quality cutoffs before building/
+// executing the plan, even when the "Scan Quality Cutoffs" schedule
+// itself is left disabled - the whole point being that a scheduled apply
+// never acts on completely stale (never-scanned) cutoff data just because
+// the operator didn't separately enable that schedule too.
+func TestTick_RunScheduledPlan_ScansCutoffsFirst(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+	// ScanCutoffs is deliberately left at its zero value (disabled).
+
+	srv.tick(time.Now())
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(radarr.calls()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if radarr.cutoffHits() == 0 {
+		t.Error("expected runScheduledPlan to scan quality cutoffs before building its plan, even with the scan schedule disabled")
+	}
+}
+
+// TestHandleScanCutoffsNow_PopulatesCacheAndReportsSuccess confirms the
+// manual "Scan now" trigger runs the same scan synchronously and reports
+// it inline - the operator's way to get quality-cutoff protection active
+// immediately after upgrading, without waiting for a schedule.
+func TestHandleScanCutoffsNow_PopulatesCacheAndReportsSuccess(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/scheduler/scan_cutoffs/run", nil)
+	rec := httptest.NewRecorder()
+	srv.handleScanCutoffsNow(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Quality-cutoff scan finished") {
+		t.Errorf("response body missing success message: %s", rec.Body.String())
+	}
+	if radarr.cutoffHits() == 0 {
+		t.Error("expected handleScanCutoffsNow to call Radarr's wanted/cutoff endpoint")
+	}
+
+	eng, err := srv.newEngine()
+	if err != nil {
+		t.Fatalf("newEngine: %v", err)
+	}
+	if eng.CutoffCache.Get().RefreshedAt.IsZero() {
+		t.Error("expected the cache to be refreshed after handleScanCutoffsNow")
+	}
+	if srv.getLastRanScanCutoffs().IsZero() {
+		t.Error("expected lastRanScanCutoffs to be recorded")
 	}
 }

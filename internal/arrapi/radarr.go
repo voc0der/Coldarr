@@ -71,27 +71,29 @@ type radarrWantedCutoffPage struct {
 
 // FetchMovies returns every movie Radarr knows about, normalized into
 // MediaItems with tag labels resolved and active-queue state filled in.
-// The five lookups it needs are independent, so they run concurrently -
-// sequentially they add up to five round trips of network latency on
-// every plan/dashboard page load.
+// The four lookups it needs are independent, so they run concurrently -
+// sequentially they add up to four round trips of network latency on
+// every plan/dashboard page load. QualityCutoffNotMet is deliberately not
+// set here - it comes from internal/cutoffcache instead, since Radarr's
+// /wanted/cutoff (see CutoffUnmetMovieIDs) is too slow on real libraries
+// to fetch live on every page view; the engine layer fills it in from the
+// cache after calling this.
 func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	var (
-		movies      []radarrMovie
-		tags        []tagResource
-		profiles    []qualityProfileResource
-		busy        map[int]bool
-		cutoffUnmet map[int]bool
+		movies   []radarrMovie
+		tags     []tagResource
+		profiles []qualityProfileResource
+		busy     map[int]bool
 
-		moviesErr, tagsErr, profilesErr, busyErr, cutoffErr error
+		moviesErr, tagsErr, profilesErr, busyErr error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(4)
 	go func() { defer wg.Done(); moviesErr = r.c.get("/api/v3/movie", nil, &movies) }()
 	go func() { defer wg.Done(); tagsErr = r.c.get("/api/v3/tag", nil, &tags) }()
 	go func() { defer wg.Done(); profilesErr = r.c.get("/api/v3/qualityprofile", nil, &profiles) }()
 	go func() { defer wg.Done(); busy, busyErr = r.BusyMovieIDs() }()
-	go func() { defer wg.Done(); cutoffUnmet, cutoffErr = r.CutoffUnmetMovieIDs() }()
 	wg.Wait()
 
 	if moviesErr != nil {
@@ -105,9 +107,6 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	}
 	if busyErr != nil {
 		return nil, busyErr
-	}
-	if cutoffErr != nil {
-		return nil, cutoffErr
 	}
 
 	tagByID := make(map[int]string, len(tags))
@@ -123,22 +122,21 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	items := make([]model.MediaItem, 0, len(movies))
 	for _, m := range movies {
 		items = append(items, model.MediaItem{
-			ArrApp:              "radarr",
-			ID:                  m.ID,
-			Type:                model.Movie,
-			Title:               m.Title,
-			TitleSlug:           m.TitleSlug,
-			Path:                m.Path,
-			RootFolderPath:      m.RootFolderPath,
-			SizeBytes:           m.SizeOnDisk,
-			Added:               m.Added,
-			Tags:                tagLabels(m.Tags, tagByID),
-			QualityProfileName:  profileByID[m.QualityProfileID],
-			Monitored:           m.Monitored,
-			HasFile:             m.HasFile,
-			Upcoming:            upcomingMovieStatuses[m.Status],
-			InActiveQueue:       busy[m.ID],
-			QualityCutoffNotMet: cutoffUnmet[m.ID],
+			ArrApp:             "radarr",
+			ID:                 m.ID,
+			Type:               model.Movie,
+			Title:              m.Title,
+			TitleSlug:          m.TitleSlug,
+			Path:               m.Path,
+			RootFolderPath:     m.RootFolderPath,
+			SizeBytes:          m.SizeOnDisk,
+			Added:              m.Added,
+			Tags:               tagLabels(m.Tags, tagByID),
+			QualityProfileName: profileByID[m.QualityProfileID],
+			Monitored:          m.Monitored,
+			HasFile:            m.HasFile,
+			Upcoming:           upcomingMovieStatuses[m.Status],
+			InActiveQueue:      busy[m.ID],
 		})
 	}
 	return items, nil

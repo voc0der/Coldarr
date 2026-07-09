@@ -31,13 +31,14 @@ type scheduleFormView struct {
 	At      string
 	LastRan string
 	Error   string
-	// ShowRunNow adds a "Refresh now" button below the schedule form -
-	// only set for tasks where waiting out a full schedule period before
-	// ever seeing a result is a poor first-run experience (currently just
-	// refresh_links: its whole visible effect, the Links column, would
-	// otherwise stay empty until the schedule is both enabled and has
-	// waited out a full period).
-	ShowRunNow bool
+	// ShowRunNow adds a button below the schedule form (labeled
+	// RunNowLabel) - only set for tasks where waiting out a full
+	// schedule period before ever seeing a result is a poor first-run
+	// experience (refresh_links: the Links column would otherwise stay
+	// empty; scan_cutoffs: quality-cutoff protection would otherwise
+	// silently sit inactive until the schedule fires).
+	ShowRunNow  bool
+	RunNowLabel string
 }
 
 type schedulerData struct {
@@ -46,18 +47,24 @@ type schedulerData struct {
 	RunPlan      scheduleFormView
 	RescanCold   scheduleFormView
 	RefreshLinks scheduleFormView
+	ScanCutoffs  scheduleFormView
 }
 
 func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule, lastRun time.Time) scheduleFormView {
 	view := scheduleFormView{
-		Task:       task,
-		Label:      label,
-		Hint:       hint,
-		Enabled:    sched.Enabled,
-		Unit:       string(sched.Unit),
-		Every:      sched.Every,
-		At:         sched.At,
-		ShowRunNow: task == "refresh_links",
+		Task:    task,
+		Label:   label,
+		Hint:    hint,
+		Enabled: sched.Enabled,
+		Unit:    string(sched.Unit),
+		Every:   sched.Every,
+		At:      sched.At,
+	}
+	switch task {
+	case "refresh_links":
+		view.ShowRunNow, view.RunNowLabel = true, "Refresh now"
+	case "scan_cutoffs":
+		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
 	}
 	if !lastRun.IsZero() {
 		view.LastRan = lastRun.Format("2006-01-02 15:04")
@@ -70,7 +77,7 @@ func (s *Server) schedulerData() schedulerData {
 	return schedulerData{
 		Title: "Scheduler",
 		RunPlan: s.scheduleView("run_plan", "Run the Plan",
-			`Builds a fresh plan using your current policy and executes it - identical to clicking "Apply this plan" yourself, just unattended.`,
+			`Builds a fresh plan using your current policy and executes it - identical to clicking "Apply this plan" yourself, just unattended. Always scans quality cutoffs first (see "Scan Quality Cutoffs" below) so it acts on current data, even if that schedule is off.`,
 			cfg.Scheduler.RunPlan, s.getLastRanPlan()),
 		RescanCold: s.scheduleView("rescan_cold", "Rescan Cold Storage",
 			"Refreshes disk usage and Radarr/Sonarr's library for your cold tiers only, and reports what it finds - a health check, not a move.",
@@ -78,6 +85,9 @@ func (s *Server) schedulerData() schedulerData {
 		RefreshLinks: s.scheduleView("refresh_links", "Refresh Links Cache",
 			`Refreshes the Radarr/Sonarr/Jellyfin lookups behind the Plan/History pages' Links column, so opening those pages never waits on a live Jellyfin (and, for History, Radarr/Sonarr) call. This is reference data that almost never changes - until this has run at least once (or you click "Refresh now" below), the Links column just won't show anything yet.`,
 			cfg.Scheduler.RefreshLinks, s.getLastRanRefreshLinks()),
+		ScanCutoffs: s.scheduleView("scan_cutoffs", "Scan Quality Cutoffs",
+			`Checks which movies/series have a file that doesn't meet its quality profile's upgrade cutoff, so scoring can keep those on hot storage (Radarr/Sonarr are still going to replace that file). This calls Radarr/Sonarr's own wanted/cutoff lookup, which can be slow on a large library - that's exactly why it only ever runs here, on a schedule (or via "Scan now" below), never live on a Dashboard/Plan page view. Until this has run at least once, every item is treated as cutoff-met.`,
+			cfg.Scheduler.ScanCutoffs, s.getLastRanScanCutoffs()),
 	}
 }
 
@@ -87,7 +97,7 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" {
+	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" {
 		http.NotFound(w, r)
 		return
 	}
@@ -115,8 +125,12 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			data.RescanCold = submitted
 		case "refresh_links":
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RefreshLinks.Label, data.RefreshLinks.Hint, data.RefreshLinks.LastRan
-			submitted.ShowRunNow = true
+			submitted.ShowRunNow, submitted.RunNowLabel = true, "Refresh now"
 			data.RefreshLinks = submitted
+		case "scan_cutoffs":
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanCutoffs.Label, data.ScanCutoffs.Hint, data.ScanCutoffs.LastRan
+			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
+			data.ScanCutoffs = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return
@@ -156,6 +170,23 @@ func (s *Server) runScheduledPlan(now time.Time) {
 		n.Summary("Scheduled apply failed", err.Error(), notify.LevelFailure)
 		s.recordPlanRan(now)
 		return
+	}
+
+	// Scan quality cutoffs first, so an actual unattended apply acts on
+	// current data even if the "Scan Quality Cutoffs" schedule itself is
+	// off. Best-effort: if another scan is already in flight, or this one
+	// fails (e.g. Radarr/Sonarr hiccups on just this endpoint), log it and
+	// proceed with whatever's already cached rather than failing the
+	// whole scheduled apply over it.
+	if s.scanCutoffsMu.TryLock() {
+		if err := eng.CutoffCache.Refresh(eng.Radarr, eng.Sonarr); err != nil {
+			log.Printf("scheduler: run-plan: pre-plan quality-cutoff scan failed, proceeding with cached data: %v", err)
+		} else {
+			s.recordScanCutoffsRan(now)
+		}
+		s.scanCutoffsMu.Unlock()
+	} else {
+		log.Printf("scheduler: run-plan: a quality-cutoff scan is already in progress, proceeding with cached data")
 	}
 
 	inv, err := eng.BuildInventory(now)
@@ -324,5 +355,75 @@ func (s *Server) handleRefreshLinksNow(w http.ResponseWriter, r *http.Request) {
 	s.recordRefreshLinksRan(time.Now())
 	data := s.schedulerData()
 	data.Saved = "Links cache refreshed."
+	s.render(w, "settings_scheduler", data)
+}
+
+// runScheduledScanCutoffs refreshes internal/cutoffcache - which movies/
+// series have a file that doesn't meet its quality profile's upgrade
+// cutoff - by calling Radarr/Sonarr's own wanted/cutoff lookup. This is
+// the only place that lookup happens outside runScheduledPlan's own
+// pre-plan scan and the manual "Scan now" button: never live on a
+// Dashboard/Plan page view, since it's known to be slow on real-world
+// libraries. Only called from tick() when scheduler.Due says it's time.
+func (s *Server) runScheduledScanCutoffs(now time.Time) {
+	if !s.scanCutoffsMu.TryLock() {
+		log.Printf("scheduler: scan-quality-cutoffs is due, but a previous scan is still running - skipping this tick")
+		return
+	}
+	defer s.scanCutoffsMu.Unlock()
+
+	s.recordScanCutoffsRan(now)
+	n := s.notifier()
+
+	eng, err := s.newEngine()
+	if err != nil {
+		log.Printf("scheduler: scan-quality-cutoffs: %v", err)
+		n.Summary("Quality-cutoff scan failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	if err := eng.CutoffCache.Refresh(eng.Radarr, eng.Sonarr); err != nil {
+		log.Printf("scheduler: scan-quality-cutoffs: %v", err)
+		n.Summary("Quality-cutoff scan failed", err.Error(), notify.LevelFailure)
+		return
+	}
+
+	snap := eng.CutoffCache.Get()
+	n.Summary("Quality-cutoff scan finished",
+		fmt.Sprintf("%s movie(s), %s series with an unmet cutoff", n.Bold(strconv.Itoa(len(snap.RadarrUnmetIDs))), n.Bold(strconv.Itoa(len(snap.SonarrUnmetIDs)))),
+		notify.LevelSuccess)
+}
+
+// handleScanCutoffsNow is the manual counterpart to runScheduledScanCutoffs
+// - since the schedule (like every schedule in this app) defaults to off,
+// an operator would otherwise have quality-cutoff protection sit inactive
+// indefinitely unless they also knew to wait for it. This runs the exact
+// same scan synchronously and reports the result inline, and - like a
+// genuine scheduled run - resets the due-check anchor so an already-
+// enabled schedule doesn't immediately fire again right after this.
+func (s *Server) handleScanCutoffsNow(w http.ResponseWriter, r *http.Request) {
+	if !s.scanCutoffsMu.TryLock() {
+		data := s.schedulerData()
+		data.ScanCutoffs.Error = "A scan is already in progress - try again shortly."
+		s.render(w, "settings_scheduler", data)
+		return
+	}
+	defer s.scanCutoffsMu.Unlock()
+
+	eng, err := s.newEngine()
+	if err == nil {
+		err = eng.CutoffCache.Refresh(eng.Radarr, eng.Sonarr)
+	}
+
+	if err != nil {
+		data := s.schedulerData()
+		data.ScanCutoffs.Error = err.Error()
+		s.render(w, "settings_scheduler", data)
+		return
+	}
+
+	s.recordScanCutoffsRan(time.Now())
+	data := s.schedulerData()
+	data.Saved = "Quality-cutoff scan finished."
 	s.render(w, "settings_scheduler", data)
 }
