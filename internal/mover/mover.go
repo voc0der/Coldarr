@@ -227,8 +227,44 @@ func volumeKey(path string, volumeOf map[string]uint64) string {
 	return "path:" + path
 }
 
+// verifyRoom re-stats entry.ToPath immediately before firing the move and
+// refuses to proceed if it doesn't actually have room for the item right
+// now. The plan's own capacity math (see internal/planner) is computed
+// once, from a snapshot taken before the run started - a long-running
+// apply, or anything else writing to the same destination in the
+// meantime (another download landing, a concurrent process, drift from
+// an earlier bug), can leave real free space short of what the plan
+// assumed by the time this specific entry's turn comes up. This is the
+// last line of defense against ever handing Radarr/Sonarr a move with
+// nowhere for it to actually land - independent of whether the plan (or
+// anything upstream of it) got the arithmetic right.
+func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
+	need := entry.Item.SizeBytes
+	if need <= 0 {
+		// Nothing meaningful to check against - don't invent a failure
+		// for data Coldarr doesn't have.
+		return nil
+	}
+
+	u, err := m.stat(entry.ToPath)
+	if err != nil {
+		// Can't observe real free space - fail safe rather than writing
+		// blind on the plan's stale assumption alone.
+		return fmt.Errorf("checking free space at %s before moving %q: %w", entry.ToPath, entry.Item.Title, err)
+	}
+	if uint64(need) > u.FreeBytes {
+		return fmt.Errorf("refusing to move %q to %s: only %.1f GB free right now, need %.1f GB - plan may be stale, re-run Plan", entry.Item.Title, entry.ToPath, float64(u.FreeBytes)/(1<<30), float64(need)/(1<<30))
+	}
+	return nil
+}
+
 func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 	progress.setStatus(idx, StatusMoving, nil)
+
+	if err := m.verifyRoom(entry); err != nil {
+		progress.setStatus(idx, StatusFailed, err)
+		return
+	}
 
 	var err error
 	switch entry.Item.ArrApp {
