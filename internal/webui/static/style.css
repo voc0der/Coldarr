@@ -254,6 +254,10 @@ a:focus-visible, .btn:focus-visible {
 .stat .value { font-size: 1.5rem; font-weight: 700; }
 .stat .label { font-size: 0.8rem; color: var(--muted); }
 
+.conn-row { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.conn { display: flex; align-items: flex-start; gap: 0.35rem; }
+.conn-name { font-weight: 600; margin-bottom: 0.25rem; }
+
 .empty-state {
   display: flex;
   flex-direction: column;

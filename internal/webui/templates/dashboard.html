@@ -18,11 +18,11 @@
   <a href="/settings/connections">{{template "icon-connections"}} manage connections</a>
 </div>
 <div class="card">
-  <p class="hint">
-    <span class="link-icon">{{template "icon-radarr"}}</span> Radarr: {{if .RadarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
-    &nbsp; <span class="link-icon">{{template "icon-sonarr"}}</span> Sonarr: {{if .SonarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
-    &nbsp; <span class="link-icon">{{template "icon-jellyfin"}}</span> Jellyfin: {{if .JellyfinConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}
-  </p>
+  <div class="conn-row">
+    <div class="conn"><span class="link-icon">{{template "icon-radarr"}}</span><div><div class="conn-name">Radarr</div>{{if .RadarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}</div></div>
+    <div class="conn"><span class="link-icon">{{template "icon-sonarr"}}</span><div><div class="conn-name">Sonarr</div>{{if .SonarrConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}</div></div>
+    <div class="conn"><span class="link-icon">{{template "icon-jellyfin"}}</span><div><div class="conn-name">Jellyfin</div>{{if .JellyfinConfigured}}<span class="badge badge-ok">{{template "icon-check-circle"}} connected</span>{{else}}<span class="badge badge-muted">{{template "icon-minus-circle"}} not configured</span>{{end}}</div></div>
+  </div>
 </div>
 
 <div class="section-header">
