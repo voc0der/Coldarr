@@ -667,16 +667,18 @@ func TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking(t *testin
 
 // TestBuild_ReclaimSucceedsAfterFillFreesHotRoom proves the reverse
 // dependency from TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking:
-// hot only has 3 GB free - not enough for the 10 GB reclaim - until an
+// hot only has 7 GB free - not enough for the 10 GB reclaim - until an
 // 8 GB fill (moving something else off hot to cold, which has plenty of
-// room) frees up more. The reclaim can only succeed in a later round
-// than the fill, and its MoveEntry.Phase must reflect that so the mover
-// executes the fill first for real, not just on paper.
+// room) frees up more, landing the reclaim's destination at 95% used,
+// still under pickHotDestination's default 97% ceiling. The reclaim can
+// only succeed in a later round than the fill, and its MoveEntry.Phase
+// must reflect that so the mover executes the fill first for real, not
+// just on paper.
 func TestBuild_ReclaimSucceedsAfterFillFreesHotRoom(t *testing.T) {
 	in := Input{
 		Tiers: tvTiers(),
 		Usage: map[string]diskusage.Usage{
-			"/hot":   usage(100*gib, 97*gib),   // 3 GB free
+			"/hot":   usage(100*gib, 93*gib),   // 7 GB free
 			"/cold1": usage(1000*gib, 100*gib), // plenty of room
 		},
 		Items: []ItemEval{
@@ -725,6 +727,77 @@ func TestBuild_ReclaimSucceedsAfterFillFreesHotRoom(t *testing.T) {
 	}
 	if fillPhase >= reclaimPhase {
 		t.Errorf("expected the fill's Phase (%d) strictly before the reclaim's Phase (%d) - the reclaim depends on the fill having already freed hot room", fillPhase, reclaimPhase)
+	}
+}
+
+// TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare
+// proves a reclaim is rejected once it would push its hot destination
+// past defaultHotMaxUsedPercent, even though there is plainly enough raw
+// free space for the bytes themselves - packing a hot tier to the wire
+// defeats the reason reclaim exists (giving a grow-risk item room to
+// actually grow) and risks real filesystem trouble besides.
+func TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			// 96 GB used of 100 GB (96% - under the 97% ceiling), but a
+			// 10 GB reclaim would land at 106% used - well past both the
+			// ceiling and raw capacity.
+			"/hot":   usage(100*gib, 96*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected the reclaim to be rejected by the default hot ceiling, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatal("expected a warning when the reclaim would cross the default hot ceiling")
+	}
+}
+
+// TestBuild_ExplicitHotMaxUsedPercentOverridesDefault confirms a hot
+// tier that sets its own MaxUsedPercent uses that instead of
+// defaultHotMaxUsedPercent - an operator who deliberately wants a hot
+// tier packed tighter (or looser) than the built-in default can do so.
+func TestBuild_ExplicitHotMaxUsedPercentOverridesDefault(t *testing.T) {
+	tiers := tvTiers()
+	for i := range tiers {
+		if tiers[i].Role == model.RoleHot {
+			tiers[i].MaxUsedPercent = 99
+		}
+	}
+
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			// 88 GB used + 10 GB reclaim lands at 98% used: over the
+			// built-in default ceiling (97, would reject - see
+			// TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare)
+			// but under this tier's explicit override (99, should accept).
+			"/hot":   usage(100*gib, 88*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected the reclaim to succeed under the tier's own 99%% MaxUsedPercent, got %d entries and warnings %v", len(plan.Entries), plan.Warnings)
 	}
 }
 

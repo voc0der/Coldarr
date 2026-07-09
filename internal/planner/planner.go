@@ -1,8 +1,11 @@
 // Package planner turns a scored inventory into a concrete move plan.
-// Coldarr does not steer hot storage toward any usage level - hot is
-// runoff. The actual goal is to pack cold tiers toward their target usage
-// by moving every cold-eligible item currently on hot storage, limited
-// only by how much room cold destinations have.
+// Coldarr does not proactively steer hot storage toward any usage level -
+// hot is runoff. The actual goal is to pack cold tiers toward their target
+// usage by moving every cold-eligible item currently on hot storage,
+// limited only by how much room cold destinations have. Hot destinations
+// still respect a ceiling when accepting a reclaim (see
+// defaultHotMaxUsedPercent) - "runoff" means not actively packed toward a
+// level, not "safe to fill completely."
 package planner
 
 import (
@@ -365,12 +368,24 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 	return bestTier, bestPath, found
 }
 
+// defaultHotMaxUsedPercent is the ceiling pickHotDestination enforces on a
+// hot tier that hasn't set its own MaxUsedPercent (the documented default
+// of zero). Reclaim exists to give a grow-risk item room to actually grow
+// - packing its destination to literal 100% used would defeat that (no
+// headroom left for the item to grow into, or for the filesystem's own
+// overhead and in-flight writes) and risks real filesystem trouble
+// besides. 97% leaves meaningful headroom while still letting reclaim
+// work on the tight, mostly-full setups Coldarr targets.
+const defaultHotMaxUsedPercent = 97.0
+
 // pickHotDestination finds a hot-tier path with enough free room to accept
 // sizeBytes, for moving an upcoming item back off cold storage (see
-// upcomingOnCold). Hot storage is never packed toward a usage level, so
-// unlike pickDestination there's no target/max ceiling to respect - just
-// enough space to fit. Among viable paths, prefers whichever currently has
-// the most free space, spreading rather than concentrating.
+// upcomingOnCold). Hot storage is never proactively packed toward a usage
+// level the way cold tiers are packed toward TargetUsedPercent - but a
+// destination's projected usage still may not cross its ceiling: the
+// tier's own MaxUsedPercent if it has set one, else
+// defaultHotMaxUsedPercent. Among viable paths, prefers whichever
+// currently has the most free space, spreading rather than concentrating.
 func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) (model.Tier, string, bool) {
 	var bestTier model.Tier
 	var bestPath string
@@ -381,12 +396,19 @@ func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt
 		if tier.Role != model.RoleHot || !tier.AcceptsMediaType(mt) {
 			continue
 		}
+		ceiling := tier.MaxUsedPercent
+		if ceiling <= 0 {
+			ceiling = defaultHotMaxUsedPercent
+		}
 		for _, path := range tier.Paths {
 			u, ok := usage[path]
 			if !ok || u.TotalBytes == 0 {
 				continue
 			}
 			projected := applyDelta(u, sizeBytes)
+			if projected.UsedPercent > ceiling {
+				continue
+			}
 			if projected.UsedBytes > u.TotalBytes {
 				continue
 			}

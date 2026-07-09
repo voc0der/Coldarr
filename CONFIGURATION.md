@@ -155,11 +155,19 @@ a worked example with one hot tier (the primary NAS) and two cold tiers
 (movies and TV split across satellite drives) - or just add them through
 the GUI's Tiers page, which writes the same file.
 
-**Hot tiers have no `target_used_percent`/`max_used_percent`.** Coldarr
-doesn't steer primary storage toward any usage level - it's runoff. In
-the ideal case your cold drives sit at 99% and hot sits at whatever's left
-over, and that's fine. If you want to know how full hot currently is,
-the dashboard/`report` still show it - it just isn't a control variable.
+**Hot tiers have no `target_used_percent`.** Coldarr doesn't proactively
+steer primary storage toward any usage level - it's runoff. In the ideal
+case your cold drives sit at 99% and hot sits at whatever's left over,
+and that's fine. If you want to know how full hot currently is, the
+dashboard/`report` still show it - it just isn't a control variable.
+
+`max_used_percent` still applies to hot tiers, but only when Coldarr
+pulls a grow-risk item (e.g. one whose file doesn't meet its quality
+profile's cutoff yet) back off cold storage onto hot. Leave it unset and
+Coldarr defaults to 97% for that case - it won't pack a hot tier to the
+wire even if the raw bytes fit, since doing so would leave no headroom
+for the growth that move exists to make room for. Set it explicitly (up
+to 100) if you want that ceiling looser or tighter.
 
 **Cold tiers use both fields as a two-step packing goal:**
 `target_used_percent` is what Coldarr actively packs toward; if nothing

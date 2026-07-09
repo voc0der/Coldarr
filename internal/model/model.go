@@ -31,13 +31,22 @@ type Tier struct {
 	Role  TierRole    `yaml:"role"`
 	Paths []string    `yaml:"paths"`
 	Media []MediaType `yaml:"media_types"`
-	// TargetUsedPercent and MaxUsedPercent are only meaningful for cold
-	// tiers - hot tiers are runoff, not a control variable, and leave
-	// these at zero. For cold tiers: TargetUsedPercent is the fill goal
-	// Coldarr actively packs toward; MaxUsedPercent is the hard ceiling
-	// used as a fallback destination when no tier has room under its
-	// target, and is never crossed even then. Coldarr does not clamp
-	// either value - set max to 100 if that's what you want.
+	// TargetUsedPercent is only meaningful for cold tiers - the fill goal
+	// Coldarr actively packs toward. Hot tiers are never proactively
+	// packed toward a level, so leave this at zero there.
+	//
+	// MaxUsedPercent is a hard ceiling for both roles, but means something
+	// different for each. For cold tiers it's the fallback destination
+	// used when no tier has room under its target, never crossed even
+	// then. For hot tiers there's no target to fall back from - it's the
+	// only ceiling, checked directly, and leaving it at zero (the
+	// default) does not mean "no ceiling": Coldarr falls back to a
+	// conservative built-in default instead, since reclaiming a
+	// grow-risk item back onto hot storage by packing its destination to
+	// literal 100% used would defeat the point (no room left for the
+	// item to actually grow). Set it explicitly (up to 100) to override
+	// that default. Coldarr does not clamp either value beyond this -
+	// set max to 100 if that's genuinely what you want.
 	TargetUsedPercent float64 `yaml:"target_used_percent"`
 	MaxUsedPercent    float64 `yaml:"max_used_percent"`
 	// RequireMount, when true, makes Coldarr refuse to treat a path as
