@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -24,10 +25,11 @@ const (
 )
 
 type payload struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	Type  string `json:"type"`
-	Tag   string `json:"tag,omitempty"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	Type   string `json:"type"`
+	Tag    string `json:"tag,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 // Notifier sends Apprise webhook notifications for one configured URL. A
@@ -36,6 +38,11 @@ type payload struct {
 type Notifier struct {
 	URL     string
 	Verbose bool
+	// Markdown tells Apprise ("format": "markdown" in the outgoing
+	// payload) to interpret Body as Markdown rather than plain text, and
+	// makes Bold/Code/JoinLines actually apply Markdown syntax instead of
+	// passing text through unchanged.
+	Markdown bool
 	// Tag restricts delivery to the Apprise notification target(s)
 	// registered under this tag on the receiving end - many Apprise API
 	// deployments route entirely by tag and return HTTP 424 ("failed
@@ -43,6 +50,52 @@ type Notifier struct {
 	// was sent at all. Left blank, no "tag" field is sent (Apprise's own
 	// default routing applies).
 	Tag string
+}
+
+// markdownEscaper neutralizes characters Markdown would otherwise parse as
+// emphasis delimiters inside a value about to be wrapped in **bold** -
+// without it, a tier/label containing "_" (e.g. "temphdd_path2") could
+// unintentionally start an italic span instead of rendering literally.
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`*`, `\*`,
+	`_`, `\_`,
+	`~`, `\~`,
+)
+
+// Bold wraps s in Markdown emphasis when Markdown is enabled (escaping any
+// emphasis-like characters s already contains), and returns s unchanged
+// otherwise. Meant for short label-like values (tier names, counts,
+// percentages) - a nil Notifier behaves as Markdown-off.
+func (n *Notifier) Bold(s string) string {
+	if n == nil || !n.Markdown {
+		return s
+	}
+	return "**" + markdownEscaper.Replace(s) + "**"
+}
+
+// Code wraps s in a Markdown code span when Markdown is enabled, and
+// returns s unchanged otherwise. Meant for arbitrary/identifier-like
+// values (paths, item titles, raw error text) - a code span is never
+// parsed for emphasis, so unlike Bold it needs no escaping.
+func (n *Notifier) Code(s string) string {
+	if n == nil || !n.Markdown {
+		return s
+	}
+	return "`" + s + "`"
+}
+
+// JoinLines joins lines the way each mode reads best: "<br/>" under
+// Markdown, since chat targets that render it collapse a bare newline to
+// a space, matching the same separator used by the underlying Radarr/
+// Sonarr notification scripts Coldarr's messages sit alongside; "; "
+// otherwise, unchanged from before Markdown existed.
+func (n *Notifier) JoinLines(lines []string) string {
+	sep := "; "
+	if n != nil && n.Markdown {
+		sep = "<br/>"
+	}
+	return strings.Join(lines, sep)
 }
 
 // Summary always sends when a URL is configured - the low-noise default
@@ -66,7 +119,7 @@ func (n *Notifier) send(title, body string, lvl Level) {
 	if n == nil || n.URL == "" {
 		return
 	}
-	if err := post(n.URL, n.Tag, title, body, lvl); err != nil {
+	if err := post(n.URL, n.Tag, title, body, lvl, n.Markdown); err != nil {
 		log.Printf("notify: sending to apprise failed: %v", err)
 	}
 }
@@ -74,13 +127,24 @@ func (n *Notifier) send(title, body string, lvl Level) {
 // Test sends one notification to url (optionally restricted to tag) and
 // returns any error directly - unlike Summary/Item, which log-and-swallow,
 // Test exists specifically to show an operator whether their configured
-// URL (and tag, if their Apprise setup routes by one) actually works.
-func Test(url, tag string) error {
-	return post(url, tag, "Coldarr test notification", "If you can see this, Coldarr can reach your Apprise endpoint.", LevelInfo)
+// URL (and tag, if their Apprise setup routes by one) actually works. When
+// markdown is true, the body demonstrates Bold/Code so the operator can
+// see whether their Apprise target actually renders Markdown rather than
+// showing literal asterisks/backticks.
+func Test(url, tag string, markdown bool) error {
+	body := "If you can see this, Coldarr can reach your Apprise endpoint."
+	if markdown {
+		body = "If you can reach your Apprise endpoint, and **this** is bold and `this` is code (not literal asterisks/backticks), Markdown formatting is working."
+	}
+	return post(url, tag, "Coldarr test notification", body, LevelInfo, markdown)
 }
 
-func post(url, tag, title, body string, lvl Level) error {
-	data, err := json.Marshal(payload{Title: title, Body: body, Type: string(lvl), Tag: tag})
+func post(url, tag, title, body string, lvl Level, markdown bool) error {
+	p := payload{Title: title, Body: body, Type: string(lvl), Tag: tag}
+	if markdown {
+		p.Format = "markdown"
+	}
+	data, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("encoding notification: %w", err)
 	}

@@ -288,15 +288,16 @@ func (s *Server) updateTiers(fn func([]model.Tier) ([]model.Tier, error)) error 
 	return nil
 }
 
-// updateNotifications persists the Verbose flag (the Apprise URL itself
-// lives in connStore, not coldarr.yaml) and swaps it into the live
-// config, under the same lock discipline as updateTiers.
-func (s *Server) updateNotifications(verbose bool, tag string) error {
+// updateNotifications persists the Verbose/Markdown flags (the Apprise URL
+// itself lives in connStore, not coldarr.yaml) and swaps them into the
+// live config, under the same lock discipline as updateTiers.
+func (s *Server) updateNotifications(verbose, markdown bool, tag string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	updated := *s.cfg
 	updated.Notifications.Verbose = verbose
+	updated.Notifications.Markdown = markdown
 	updated.Notifications.Tag = tag
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		return err

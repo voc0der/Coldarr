@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/notify"
@@ -19,7 +18,7 @@ import (
 func (s *Server) notifier() *notify.Notifier {
 	conn, _ := s.connStore.Get("apprise")
 	cfg := s.currentConfig()
-	return &notify.Notifier{URL: conn.URL, Verbose: cfg.Notifications.Verbose, Tag: cfg.Notifications.Tag}
+	return &notify.Notifier{URL: conn.URL, Verbose: cfg.Notifications.Verbose, Markdown: cfg.Notifications.Markdown, Tag: cfg.Notifications.Tag}
 }
 
 type scheduleFormView struct {
@@ -201,13 +200,13 @@ func (s *Server) runScheduledPlan(now time.Time) {
 		if len(failed) > 0 {
 			level = notify.LevelWarning
 		}
-		n.Summary("Scheduled apply finished", fmt.Sprintf("moved %d, failed %d", len(moved), len(failed)), level)
+		n.Summary("Scheduled apply finished", fmt.Sprintf("moved %s, failed %s", n.Bold(strconv.Itoa(len(moved))), n.Bold(strconv.Itoa(len(failed)))), level)
 
 		for _, e := range moved {
-			n.Item("Moved "+e.Entry.Item.Title, fmt.Sprintf("to %s (%s)", e.Entry.ToTier, e.Entry.ToPath), notify.LevelSuccess)
+			n.Item("Moved "+e.Entry.Item.Title, fmt.Sprintf("to %s (%s)", n.Bold(e.Entry.ToTier), n.Code(e.Entry.ToPath)), notify.LevelSuccess)
 		}
 		for _, e := range failed {
-			n.Item("Failed to move "+e.Entry.Item.Title, e.Err, notify.LevelFailure)
+			n.Item("Failed to move "+e.Entry.Item.Title, n.Code(e.Err), notify.LevelFailure)
 		}
 	}()
 }
@@ -253,19 +252,19 @@ func (s *Server) runScheduledRescan(now time.Time) {
 	for _, status := range coldPaths {
 		if status.Err != nil {
 			failures++
-			lines = append(lines, fmt.Sprintf("%s (%s): %v", status.Tier.Name, status.Path, status.Err))
-			n.Item(status.Tier.Name+" unavailable", fmt.Sprintf("%s: %v", status.Path, status.Err), notify.LevelFailure)
+			lines = append(lines, fmt.Sprintf("%s (%s): %s", n.Bold(status.Tier.Name), n.Code(status.Path), n.Code(status.Err.Error())))
+			n.Item(status.Tier.Name+" unavailable", fmt.Sprintf("%s: %s", n.Code(status.Path), n.Code(status.Err.Error())), notify.LevelFailure)
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s (%s): %.1f%% used", status.Tier.Name, status.Path, status.Usage.UsedPercent))
-		n.Item(status.Tier.Name, fmt.Sprintf("%.1f%% used", status.Usage.UsedPercent), notify.LevelInfo)
+		lines = append(lines, fmt.Sprintf("%s (%s): %s used", n.Bold(status.Tier.Name), n.Code(status.Path), n.Bold(fmt.Sprintf("%.1f%%", status.Usage.UsedPercent))))
+		n.Item(status.Tier.Name, fmt.Sprintf("%s used", n.Bold(fmt.Sprintf("%.1f%%", status.Usage.UsedPercent))), notify.LevelInfo)
 	}
 
 	title, level := "Cold storage check finished", notify.LevelSuccess
 	if failures > 0 {
 		title, level = fmt.Sprintf("Cold storage check: %d issue(s)", failures), notify.LevelWarning
 	}
-	n.Summary(title, strings.Join(lines, "; "), level)
+	n.Summary(title, n.JoinLines(lines), level)
 }
 
 // runScheduledRefreshLinks re-fetches the Radarr/Sonarr titleSlug and

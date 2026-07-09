@@ -20,6 +20,7 @@ type notificationsData struct {
 	Saved         string
 	AppriseURLSet bool
 	Verbose       bool
+	Markdown      bool
 	Tag           string
 }
 
@@ -30,6 +31,7 @@ func (s *Server) notificationsData() notificationsData {
 		Title:         "Notifications",
 		AppriseURLSet: conn.URL != "",
 		Verbose:       cfg.Notifications.Verbose,
+		Markdown:      cfg.Notifications.Markdown,
 		Tag:           cfg.Notifications.Tag,
 	}
 }
@@ -42,6 +44,7 @@ func (s *Server) handleNotificationsSave(w http.ResponseWriter, r *http.Request)
 	_ = r.ParseForm()
 	rawURL := strings.TrimSpace(r.FormValue("apprise_url"))
 	verbose := r.FormValue("verbose") == "on"
+	markdown := r.FormValue("markdown") == "on"
 	tag := strings.TrimSpace(r.FormValue("tag"))
 
 	// A blank URL means "keep whatever's already saved" (the field is
@@ -62,7 +65,7 @@ func (s *Server) handleNotificationsSave(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	if err := s.updateNotifications(verbose, tag); err != nil {
+	if err := s.updateNotifications(verbose, markdown, tag); err != nil {
 		data := s.notificationsData()
 		data.Error = err.Error()
 		s.render(w, "settings_notifications", data)
@@ -104,6 +107,12 @@ func (s *Server) handleNotificationsTest(w http.ResponseWriter, r *http.Request)
 	if tag == "" {
 		tag = s.currentConfig().Notifications.Tag
 	}
+	// Read straight from the submitted form (via hx-include="closest
+	// form"), not the saved config, so toggling the checkbox and testing
+	// works before hitting Save - same reasoning as the URL/tag fallbacks
+	// above, just without a "blank means keep the saved value" case since
+	// a checkbox has no blank state.
+	markdown := r.FormValue("markdown") == "on"
 
 	result := notifyTestResult{}
 	switch {
@@ -112,7 +121,7 @@ func (s *Server) handleNotificationsTest(w http.ResponseWriter, r *http.Request)
 	case !validHTTPURL(rawURL):
 		result.Error = "Apprise URL must be a valid http:// or https:// URL"
 	default:
-		if err := notify.Test(rawURL, tag); err != nil {
+		if err := notify.Test(rawURL, tag, markdown); err != nil {
 			result.Error = err.Error()
 		}
 	}
