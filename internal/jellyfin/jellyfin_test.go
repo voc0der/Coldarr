@@ -69,7 +69,10 @@ func TestClient_ServerID(t *testing.T) {
 
 // fakeJellyfinServer returns a server with two users, where a Movie is
 // favorited only by user 2 and a Series is visible to both - exercising
-// FavoritePaths/LibraryItemIDs' per-user union-and-dedup logic.
+// FavoritePaths/LibraryItemIDs' per-user union-and-dedup logic. The Movie's
+// Path points at the video file itself (real Jellyfin behavior), one level
+// inside "/hot/Movie A" - the folder Radarr actually reports - unlike the
+// Series' Path, which is already its folder.
 func fakeJellyfinServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,13 +84,13 @@ func fakeJellyfinServer(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte(`{"Items": []}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"Items": [{"Id": "series-1", "Path": "/hot/Show A"}]}`))
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "series-1", "Path": "/hot/Show A", "Type": "Series"}]}`))
 		case "/Users/u2/Items":
 			if r.URL.Query().Get("Filters") == "IsFavorite" {
-				_, _ = w.Write([]byte(`{"Items": [{"Id": "movie-1", "Path": "/hot/Movie A/"}]}`))
+				_, _ = w.Write([]byte(`{"Items": [{"Id": "movie-1", "Path": "/hot/Movie A/Movie A.mkv", "Type": "Movie"}]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"Items": [{"Id": "movie-1", "Path": "/hot/Movie A/"}, {"Id": "series-1", "Path": "/hot/Show A"}]}`))
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "movie-1", "Path": "/hot/Movie A/Movie A.mkv", "Type": "Movie"}, {"Id": "series-1", "Path": "/hot/Show A", "Type": "Series"}]}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
