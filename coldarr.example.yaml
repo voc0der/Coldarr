@@ -17,18 +17,25 @@
 # Every path in a tier is checked independently - a tier is a shared
 # policy, not a pooled volume.
 #
-# - role: hot   -> primary storage. Coldarr never steers this toward any
-#                  usage level - it's runoff, not a control variable. Every
-#                  cold-eligible item sitting on a hot path is a move
-#                  candidate, whenever cold tiers have room to accept it.
-#                  No target_used_percent/max_used_percent here.
+# - role: hot   -> primary storage. Coldarr never proactively steers this
+#                  toward any usage level - it's runoff, not a control
+#                  variable. Every cold-eligible item sitting on a hot path
+#                  is a move candidate, whenever cold tiers have room to
+#                  accept it. No target_used_percent here. When Coldarr
+#                  pulls a grow-risk item back onto hot (e.g. an unmet
+#                  quality-cutoff file), it still won't push a hot path
+#                  past 97% used unless you set max_used_percent yourself -
+#                  packing hot storage to the wire would leave no room for
+#                  the very growth that move exists to make space for.
 # - role: cold  -> overflow storage. Coldarr actively packs cold-eligible
 #                  items toward target_used_percent (the fill goal),
 #                  falling back to max_used_percent (the hard ceiling,
 #                  never crossed) only when nothing has room under target.
 #
-# max_used_percent has no built-in ceiling - if you want a satellite
-# drive packed to 100%, set it to 100. Coldarr will respect that.
+# max_used_percent has no built-in ceiling on cold tiers - if you want a
+# satellite drive packed to 100%, set it to 100. Coldarr will respect
+# that. On a hot tier, max_used_percent overrides the 97% default
+# described above (also up to 100 if that's genuinely what you want).
 tiers:
   - name: hot
     role: hot
