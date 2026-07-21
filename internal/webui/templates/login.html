@@ -24,8 +24,9 @@
 {{else}}
 <div class="card">
   <p class="muted">Coldarr is protected by OIDC.</p>
-  <a class="btn btn-primary" href="{{.LoginURL}}">{{template "icon-shield-check"}} Continue</a>
+  <a id="oidc-login" class="btn btn-primary" href="{{.LoginURL}}"{{if .AutoLogin}} data-auto-login="true"{{end}}>{{template "icon-shield-check"}} Continue</a>
 </div>
+{{if .AutoLogin}}<script src="/static/oidc-autologin.js" defer></script>{{end}}
 {{end}}
 {{end}}
 {{end}}

@@ -298,3 +298,119 @@ func TestPasswordAuth_BypassedWhenOIDCEnabled(t *testing.T) {
 		t.Fatal("POST /login must not create a session while OIDC is enabled")
 	}
 }
+
+func TestOIDCAutoLoginCommitsLoginPageBeforeStartingAuthorization(t *testing.T) {
+	srv := newAuthTestServer(t, true)
+	srv.mu.Lock()
+	srv.cfg.Auth.OIDC.AutoLogin = true
+	srv.mu.Unlock()
+	handler := srv.routes()
+
+	// Auto-login must first navigate to a same-origin HTML document. Sending
+	// the initial request straight to /auth/login keeps the OIDC callback in
+	// the address-bar navigation chain and can make Firefox request Local
+	// Network Access permission before it has committed the Coldarr origin.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/plan?view=ready", nil)
+	handler.ServeHTTP(rec, req)
+
+	wantLoginPage := "/login?return_to=%2Fplan%3Fview%3Dready&auto=1"
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != wantLoginPage {
+		t.Fatalf("GET /plan with OIDC auto-login = %d %q, want a redirect to %q", rec.Code, rec.Header().Get("Location"), wantLoginPage)
+	}
+
+	// The intermediary must be a committed 200 response, not another HTTP
+	// redirect. Its stable marker lets the page start OIDC client-side while
+	// retaining the ordinary link as a no-JavaScript fallback.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, wantLoginPage, nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET auto-login intermediary = %d, want 200", rec.Code)
+	}
+	if location := rec.Header().Get("Location"); location != "" {
+		t.Fatalf("GET auto-login intermediary unexpectedly redirected to %q", location)
+	}
+
+	body := rec.Body.String()
+	wantOIDCLogin := `/auth/login?return_to=%2Fplan%3Fview%3Dready`
+	if !strings.Contains(body, `id="oidc-login"`) {
+		t.Fatal("auto-login intermediary did not render the OIDC fallback link")
+	}
+	if !strings.Contains(body, `data-auto-login`) {
+		t.Fatal("auto-login intermediary did not mark the OIDC link for automatic navigation")
+	}
+	if !strings.Contains(body, `href="`+wantOIDCLogin+`"`) {
+		t.Fatalf("auto-login intermediary did not preserve return_to in OIDC URL %q", wantOIDCLogin)
+	}
+	if !strings.Contains(body, `<script src="/static/oidc-autologin.js" defer></script>`) {
+		t.Fatal("auto-login intermediary did not load the deferred OIDC navigation script")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/static/oidc-autologin.js", nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET OIDC auto-login script = %d, want 200", rec.Code)
+	}
+	if script := rec.Body.String(); !strings.Contains(script, `#oidc-login[data-auto-login]`) || !strings.Contains(script, `window.location.replace(login.href)`) {
+		t.Fatal("OIDC auto-login script did not navigate the marked fallback link with location.replace")
+	}
+}
+
+func TestOIDCPlainLoginPageDoesNotAutoStart(t *testing.T) {
+	srv := newAuthTestServer(t, true)
+	srv.mu.Lock()
+	srv.cfg.Auth.OIDC.AutoLogin = true
+	srv.mu.Unlock()
+	handler := srv.routes()
+
+	// /auth/logout redirects to plain /login. It must stay manual even when
+	// auto-login is configured, or signing out would immediately sign the user
+	// back in. Only middleware-generated login URLs carry auto=1.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/login?return_to=%2Fplan", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET plain OIDC login page = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="oidc-login"`) {
+		t.Fatal("plain OIDC login page did not render the OIDC link")
+	}
+	if strings.Contains(body, `data-auto-login`) {
+		t.Fatal("plain OIDC login page must not automatically start OIDC")
+	}
+	if strings.Contains(body, `/static/oidc-autologin.js`) {
+		t.Fatal("plain OIDC login page must not load the auto-login script")
+	}
+	if !strings.Contains(body, `href="/auth/login?return_to=%2Fplan"`) {
+		t.Fatal("plain OIDC login page did not preserve return_to in its manual link")
+	}
+}
+
+func TestOIDCAutoLoginQueryRequiresEnabledConfig(t *testing.T) {
+	srv := newAuthTestServer(t, true)
+	handler := srv.routes()
+
+	// The query flag is an instruction from the middleware, not a way for a
+	// caller to enable a feature the operator has disabled.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/login?auto=1&return_to=%2Fplan", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET crafted auto-login URL = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="oidc-login"`) {
+		t.Fatal("OIDC login page did not render the manual link")
+	}
+	if strings.Contains(body, `data-auto-login`) {
+		t.Fatal("auto=1 must not start OIDC when auto-login is disabled")
+	}
+	if strings.Contains(body, `/static/oidc-autologin.js`) {
+		t.Fatal("auto=1 must not load the auto-login script when auto-login is disabled")
+	}
+}
