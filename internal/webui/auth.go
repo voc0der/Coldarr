@@ -63,6 +63,7 @@ type loginData struct {
 	Title        string
 	Error        string
 	LoginURL     string
+	AutoLogin    bool
 	PasswordAuth bool
 	ReturnTo     string
 }
@@ -96,7 +97,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		returnTo := cleanReturnTo(r.URL.RequestURI())
 		target := "/login?return_to=" + url.QueryEscape(returnTo)
 		if cfg.AutoLogin {
-			target = "/auth/login?return_to=" + url.QueryEscape(returnTo)
+			// Commit a same-origin Coldarr document before leaving for the OIDC
+			// provider. A redirect-only chain can leave the page that opened
+			// Coldarr as the browser's triggering principal, causing Firefox to
+			// apply Local Network Access checks to the private OIDC callback.
+			target += "&auto=1"
 		}
 		http.Redirect(w, r, target, http.StatusFound)
 	})
@@ -145,8 +150,9 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := loginData{
-		Title:    "Sign in",
-		LoginURL: "/auth/login?return_to=" + url.QueryEscape(returnTo),
+		Title:     "Sign in",
+		LoginURL:  "/auth/login?return_to=" + url.QueryEscape(returnTo),
+		AutoLogin: cfg.AutoLogin && r.URL.Query().Get("auto") == "1",
 	}
 	if err := validateEffectiveOIDCConfig(cfg); err != nil {
 		data.Error = err.Error()
