@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,13 +156,13 @@ func TestBuildInventory_JellyfinFavoriteMarksItem(t *testing.T) {
 	}
 }
 
-func TestBuildInventory_JellyfinFailureIsWarningNotError(t *testing.T) {
+func TestBuildInventory_JellyfinFailureFailsClosed(t *testing.T) {
 	hotDir := testTierDirs(t)
 	radarr := radarrServer(t, filepath.Join(hotDir, "Movie A"))
 	defer radarr.Close()
 
 	jf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer jf.Close()
 
@@ -176,11 +177,14 @@ func TestBuildInventory_JellyfinFailureIsWarningNotError(t *testing.T) {
 	}
 
 	inv, err := e.BuildInventory(time.Now())
-	if err != nil {
-		t.Fatalf("expected a Jellyfin failure to degrade to a warning, not fail BuildInventory: %v", err)
+	if err == nil {
+		t.Fatal("expected an unavailable configured Jellyfin to fail BuildInventory")
 	}
-	if len(inv.Warnings) == 0 {
-		t.Fatal("expected a warning about the unreachable Jellyfin")
+	if inv != nil {
+		t.Fatalf("expected no usable inventory when favorite protection could not be established, got %+v", inv)
+	}
+	if !strings.Contains(err.Error(), "refusing to continue because favorite protection could not be established") {
+		t.Fatalf("expected a fail-closed explanation, got %v", err)
 	}
 }
 

@@ -223,7 +223,9 @@ fetches every user's favorited movies/series and matches them back to
 Radarr/Sonarr items by path - anything favorited by anyone is protected,
 same as a `never-move` tag. Matching is by path, so this only works
 correctly if Jellyfin sees the same paths Radarr/Sonarr do (see
-[Docker's path note](#docker) above). If the favorites fetch fails for
-any reason, Coldarr proceeds without that protection for the run and
-surfaces a warning in `report`/`plan`/the dashboard rather than failing
-outright or silently skipping it.
+[Docker's path note](#docker) above). Coldarr snapshots these favorites
+before it builds a plan. If the fetch fails for any reason, inventory and
+planning fail closed: no manual, CLI, or scheduled apply can start without
+favorite protection. If Jellyfin goes offline after a run starts, the run
+continues using the snapshot captured before it began; only the post-move
+library refresh may fail.

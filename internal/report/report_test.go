@@ -63,8 +63,8 @@ func TestTierUsage_SharedVolumeNote(t *testing.T) {
 
 func TestWarnings(t *testing.T) {
 	var buf bytes.Buffer
-	Warnings(&buf, []string{"jellyfin favorites could not be fetched"})
-	if !strings.Contains(buf.String(), "jellyfin favorites could not be fetched") {
+	Warnings(&buf, []string{"quality-cutoff status has not been scanned"})
+	if !strings.Contains(buf.String(), "quality-cutoff status has not been scanned") {
 		t.Errorf("expected the warning text in output:\n%s", buf.String())
 	}
 

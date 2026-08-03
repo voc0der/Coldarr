@@ -257,6 +257,46 @@ func TestTick_RunScheduledPlan_MovesAndNotifiesSummary(t *testing.T) {
 	}
 }
 
+// TestTick_RunScheduledPlan_RefusesWhenJellyfinUnavailable proves the
+// fail-closed inventory rule reaches the unattended/destructive path: when
+// Jellyfin is enabled but its favorites cannot be snapshotted, a due run
+// must not dispatch even one Radarr move.
+func TestTick_RunScheduledPlan_RefusesWhenJellyfinUnavailable(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	jellyfin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(jellyfin.Close)
+
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+	if err := srv.connStore.Set("jellyfin", secrets.Connection{URL: jellyfin.URL, APIKey: "test", Enabled: true}); err != nil {
+		t.Fatalf("connStore.Set jellyfin: %v", err)
+	}
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+
+	srv.tick(time.Now())
+
+	if got := len(radarr.calls()); got != 0 {
+		t.Errorf("radarr editor calls = %d, want 0 - no move may start without the Jellyfin favorites snapshot", got)
+	}
+	srv.applyMu.Lock()
+	run := srv.currentRun
+	srv.applyMu.Unlock()
+	if run != nil {
+		t.Fatal("expected no apply run to be created when Jellyfin favorite protection could not be established")
+	}
+
+	notifications := apprise.notifications()
+	if len(notifications) != 1 {
+		t.Fatalf("notifications = %d, want one failure summary", len(notifications))
+	}
+	if !strings.Contains(notifications[0]["body"], "favorite protection could not be established") {
+		t.Errorf("failure notification body = %q, want fail-closed explanation", notifications[0]["body"])
+	}
+}
+
 func TestTick_RunScheduledPlan_SkipsWhenApplyAlreadyInFlight(t *testing.T) {
 	dir, hotDir, coldDir := testTierDirs(t)
 	radarr := newFakeRadarr(t, hotDir)

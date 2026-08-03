@@ -66,7 +66,7 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 }
 
 // Warnings prints non-fatal problems encountered while building the
-// inventory (e.g. Jellyfin favorites couldn't be fetched).
+// inventory (for example, quality-cutoff status has not been scanned yet).
 func Warnings(w io.Writer, warnings []string) {
 	if len(warnings) == 0 {
 		return
