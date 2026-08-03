@@ -155,8 +155,10 @@ type Inventory struct {
 	PathStatus map[string]PathStatus
 	Items      []planner.ItemEval
 	// Warnings surfaces non-fatal problems encountered while building the
-	// inventory (e.g. Jellyfin favorites couldn't be fetched) that the
-	// operator should see but that shouldn't block report/plan/apply.
+	// inventory that the operator should see but that shouldn't block
+	// report/plan/apply. Failure to fetch enabled Jellyfin favorites is
+	// deliberately fatal instead: without that snapshot, Coldarr cannot
+	// know which items must be protected from moves.
 	Warnings []string
 }
 
@@ -228,7 +230,10 @@ func (inv *Inventory) SharedVolumePaths(path string) []string {
 }
 
 // BuildInventory checks every configured path, fetches the library from
-// every enabled Arr app, and scores each item. It performs no writes.
+// every enabled Arr app, snapshots enabled Jellyfin favorites, and scores
+// each item. It performs no writes. If the Jellyfin snapshot fails, the
+// entire build fails closed so no plan or apply can proceed without favorite
+// protection.
 func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 	inv := &Inventory{
 		Tiers:      e.Cfg.Tiers,
@@ -262,7 +267,7 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 		movies, series       []model.MediaItem
 		moviesErr, seriesErr error
 		favorites            map[string]bool
-		favWarning           string
+		favoritesErr         error
 	)
 
 	var wg sync.WaitGroup
@@ -289,7 +294,7 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 			defer wg.Done()
 			paths, err := jf.FavoritePaths()
 			if err != nil {
-				favWarning = fmt.Sprintf("could not fetch Jellyfin favorites, favorited items are NOT protected this run: %v", err)
+				favoritesErr = err
 				return
 			}
 			favorites = paths
@@ -304,8 +309,8 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 	if seriesErr != nil {
 		return nil, fmt.Errorf("fetching series from sonarr: %w", seriesErr)
 	}
-	if favWarning != "" {
-		inv.Warnings = append(inv.Warnings, favWarning)
+	if favoritesErr != nil {
+		return nil, fmt.Errorf("fetching favorites from Jellyfin: %w; refusing to continue because favorite protection could not be established", favoritesErr)
 	}
 
 	items := make([]model.MediaItem, 0, len(movies)+len(series))
