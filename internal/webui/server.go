@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/config"
@@ -101,6 +102,15 @@ type Server struct {
 type applyRun struct {
 	progress *mover.Progress
 	lock     *mover.Lock
+	// active stays set until the run is completely finished - past the
+	// moves, past the post-move Jellyfin sync, and past releasing the
+	// mover lock. It is deliberately not the same fact as
+	// progress.Snapshot().Done: the moves finishing is not the end of the
+	// run, because NotifyJellyfinMoved then polls Jellyfin for up to its
+	// resolve timeout (minutes) while startApply's goroutine still holds
+	// the lock. Admitting a new apply on the strength of Done alone gets
+	// as far as AcquireLock and dies there.
+	active atomic.Bool
 }
 
 func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server, error) {

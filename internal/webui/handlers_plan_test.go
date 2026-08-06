@@ -3,7 +3,53 @@ package webui
 import (
 	"testing"
 	"time"
+
+	"github.com/vocoder/coldarr/internal/mover"
+	"github.com/vocoder/coldarr/internal/planner"
 )
+
+// TestApplyInFlight_CoversPostMoveJellyfinSync pins the window this used to
+// get wrong: after the last move lands, startApply's goroutine still holds
+// the mover lock while it re-resolves and refreshes each moved item in
+// Jellyfin, which can take minutes. Keying "is an apply running" off the
+// moves alone let the Plan page invite a click - and the scheduler build a
+// whole plan - only to fail on AcquireLock with "another apply is already
+// running", contradicting what the page had just said.
+func TestApplyInFlight_CoversPostMoveJellyfinSync(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, "", "", false)
+
+	// An empty plan finishes its (zero) moves immediately, which is exactly
+	// the state under test: moves done, run not yet over.
+	progress := (&mover.Movers{}).Apply(&planner.Plan{}, nil)
+	progress.Wait()
+
+	run := &applyRun{progress: progress}
+	run.active.Store(true)
+	srv.applyMu.Lock()
+	srv.currentRun = run
+	srv.applyMu.Unlock()
+
+	if !progress.Snapshot().Done {
+		t.Fatal("test setup: expected an empty plan's moves to be done")
+	}
+	if !srv.applyInFlight() {
+		t.Fatal("a run still syncing Jellyfin must count as in flight - it still holds the mover lock")
+	}
+
+	status := srv.currentApplyStatus()
+	if !status.Running || !status.SyncingJellyfin {
+		t.Fatalf("expected the page to report the Jellyfin sync phase, got %+v", status)
+	}
+
+	run.active.Store(false)
+	if srv.applyInFlight() {
+		t.Fatal("a fully finished run must not count as in flight")
+	}
+	if status := srv.currentApplyStatus(); status.Running || status.SyncingJellyfin {
+		t.Fatalf("expected a finished run to report neither running nor syncing, got %+v", status)
+	}
+}
 
 // TestCurrentApplyStatus_HidesResultPastTTL covers the real complaint this
 // exists for: a finished apply's result card must not sit pinned to the

@@ -165,10 +165,7 @@ func parseIntOrZero(s string) int {
 // it unattended - identical effect to a manual "Apply this plan" click.
 // Only called from tick() when scheduler.Due says it's time.
 func (s *Server) runScheduledPlan(now time.Time) {
-	s.applyMu.Lock()
-	inFlight := s.currentRun != nil && !s.currentRun.progress.Snapshot().Done
-	s.applyMu.Unlock()
-	if inFlight {
+	if s.applyInFlight() {
 		log.Printf("scheduler: run-plan is due, but an apply is already in flight - skipping this tick, will retry next tick")
 		return
 	}
