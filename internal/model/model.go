@@ -20,6 +20,12 @@ type TierRole string
 const (
 	RoleHot  TierRole = "hot"
 	RoleCold TierRole = "cold"
+
+	// DefaultHotMaxUsedPercent is the reclaim ceiling used for a hot tier
+	// whose max_used_percent is left unset. It lives with the tier model so
+	// planning and every UI/reporting surface can describe the same effective
+	// policy without each carrying its own copy of the default.
+	DefaultHotMaxUsedPercent = 97.0
 )
 
 // Tier is a named storage policy applied to one or more physical paths.
@@ -55,6 +61,16 @@ type Tier struct {
 	// unmounted and Coldarr silently writing (or planning to write)
 	// into the empty directory left behind on the root filesystem.
 	RequireMount bool `yaml:"require_mount"`
+}
+
+// EffectiveMaxUsedPercent returns the tier's configured hard ceiling. A hot
+// tier may leave max_used_percent unset to select the built-in reclaim
+// ceiling; cold tiers always use their explicitly configured value.
+func (t Tier) EffectiveMaxUsedPercent() float64 {
+	if t.Role == RoleHot && t.MaxUsedPercent == 0 {
+		return DefaultHotMaxUsedPercent
+	}
+	return t.MaxUsedPercent
 }
 
 // AcceptsMediaType reports whether this tier is configured to hold the

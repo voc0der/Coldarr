@@ -4,8 +4,8 @@
 // usage by moving every cold-eligible item currently on hot storage,
 // limited only by how much room cold destinations have. Hot destinations
 // still respect a ceiling when accepting a reclaim (see
-// defaultHotMaxUsedPercent) - "runoff" means not actively packed toward a
-// level, not "safe to fill completely."
+// model.DefaultHotMaxUsedPercent) - "runoff" means not actively packed
+// toward a level, not "safe to fill completely."
 package planner
 
 import (
@@ -55,19 +55,23 @@ type MoveEntry struct {
 	FromPath string
 	ToTier   string
 	ToPath   string
-	// Phase is a strictly increasing sequence number Build assigns as it
-	// resolves mutual space dependencies between reclaims and fills (see
-	// the comment above the round loop in Build): an entry with a lower
-	// Phase may free space (or otherwise change conditions) that a
-	// higher-Phase entry's placement depended on. The mover (see
+	// Phase is a nondecreasing batch number Build assigns as it resolves
+	// mutual space dependencies between reclaims and fills (see the
+	// comment above the round loop in Build): entries in the same phase
+	// are independent and may run concurrently; a lower phase may free
+	// space a higher-phase entry's placement depended on. The mover (see
 	// internal/mover) executes phases in ascending order, waiting for
 	// each one to fully land on disk before starting the next - it
 	// cannot just group by direction, since a later round's reclaim can
 	// depend on an earlier round's fill having actually happened, not
 	// merely having been planned.
-	Phase   int
-	Score   float64
-	Reasons []string
+	Phase int
+	// MaxUsedPercent is the destination's effective hard ceiling at plan
+	// time. Keeping it on the entry lets the mover reject a destination
+	// whose real usage drifted past the same limit before execution.
+	MaxUsedPercent float64
+	Score          float64
+	Reasons        []string
 }
 
 type Plan struct {
@@ -99,10 +103,11 @@ func Build(in Input) (*Plan, error) {
 			continue
 		}
 		for _, path := range tier.Paths {
-			hotPaths[path] = tier
 			if _, ok := working[path]; !ok {
 				plan.Warnings = append(plan.Warnings, fmt.Sprintf("skipping hot path %s: not available (failed existence/mount check)", path))
+				continue
 			}
+			hotPaths[path] = tier
 		}
 	}
 
@@ -112,23 +117,22 @@ func Build(in Input) (*Plan, error) {
 			continue
 		}
 		for _, path := range tier.Paths {
-			coldPaths[path] = tier
+			if _, ok := working[path]; ok {
+				coldPaths[path] = tier
+			}
 		}
 	}
 
 	// Reclaims (cold->hot, for items misplaced on cold - see
 	// misplacedOnCold) and fills (hot->cold, ordinary cold-eligible items
-	// - see coldCandidates) can each depend on space the other frees: a
-	// fill needs cold room a reclaim frees, and a reclaim needs hot room
-	// a fill frees. Neither candidate list is sorted by who depends on
-	// whom, so both passes run repeatedly in rounds against the same
-	// working usage, retrying whatever didn't fit last time, until a
-	// full round places nothing new. Since every still-pending candidate
-	// gets a genuine retry every round, nothing lands in a later round
-	// unless it truly couldn't have fit any earlier one - so the Phase
-	// each entry is stamped with (see MoveEntry.Phase) never
-	// over-serializes the mover's actual execution beyond what the real
-	// dependency requires.
+	// - see coldCandidates) can each depend on space the other frees. A
+	// phase may reserve room for several independent moves, but a move is
+	// never allowed to spend space another move in that same phase only
+	// promises to free: the mover executes a phase concurrently. Fills
+	// stop as soon as their completed phase can accommodate the current
+	// reclaim-wave goal, so the first newly safe hot-bound item runs
+	// immediately and later work is batched without being bunched behind
+	// every unrelated fill.
 	pendingReclaims := misplacedOnCold(in.Items, coldPaths)
 	pendingFills := coldCandidates(in.Items, hotPaths, in.History, cooldown, minMoveBytes, in.Now)
 
@@ -139,27 +143,43 @@ func Build(in Input) (*Plan, error) {
 	// future change broke that invariant.
 	maxRounds := len(pendingReclaims) + len(pendingFills) + 1
 	phase := 0
+	// The first reclaim wave runs as soon as one blocked item becomes
+	// placeable. Later wave goals grow by four, keeping hot-bound work
+	// responsive while limiting a large library to logarithmically many
+	// settle-and-wait boundaries rather than one per reclaim.
+	reclaimBatchGoal := 1
 	for round := 0; round < maxRounds; round++ {
 		var reclaimEntries, fillEntries []MoveEntry
 		var reclaimsProgressed, fillsProgressed bool
 
 		reclaimEntries, pendingReclaims, reclaimsProgressed = attemptReclaims(pendingReclaims, in.Tiers, working, volumeGroups, phase)
 		plan.Entries = append(plan.Entries, reclaimEntries...)
-		phase++
+		if reclaimsProgressed {
+			phase++
+			if reclaimBatchGoal < len(pendingReclaims) {
+				if reclaimBatchGoal > len(pendingReclaims)/4 {
+					reclaimBatchGoal = len(pendingReclaims)
+				} else {
+					reclaimBatchGoal *= 4
+				}
+			}
+		}
 
-		fillEntries, pendingFills, fillsProgressed = attemptFills(pendingFills, hotPaths, in.Tiers, working, volumeGroups, phase)
+		fillEntries, pendingFills, fillsProgressed = attemptFills(pendingFills, pendingReclaims, reclaimBatchGoal, hotPaths, in.Tiers, working, volumeGroups, phase)
 		plan.Entries = append(plan.Entries, fillEntries...)
-		phase++
+		if fillsProgressed {
+			phase++
+		}
 
 		if !reclaimsProgressed && !fillsProgressed {
 			break
 		}
 	}
 
-	// Whatever is still pending after a full round made no progress
-	// genuinely doesn't fit no matter the ordering - warn once, for the
-	// final leftovers only (not per-round, which would misreport
-	// candidates that go on to succeed in a later round).
+	// Whatever is still pending after a full round made no progress has no
+	// destination in the final projected state. Warn once for those final
+	// leftovers only (not per-round, which would misreport candidates that
+	// go on to succeed in a later round).
 	for _, r := range pendingReclaims {
 		plan.Warnings = append(plan.Warnings, fmt.Sprintf("no hot destination has room to move %q back (%s, %.2f GB): %s", r.Item.Item.Title, r.Item.Item.Type, gb(r.Item.Item.SizeBytes), r.Reason))
 	}
@@ -171,69 +191,247 @@ func Build(in Input) (*Plan, error) {
 	return plan, nil
 }
 
-// attemptReclaims tries to place every still-pending reclaim candidate
-// against the current working usage, stamping each successfully-placed
-// entry with phase (see MoveEntry.Phase). Returns the entries placed
-// this call, whichever candidates still have nowhere to go, and whether
-// any progress was made this call.
+// attemptReclaims places the largest feasible reclaim set in one phase (up to
+// the bounded search performed by allocateReclaims). Destination reservations
+// made in this call count immediately; source space is credited only to
+// working, for subsequent phases, because same-phase moves execute
+// concurrently.
 func attemptReclaims(pending []misplacedOnColdItem, tiers []model.Tier, working map[string]diskusage.Usage, volumeGroups map[string][]string, phase int) (entries []MoveEntry, stillPending []misplacedOnColdItem, progressed bool) {
-	for _, r := range pending {
-		destTier, destPath, ok := pickHotDestination(tiers, working, r.Item.Item.Type, r.Item.Item.SizeBytes)
-		if !ok {
-			stillPending = append(stillPending, r)
-			continue
-		}
-
+	placements, stillPending := allocateReclaims(pending, tiers, working, volumeGroups)
+	for _, placement := range placements {
+		r := pending[placement.candidateIndex]
 		entries = append(entries, MoveEntry{
-			Item:     r.Item.Item,
-			FromTier: r.FromTier.Name,
-			FromRole: r.FromTier.Role,
-			FromPath: r.Item.Item.RootFolderPath,
-			ToTier:   destTier.Name,
-			ToPath:   destPath,
-			Phase:    phase,
-			Reasons:  []string{r.Reason},
+			Item:           r.Item.Item,
+			FromTier:       r.FromTier.Name,
+			FromRole:       r.FromTier.Role,
+			FromPath:       r.Item.Item.RootFolderPath,
+			ToTier:         placement.destTier.Name,
+			ToPath:         placement.destPath,
+			Phase:          phase,
+			MaxUsedPercent: placement.destTier.EffectiveMaxUsedPercent(),
+			Reasons:        []string{r.Reason},
 		})
-		progressed = true
 
 		applyDeltaToVolume(working, volumeGroups, r.Item.Item.RootFolderPath, -r.Item.Item.SizeBytes)
-		applyDeltaToVolume(working, volumeGroups, destPath, r.Item.Item.SizeBytes)
+		applyDeltaToVolume(working, volumeGroups, placement.destPath, r.Item.Item.SizeBytes)
 	}
-	return entries, stillPending, progressed
+	return entries, stillPending, len(entries) > 0
 }
 
-// attemptFills tries to place every still-pending fill candidate against
-// the current working usage, stamping each successfully-placed entry
-// with phase (see MoveEntry.Phase). Returns the entries placed this
-// call, whichever candidates still have nowhere to go, and whether any
-// progress was made this call.
-func attemptFills(pending []ItemEval, hotPaths map[string]model.Tier, tiers []model.Tier, working map[string]diskusage.Usage, volumeGroups map[string][]string, phase int) (entries []MoveEntry, stillPending []ItemEval, progressed bool) {
-	for _, c := range pending {
+const reclaimAllocationSearchBudget = 50_000
+
+type reclaimPlacement struct {
+	candidateIndex int
+	destTier       model.Tier
+	destPath       string
+}
+
+// allocateReclaims seeds a solution with the fast constrained/largest-first
+// heuristic, then uses bounded backtracking to repair bin-packing mistakes.
+// A full feasible allocation terminates immediately; genuinely difficult
+// large batches cannot exceed reclaimAllocationSearchBudget search nodes.
+func allocateReclaims(pending []misplacedOnColdItem, tiers []model.Tier, usage map[string]diskusage.Usage, volumeGroups map[string][]string) ([]reclaimPlacement, []misplacedOnColdItem) {
+	best := greedyReclaimPlacements(pending, tiers, usage, volumeGroups)
+	if len(best) < len(pending) {
+		order := make([]int, 0, len(pending))
+		optionCounts := make([]int, len(pending))
+		for i, candidate := range pending {
+			optionCounts[i] = len(hotDestinationOptions(tiers, usage, candidate.Item.Item.Type, candidate.Item.Item.SizeBytes))
+			// Capacity only shrinks during a reclaim phase, so a candidate
+			// with no option now can never become placeable in this search.
+			if optionCounts[i] > 0 {
+				order = append(order, i)
+			}
+		}
+		sort.SliceStable(order, func(i, j int) bool {
+			left, right := optionCounts[order[i]], optionCounts[order[j]]
+			switch {
+			case left != right:
+				return left < right
+			default:
+				return pending[order[i]].Item.Item.SizeBytes > pending[order[j]].Item.Item.SizeBytes
+			}
+		})
+
+		capacity := copyUsage(usage)
+		current := make([]reclaimPlacement, 0, len(pending))
+		nodes := 0
+		var search func(int)
+		search = func(position int) {
+			if len(best) == len(order) || nodes >= reclaimAllocationSearchBudget {
+				return
+			}
+			nodes++
+			if len(current)+len(order)-position <= len(best) {
+				return
+			}
+			if position == len(order) {
+				best = append([]reclaimPlacement(nil), current...)
+				return
+			}
+
+			candidateIndex := order[position]
+			candidate := pending[candidateIndex]
+			options := hotDestinationOptions(tiers, capacity, candidate.Item.Item.Type, candidate.Item.Item.SizeBytes)
+			sort.SliceStable(options, func(i, j int) bool {
+				return options[i].remainingRoom < options[j].remainingRoom
+			})
+			for _, option := range options {
+				current = append(current, reclaimPlacement{candidateIndex: candidateIndex, destTier: option.tier, destPath: option.path})
+				applyDeltaToVolume(capacity, volumeGroups, option.path, candidate.Item.Item.SizeBytes)
+				search(position + 1)
+				applyDeltaToVolume(capacity, volumeGroups, option.path, -candidate.Item.Item.SizeBytes)
+				current = current[:len(current)-1]
+				if len(best) == len(order) || nodes >= reclaimAllocationSearchBudget {
+					return
+				}
+			}
+			search(position + 1)
+		}
+		search(0)
+	}
+
+	placed := make([]bool, len(pending))
+	for _, placement := range best {
+		placed[placement.candidateIndex] = true
+	}
+	stillPending := make([]misplacedOnColdItem, 0, len(pending)-len(best))
+	for i, candidate := range pending {
+		if !placed[i] {
+			stillPending = append(stillPending, candidate)
+		}
+	}
+	return best, stillPending
+}
+
+func greedyReclaimPlacements(pending []misplacedOnColdItem, tiers []model.Tier, usage map[string]diskusage.Usage, volumeGroups map[string][]string) []reclaimPlacement {
+	capacity := copyUsage(usage)
+	remaining := append([]misplacedOnColdItem(nil), pending...)
+	indices := make([]int, len(pending))
+	for i := range indices {
+		indices[i] = i
+	}
+
+	var placements []reclaimPlacement
+	for len(remaining) > 0 {
+		i, destTier, destPath, ok := nextReclaim(remaining, tiers, capacity)
+		if !ok {
+			break
+		}
+		placements = append(placements, reclaimPlacement{candidateIndex: indices[i], destTier: destTier, destPath: destPath})
+		applyDeltaToVolume(capacity, volumeGroups, destPath, remaining[i].Item.Item.SizeBytes)
+		remaining = append(remaining[:i], remaining[i+1:]...)
+		indices = append(indices[:i], indices[i+1:]...)
+	}
+	return placements
+}
+
+// attemptFills places fills until they are exhausted or until the completed
+// phase has enough room for the reclaim batch this fill phase can enable. As
+// with reclaims, same-phase destination reservations count immediately while
+// source frees become usable only by later phases.
+func attemptFills(pending []ItemEval, pendingReclaims []misplacedOnColdItem, reclaimBatchGoal int, hotPaths map[string]model.Tier, tiers []model.Tier, working map[string]diskusage.Usage, volumeGroups map[string][]string, phase int) (entries []MoveEntry, stillPending []ItemEval, progressed bool) {
+	reclaimTarget := reclaimBatchTarget(pending, pendingReclaims, reclaimBatchGoal, tiers, working, volumeGroups)
+	capacity := copyUsage(working)
+	for i, c := range pending {
 		fromTier := hotPaths[c.Item.RootFolderPath]
 
-		destTier, destPath, ok := pickDestination(tiers, working, c.Item.Type, c.Item.SizeBytes)
+		destTier, destPath, ok := pickDestination(tiers, capacity, c.Item.Type, c.Item.SizeBytes)
 		if !ok {
 			stillPending = append(stillPending, c)
 			continue
 		}
 
 		entries = append(entries, MoveEntry{
-			Item:     c.Item,
-			FromTier: fromTier.Name,
-			FromRole: fromTier.Role,
-			FromPath: c.Item.RootFolderPath,
-			ToTier:   destTier.Name,
-			ToPath:   destPath,
-			Phase:    phase,
-			Score:    c.Eval.Score,
-			Reasons:  c.Eval.Reasons,
+			Item:           c.Item,
+			FromTier:       fromTier.Name,
+			FromRole:       fromTier.Role,
+			FromPath:       c.Item.RootFolderPath,
+			ToTier:         destTier.Name,
+			ToPath:         destPath,
+			Phase:          phase,
+			MaxUsedPercent: destTier.EffectiveMaxUsedPercent(),
+			Score:          c.Eval.Score,
+			Reasons:        c.Eval.Reasons,
 		})
 		progressed = true
 
+		applyDeltaToVolume(capacity, volumeGroups, destPath, c.Item.SizeBytes)
 		applyDeltaToVolume(working, volumeGroups, c.Item.RootFolderPath, -c.Item.SizeBytes)
 		applyDeltaToVolume(working, volumeGroups, destPath, c.Item.SizeBytes)
+
+		if reclaimTarget > 0 && placeableReclaimCount(pendingReclaims, tiers, working, volumeGroups) >= reclaimTarget {
+			stillPending = append(stillPending, pending[i+1:]...)
+			break
+		}
 	}
 	return entries, stillPending, progressed
+}
+
+// reclaimBatchTarget calculates how many reclaims the subsequent phase could
+// place if every independently safe fill ran first, capped at the current
+// geometric wave goal. attemptFills stops once it reaches that target, leaving
+// additional fills for later instead of delaying hot-bound work for no gain.
+func reclaimBatchTarget(pendingFills []ItemEval, pendingReclaims []misplacedOnColdItem, reclaimBatchGoal int, tiers []model.Tier, usage map[string]diskusage.Usage, volumeGroups map[string][]string) int {
+	if len(pendingReclaims) == 0 {
+		return 0
+	}
+	capacity := copyUsage(usage)
+	projected := copyUsage(usage)
+	for _, fill := range pendingFills {
+		_, destPath, ok := pickDestination(tiers, capacity, fill.Item.Type, fill.Item.SizeBytes)
+		if !ok {
+			continue
+		}
+		applyDeltaToVolume(capacity, volumeGroups, destPath, fill.Item.SizeBytes)
+		applyDeltaToVolume(projected, volumeGroups, fill.Item.RootFolderPath, -fill.Item.SizeBytes)
+		applyDeltaToVolume(projected, volumeGroups, destPath, fill.Item.SizeBytes)
+	}
+	possible := placeableReclaimCount(pendingReclaims, tiers, projected, volumeGroups)
+	if possible > reclaimBatchGoal {
+		return reclaimBatchGoal
+	}
+	return possible
+}
+
+func placeableReclaimCount(pending []misplacedOnColdItem, tiers []model.Tier, usage map[string]diskusage.Usage, volumeGroups map[string][]string) int {
+	capacity := copyUsage(usage)
+	remaining := append([]misplacedOnColdItem(nil), pending...)
+	placed := 0
+	for len(remaining) > 0 {
+		i, _, path, ok := nextReclaim(remaining, tiers, capacity)
+		if !ok {
+			break
+		}
+		sizeBytes := remaining[i].Item.Item.SizeBytes
+		applyDeltaToVolume(capacity, volumeGroups, path, sizeBytes)
+		remaining = append(remaining[:i], remaining[i+1:]...)
+		placed++
+	}
+	return placed
+}
+
+func nextReclaim(pending []misplacedOnColdItem, tiers []model.Tier, usage map[string]diskusage.Usage) (int, model.Tier, string, bool) {
+	bestIndex := -1
+	bestOptions := 0
+	var bestTier model.Tier
+	var bestPath string
+
+	for i, candidate := range pending {
+		options := hotDestinationOptions(tiers, usage, candidate.Item.Item.Type, candidate.Item.Item.SizeBytes)
+		if len(options) == 0 {
+			continue
+		}
+		if bestIndex >= 0 && (len(options) > bestOptions ||
+			(len(options) == bestOptions && candidate.Item.Item.SizeBytes <= pending[bestIndex].Item.Item.SizeBytes)) {
+			continue
+		}
+		bestIndex = i
+		bestOptions = len(options)
+		bestTier, bestPath = bestHotDestination(options)
+	}
+
+	return bestIndex, bestTier, bestPath, bestIndex >= 0
 }
 
 // misplacedOnColdItem pairs an item that needs to be pulled back from cold
@@ -267,12 +465,14 @@ type misplacedOnColdItem struct {
 // Not gated by cooldown or minimum move size: unlike the coldness ranking
 // below, this is a correctness fix, not a stylistic rebalance, and it's a
 // one-time transition per item (once it's released, or upgraded to meet
-// its cutoff, it no longer matches either condition).
+// its cutoff, it no longer matches either condition). Protected remains
+// absolute, however: active imports, never-move tags, and other protected
+// states must not be reclaimed even if their raw metadata is grow-risk.
 func misplacedOnCold(items []ItemEval, coldPaths map[string]model.Tier) []misplacedOnColdItem {
 	var out []misplacedOnColdItem
 	for _, it := range items {
 		fromTier, onColdPath := coldPaths[it.Item.RootFolderPath]
-		if !onColdPath {
+		if !onColdPath || it.Eval.Decision == scoring.Protected {
 			continue
 		}
 		switch {
@@ -349,6 +549,9 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 			if u.TotalBytes == 0 {
 				continue
 			}
+			if !hasWritableSpace(u, sizeBytes) {
+				continue
+			}
 			projected := applyDelta(u, sizeBytes)
 			if projected.UsedPercent > ceiling(tier) {
 				continue
@@ -368,41 +571,43 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 	return bestTier, bestPath, found
 }
 
-// defaultHotMaxUsedPercent is the ceiling pickHotDestination enforces on a
-// hot tier that hasn't set its own MaxUsedPercent (the documented default
-// of zero). Reclaim exists to give a grow-risk item room to actually grow
-// - packing its destination to literal 100% used would defeat that (no
-// headroom left for the item to grow into, or for the filesystem's own
-// overhead and in-flight writes) and risks real filesystem trouble
-// besides. 97% leaves meaningful headroom while still letting reclaim
-// work on the tight, mostly-full setups Coldarr targets.
-const defaultHotMaxUsedPercent = 97.0
-
 // pickHotDestination finds a hot-tier path with enough free room to accept
-// sizeBytes, for moving an upcoming item back off cold storage (see
-// upcomingOnCold). Hot storage is never proactively packed toward a usage
+// sizeBytes, for moving a grow-risk item back off cold storage (see
+// misplacedOnCold). Hot storage is never proactively packed toward a usage
 // level the way cold tiers are packed toward TargetUsedPercent - but a
 // destination's projected usage still may not cross its ceiling: the
-// tier's own MaxUsedPercent if it has set one, else
-// defaultHotMaxUsedPercent. Among viable paths, prefers whichever
-// currently has the most free space, spreading rather than concentrating.
+// tier's own MaxUsedPercent if it has set one, else the model default.
+// Among viable paths, it chooses the tightest fit, preserving larger slots
+// for reclaims that cannot fit anywhere else.
 func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) (model.Tier, string, bool) {
-	var bestTier model.Tier
-	var bestPath string
-	var bestFree uint64
-	found := false
+	options := hotDestinationOptions(tiers, usage, mt, sizeBytes)
+	if len(options) == 0 {
+		return model.Tier{}, "", false
+	}
+	tier, path := bestHotDestination(options)
+	return tier, path, true
+}
+
+type hotDestinationOption struct {
+	tier          model.Tier
+	path          string
+	remainingRoom float64
+}
+
+func hotDestinationOptions(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) []hotDestinationOption {
+	var options []hotDestinationOption
 
 	for _, tier := range tiers {
 		if tier.Role != model.RoleHot || !tier.AcceptsMediaType(mt) {
 			continue
 		}
-		ceiling := tier.MaxUsedPercent
-		if ceiling <= 0 {
-			ceiling = defaultHotMaxUsedPercent
-		}
+		ceiling := tier.EffectiveMaxUsedPercent()
 		for _, path := range tier.Paths {
 			u, ok := usage[path]
 			if !ok || u.TotalBytes == 0 {
+				continue
+			}
+			if !hasWritableSpace(u, sizeBytes) {
 				continue
 			}
 			projected := applyDelta(u, sizeBytes)
@@ -412,16 +617,42 @@ func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt
 			if projected.UsedBytes > u.TotalBytes {
 				continue
 			}
-			if !found || u.FreeBytes > bestFree {
-				bestFree = u.FreeBytes
-				bestTier = tier
-				bestPath = path
-				found = true
+			writableRoom := float64(u.FreeBytes)
+			ceilingRoom := float64(u.UsedBytes+u.FreeBytes)*ceiling/100 - float64(u.UsedBytes)
+			if ceilingRoom < writableRoom {
+				writableRoom = ceilingRoom
 			}
+			options = append(options, hotDestinationOption{
+				tier:          tier,
+				path:          path,
+				remainingRoom: writableRoom - float64(sizeBytes),
+			})
 		}
 	}
 
-	return bestTier, bestPath, found
+	return options
+}
+
+func bestHotDestination(options []hotDestinationOption) (model.Tier, string) {
+	best := options[0]
+	for _, option := range options[1:] {
+		if option.remainingRoom < best.remainingRoom {
+			best = option
+		}
+	}
+	return best.tier, best.path
+}
+
+func hasWritableSpace(u diskusage.Usage, sizeBytes int64) bool {
+	return sizeBytes >= 0 && uint64(sizeBytes) <= u.FreeBytes
+}
+
+func copyUsage(usage map[string]diskusage.Usage) map[string]diskusage.Usage {
+	cloned := make(map[string]diskusage.Usage, len(usage))
+	for path, u := range usage {
+		cloned[path] = u
+	}
+	return cloned
 }
 
 // groupByVolume builds, for every path with a known device ID, the full

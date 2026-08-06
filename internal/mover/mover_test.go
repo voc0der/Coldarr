@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +160,27 @@ func TestVerifyRoom_AllowsWhenRealFreeSpaceIsSufficient(t *testing.T) {
 
 	if err := m.verifyRoom(entry); err != nil {
 		t.Fatalf("expected verifyRoom to allow a move with sufficient real free space, got %v", err)
+	}
+}
+
+func TestVerifyRoom_RejectsWhenMoveWouldExceedDestinationCeiling(t *testing.T) {
+	m := &Movers{
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 80, FreeBytes: 20}, nil
+		},
+	}
+	entry := planner.MoveEntry{
+		Item:           model.MediaItem{Title: "Ceiling Breaker", SizeBytes: 10},
+		ToPath:         "/hot",
+		MaxUsedPercent: 85,
+	}
+
+	err := m.verifyRoom(entry)
+	if err == nil {
+		t.Fatal("expected verifyRoom to reject a move that has raw room but would exceed the destination's hard ceiling")
+	}
+	if !strings.Contains(err.Error(), "90.0% used") || !strings.Contains(err.Error(), "85.0% hard ceiling") {
+		t.Fatalf("expected the failure to report projected usage and the hard ceiling, got %v", err)
 	}
 }
 
@@ -602,6 +624,379 @@ func TestApply_ThreePhasesExecuteInStrictOrder(t *testing.T) {
 	i0, i1, i2 := indexOf(finalCalls, "1@/p0"), indexOf(finalCalls, "2@/p1"), indexOf(finalCalls, "3@/p2")
 	if i0 < 0 || i1 < 0 || i2 < 0 || i0 >= i1 || i1 >= i2 {
 		t.Fatalf("expected strict phase order 0 < 1 < 2, got %v", finalCalls)
+	}
+}
+
+// TestApply_FailedPhaseBlocksLaterPhases covers the failure half of phase
+// ordering: waiting for an earlier phase to finish is not enough. Every
+// physical move in it must land, because a later phase may only fit after
+// the earlier moves change the real disk usage. Here Radarr rejects phase
+// 0, so phase 1 must never be sent to Radarr at all.
+func TestApply_FailedPhaseBlocksLaterPhases(t *testing.T) {
+	var mu sync.Mutex
+	var moveIDs []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v3/movie/editor" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var req struct {
+			MovieIDs []int `json:"movieIds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		moveIDs = append(moveIDs, req.MovieIDs...)
+		mu.Unlock()
+
+		if len(req.MovieIDs) > 0 && req.MovieIDs[0] == 1 {
+			http.Error(w, "move rejected", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:  arrapi.NewRadarrClient(srv.URL, "key"),
+		History: hist,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Failed prerequisite", SizeBytes: 10}, ToPath: "/hot", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Dependent fill", SizeBytes: 10}, ToPath: "/cold", Phase: 1},
+	}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	gotMoveIDs := append([]int(nil), moveIDs...)
+	mu.Unlock()
+	if len(gotMoveIDs) != 1 || gotMoveIDs[0] != 1 {
+		t.Fatalf("expected only phase 0 to be sent to Radarr, got move IDs %v", gotMoveIDs)
+	}
+
+	snap := progress.Snapshot()
+	if snap.Entries[0].Status != StatusFailed {
+		t.Fatalf("expected rejected phase-0 move to fail, got %+v", snap.Entries[0])
+	}
+	if snap.Entries[1].Status != StatusFailed || !strings.Contains(snap.Entries[1].Err, "not attempted: prerequisite phase 0 failed") {
+		t.Fatalf("expected phase-1 move to be marked not attempted because its prerequisite failed, got %+v", snap.Entries[1])
+	}
+}
+
+// TestApply_AmbiguousCommandErrorStopsDestinationQueue covers a lost Arr
+// response after the complete editor request was received. Coldarr cannot
+// know whether Arr started the transfer before the connection disappeared,
+// so it must block both the rest of that destination volume's queue and
+// phases whose capacity assumptions depend on this move.
+func TestApply_AmbiguousCommandErrorStopsDestinationQueue(t *testing.T) {
+	var mu sync.Mutex
+	var moveIDs []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v3/movie/editor" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var req struct {
+			MovieIDs []int `json:"movieIds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		moveIDs = append(moveIDs, req.MovieIDs...)
+		mu.Unlock()
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("test server does not support connection hijacking")
+			return
+		}
+		conn, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("hijacking response connection: %v", err)
+			return
+		}
+		_ = conn.Close() // lose the response after the request was received
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+	m := &Movers{
+		Radarr:  arrapi.NewRadarrClient(srv.URL, "key"),
+		History: hist,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Ambiguous command", SizeBytes: 10}, ToPath: "/shared", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Same-volume follower", SizeBytes: 10}, ToPath: "/shared", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 3, Title: "Dependent phase", SizeBytes: 10}, ToPath: "/other", Phase: 1},
+	}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	gotMoveIDs := append([]int(nil), moveIDs...)
+	mu.Unlock()
+	if len(gotMoveIDs) != 1 || gotMoveIDs[0] != 1 {
+		t.Fatalf("expected only the ambiguous first command to reach Radarr, got move IDs %v", gotMoveIDs)
+	}
+
+	snap := progress.Snapshot()
+	if snap.Entries[0].Status != StatusFailed {
+		t.Fatalf("expected the command with a lost response to fail visibly, got %+v", snap.Entries[0])
+	}
+	if snap.Entries[1].Status != StatusFailed || !strings.Contains(snap.Entries[1].Err, "may still be running") {
+		t.Fatalf("expected the ambiguous command to stop its destination queue, got %+v", snap.Entries[1])
+	}
+	if snap.Entries[2].Status != StatusFailed || !strings.Contains(snap.Entries[2].Err, "not attempted: prerequisite phase 0 failed") {
+		t.Fatalf("expected the ambiguous command to block dependent phases, got %+v", snap.Entries[2])
+	}
+}
+
+// TestApply_HistoryFailureDoesNotBlockDependentPhase distinguishes a
+// post-landing bookkeeping failure from an unmet physical prerequisite.
+// Phase 0 is confirmed at its destination but cannot persist history, so
+// it remains visibly Failed. Its capacity change is nevertheless real,
+// and phase 1 must be allowed to execute.
+func TestApply_HistoryFailureDoesNotBlockDependentPhase(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	// Load succeeds while the parent is absent, then a regular file at
+	// that parent path makes the first Append's MkdirAll fail. Once phase
+	// 0 reports that failure, replace it with a directory so phase 1 can
+	// demonstrate a normal successful completion.
+	historyParent := t.TempDir() + "/history-parent"
+	hist, err := history.Load(historyParent + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+	if err := os.WriteFile(historyParent, []byte("blocks history directory"), 0o600); err != nil {
+		t.Fatalf("creating history blocker: %v", err)
+	}
+
+	phase1Gate := make(chan struct{})
+	var releaseOnce sync.Once
+	releasePhase1 := func() { releaseOnce.Do(func() { close(phase1Gate) }) }
+	defer releasePhase1()
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			if path == "/phase1" {
+				<-phase1Gate
+			}
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Landed, history failed", SizeBytes: 10}, ToPath: "/phase0", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Capacity dependent", SizeBytes: 10}, ToPath: "/phase1", Phase: 1},
+	}}
+
+	progress := m.Apply(plan, nil)
+	waitFor(t, func() bool {
+		return progress.Snapshot().Entries[0].Status == StatusFailed
+	})
+
+	first := progress.Snapshot().Entries[0]
+	if !strings.Contains(first.Err, "moved, but recording history failed") {
+		t.Fatalf("expected phase 0's history failure to remain visible, got %+v", first)
+	}
+	if err := os.Remove(historyParent); err != nil {
+		t.Fatalf("removing history blocker: %v", err)
+	}
+	if err := os.Mkdir(historyParent, 0o750); err != nil {
+		t.Fatalf("creating history directory: %v", err)
+	}
+	releasePhase1()
+	progress.Wait()
+
+	snap := progress.Snapshot()
+	if snap.Entries[0].Status != StatusFailed {
+		t.Fatalf("expected phase 0 to retain its visible history failure, got %+v", snap.Entries[0])
+	}
+	if snap.Entries[1].Status != StatusDone {
+		t.Fatalf("expected landed phase 0 to unlock phase 1 despite its history failure, got %+v", snap.Entries[1])
+	}
+
+	mu.Lock()
+	gotCalls := append([]string(nil), callOrder...)
+	mu.Unlock()
+	if i0, i1 := indexOf(gotCalls, "1@/phase0"), indexOf(gotCalls, "2@/phase1"); i0 < 0 || i1 <= i0 {
+		t.Fatalf("expected both phases to execute in order, got %v", gotCalls)
+	}
+}
+
+// TestApply_SettleStatFailureBlocksDependentPhase proves that accepting
+// an Arr command is not success by itself. If the mover loses the ability
+// to observe the destination immediately afterward, the first entry is
+// reported as accepted-but-unconfirmed; neither the rest of its physical
+// destination queue nor a dependent phase may be started.
+func TestApply_SettleStatFailureBlocksDependentPhase(t *testing.T) {
+	var mu sync.Mutex
+	var moveIDs []int
+	statCalls := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v3/movie/editor" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var req struct {
+			MovieIDs []int `json:"movieIds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		moveIDs = append(moveIDs, req.MovieIDs...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			statCalls++
+			if statCalls <= 2 {
+				// verifyRoom before Radarr accepts the move, then
+				// settle's initial baseline immediately afterward.
+				return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+			}
+			// The first polling stat during settle fails.
+			return diskusage.Usage{}, fmt.Errorf("destination unavailable")
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Unobservable move", SizeBytes: 10}, ToPath: "/hot", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 3, Title: "Same-volume follower", SizeBytes: 10}, ToPath: "/hot", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Dependent fill", SizeBytes: 10}, ToPath: "/cold", Phase: 1},
+	}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	gotMoveIDs := append([]int(nil), moveIDs...)
+	mu.Unlock()
+	if len(gotMoveIDs) != 1 || gotMoveIDs[0] != 1 {
+		t.Fatalf("expected only the accepted phase-0 command, got move IDs %v", gotMoveIDs)
+	}
+
+	snap := progress.Snapshot()
+	if snap.Entries[0].Status != StatusFailed || !strings.Contains(snap.Entries[0].Err, "move command was accepted") || !strings.Contains(snap.Entries[0].Err, "destination unavailable") {
+		t.Fatalf("expected an explicit accepted-but-unconfirmed stat failure, got %+v", snap.Entries[0])
+	}
+	if snap.Entries[1].Status != StatusFailed || !strings.Contains(snap.Entries[1].Err, "may still be running") {
+		t.Fatalf("expected the same-volume queue to stop after an unconfirmed transfer, got %+v", snap.Entries[1])
+	}
+	if snap.Entries[2].Status != StatusFailed || !strings.Contains(snap.Entries[2].Err, "not attempted: prerequisite phase 0 failed") {
+		t.Fatalf("expected dependent phase to be marked not attempted, got %+v", snap.Entries[2])
+	}
+	if got := hist.All(); len(got) != 0 {
+		t.Fatalf("an unconfirmed move must not be recorded in history, got %+v", got)
+	}
+}
+
+// TestApply_UnconfirmedSettleTimeoutBlocksDependentPhase exercises the
+// other settle failure mode: disk stats remain readable, but Radarr never
+// reports the item at its destination. Exhausting SettleMaxWait must be a
+// visible failure, not an implicit success that unlocks the next phase.
+func TestApply_UnconfirmedSettleTimeoutBlocksDependentPhase(t *testing.T) {
+	var mu sync.Mutex
+	var moveIDs []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v3/movie/editor":
+			var req struct {
+				MovieIDs []int `json:"movieIds"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			moveIDs = append(moveIDs, req.MovieIDs...)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/movie/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "sizeOnDisk": 10, "path": "/still/on/source"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		SettleMaxWait:       5 * time.Millisecond,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Never confirmed", SizeBytes: 10}, ToPath: "/hot", Phase: 0},
+		{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Dependent fill", SizeBytes: 10}, ToPath: "/cold", Phase: 1},
+	}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	gotMoveIDs := append([]int(nil), moveIDs...)
+	mu.Unlock()
+	if len(gotMoveIDs) != 1 || gotMoveIDs[0] != 1 {
+		t.Fatalf("expected only phase 0 to be sent to Radarr, got move IDs %v", gotMoveIDs)
+	}
+
+	snap := progress.Snapshot()
+	if snap.Entries[0].Status != StatusFailed || !strings.Contains(snap.Entries[0].Err, "could not be confirmed within") {
+		t.Fatalf("expected an explicit settle-timeout failure, got %+v", snap.Entries[0])
+	}
+	if snap.Entries[1].Status != StatusFailed || !strings.Contains(snap.Entries[1].Err, "not attempted: prerequisite phase 0 failed") {
+		t.Fatalf("expected dependent phase to be marked not attempted, got %+v", snap.Entries[1])
+	}
+	if got := hist.All(); len(got) != 0 {
+		t.Fatalf("an unconfirmed move must not be recorded in history, got %+v", got)
 	}
 }
 

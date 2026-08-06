@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,13 +367,19 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 			}
 		}
 
-		// target/max are only meaningful for cold tiers - hot storage is
-		// runoff, not something Coldarr steers toward a usage level.
-		if t.Role == model.RoleCold {
-			if t.MaxUsedPercent <= 0 || t.MaxUsedPercent > 100 {
+		// Hot storage has no target because it is runoff rather than a level
+		// Coldarr actively steers toward. It does still have a hard ceiling
+		// for reclaims: zero selects the built-in default, while a positive
+		// value explicitly overrides it.
+		if t.Role == model.RoleHot {
+			if t.MaxUsedPercent != 0 && !validUsedPercent(t.MaxUsedPercent) {
+				return fmt.Errorf("tier %q: max_used_percent must be 0 (default) or in (0, 100], got %v", t.Name, t.MaxUsedPercent)
+			}
+		} else {
+			if !validUsedPercent(t.MaxUsedPercent) {
 				return fmt.Errorf("tier %q: max_used_percent must be in (0, 100], got %v", t.Name, t.MaxUsedPercent)
 			}
-			if t.TargetUsedPercent <= 0 || t.TargetUsedPercent > t.MaxUsedPercent {
+			if !validUsedPercent(t.TargetUsedPercent) || t.TargetUsedPercent > t.MaxUsedPercent {
 				return fmt.Errorf("tier %q: target_used_percent must be in (0, max_used_percent], got %v", t.Name, t.TargetUsedPercent)
 			}
 		}
@@ -388,4 +395,8 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 	}
 
 	return nil
+}
+
+func validUsedPercent(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 && v <= 100
 }

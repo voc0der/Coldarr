@@ -29,21 +29,26 @@ func fmtGBu(b uint64) string {
 }
 
 // TierUsage prints one row per configured path: role, tier, target/max
-// thresholds (cold tiers only - hot storage isn't steered toward a usage
-// level), and current usage, or the reason a path is being skipped. A path
+// thresholds, and current usage, or the reason a path is being skipped.
+// Hot tiers have no target, but their effective reclaim ceiling is still
+// shown so an operator can see why a hot-bound move may have to wait. A path
 // that's the same physical volume as another configured path (however
-// differently named) is flagged - Coldarr treats their capacity as
-// shared, and moving into one affects how much room the other has.
+// differently named) is flagged - Coldarr treats their capacity as shared,
+// and moving into one affects how much room the other has.
 func TierUsage(w io.Writer, inv *engine.Inventory) {
 	tw := newTabwriter(w)
 	_, _ = fmt.Fprintln(tw, "TIER\tROLE\tPATH\tUSED\tFREE\tTOTAL\tUSED%\tTARGET%\tMAX%\tSTATUS")
 
 	// Stable order: tiers as configured, paths as configured.
 	for _, tier := range inv.Tiers {
-		targetCol, maxCol := "-", "-"
+		targetCol := "-"
+		maxCol := fmt.Sprintf("%.1f", tier.EffectiveMaxUsedPercent())
 		if tier.Role == model.RoleCold {
-			targetCol = fmt.Sprintf("%.0f", tier.TargetUsedPercent)
-			maxCol = fmt.Sprintf("%.0f", tier.MaxUsedPercent)
+			targetCol = fmt.Sprintf("%.1f", tier.TargetUsedPercent)
+		} else if tier.MaxUsedPercent == 0 {
+			maxCol += " (default)"
+		} else {
+			maxCol += " (configured)"
 		}
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]

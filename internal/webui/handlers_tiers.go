@@ -24,8 +24,10 @@ type tierPathStatus struct {
 }
 
 type tierListRow struct {
-	Tier  model.Tier
-	Paths []tierPathStatus
+	Tier                   model.Tier
+	Paths                  []tierPathStatus
+	EffectiveHotMaxPercent float64
+	UsesDefaultHotMax      bool
 }
 
 type tiersData struct {
@@ -89,6 +91,10 @@ func (s *Server) tierListRows() []tierListRow {
 	i := 0
 	for _, t := range cfg.Tiers {
 		row := tierListRow{Tier: t}
+		if t.Role == model.RoleHot {
+			row.EffectiveHotMaxPercent = t.EffectiveMaxUsedPercent()
+			row.UsesDefaultHotMax = t.MaxUsedPercent == 0
+		}
 		for range t.Paths {
 			row.Paths = append(row.Paths, entries[i].status)
 			i++
@@ -163,30 +169,46 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 		media = append(media, model.TV)
 	}
 
-	// target/max only apply to cold tiers; the hot-role form leaves these
-	// fields hidden and blank, so an empty value just means "not set"
-	// rather than a parse error. A genuinely malformed cold-tier value
-	// still gets caught by config.ValidateTiers's range check below.
-	target := parseFloatOrZero(r.FormValue("target_used_percent"))
-	max := parseFloatOrZero(r.FormValue("max_used_percent"))
+	tier := model.Tier{
+		Name:         name,
+		Role:         role,
+		Paths:        paths,
+		Media:        media,
+		RequireMount: r.FormValue("require_mount") == "on",
+	}
 
-	return model.Tier{
-		Name:              name,
-		Role:              role,
-		Paths:             paths,
-		Media:             media,
-		TargetUsedPercent: target,
-		MaxUsedPercent:    max,
-		RequireMount:      r.FormValue("require_mount") == "on",
-	}, nil
+	// The target only applies to cold tiers. Max applies to both: zero or a
+	// blank value on a hot tier selects the built-in default, while cold
+	// tiers require an explicit positive value. Range errors are reported
+	// by ValidateTiers, but malformed numbers must not silently become zero.
+	var target float64
+	if role == model.RoleCold {
+		var err error
+		target, err = parseOptionalPercent(r.FormValue("target_used_percent"), "target used percent")
+		if err != nil {
+			return tier, err
+		}
+	}
+	max, err := parseOptionalPercent(r.FormValue("max_used_percent"), "max used percent")
+	if err != nil {
+		return tier, err
+	}
+
+	tier.TargetUsedPercent = target
+	tier.MaxUsedPercent = max
+	return tier, nil
 }
 
-func parseFloatOrZero(s string) float64 {
+func parseOptionalPercent(raw, label string) (float64, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, nil
+	}
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("%s must be a number", label)
 	}
-	return v
+	return v, nil
 }
 
 func tierFormFromRequest(title string, editing bool, origName string, r *http.Request, tier model.Tier, errMsg string) tierFormData {
