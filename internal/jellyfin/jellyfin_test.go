@@ -247,6 +247,44 @@ func TestClient_NotifyMoved_UnresolvedItemIsReported(t *testing.T) {
 	}
 }
 
+// TestClient_NotifyMoved_SameTitledItemsReportedSeparately covers a real
+// library shape: two distinct items sharing a title (a remake, or the same
+// show tracked under two roots). They are different files in different
+// folders, so both can fail independently and an operator needs to see
+// both - keying the failure set by title silently collapsed them into one,
+// under-reporting how much artwork was left stale.
+func TestClient_NotifyMoved_SameTitledItemsReportedSeparately(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Library/Media/Updated":
+			w.WriteHeader(http.StatusNoContent)
+		case "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": []}`))
+		default:
+			t.Errorf("nothing should be refreshed, got %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).NotifyMoved([]MovedItem{
+		{Title: "The Thing", OldPath: "/hot/The Thing (1982)", NewPath: "/cold/The Thing (1982)"},
+		{Title: "The Thing", OldPath: "/hot/The Thing (2011)", NewPath: "/cold/The Thing (2011)"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when neither item appears at its new path")
+	}
+	if !strings.Contains(err.Error(), "2 item(s)") {
+		t.Errorf("both same-titled items must be counted, got: %v", err)
+	}
+	for _, want := range []string{"/cold/The Thing (1982)", "/cold/The Thing (2011)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q so it's actionable, got: %v", want, err)
+		}
+	}
+}
+
 // fakeJellyfinServer returns a server with two users, where a Movie is
 // favorited only by user 2 and a Series is visible to both - exercising
 // FavoritePaths/LibraryItemIDs' per-user union-and-dedup logic. The Movie's

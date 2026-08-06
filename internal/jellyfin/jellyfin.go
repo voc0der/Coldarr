@@ -477,6 +477,11 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 		timeout = 3 * time.Minute
 	}
 
+	// Keyed by the item's new path, the same key space as pending, rather
+	// than by title: two items can legitimately share a title (a remake, or
+	// the same show tracked in two libraries), and keying by it would
+	// collapse them into one entry - under-reporting both the count and
+	// which items were actually left with stale artwork.
 	failures := map[string]error{}
 	deadline := time.Now().Add(timeout)
 	for {
@@ -499,7 +504,7 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 						// stale. Leave it pending for the next round.
 						continue
 					}
-					failures[item.Title] = err
+					failures[path] = fmt.Errorf("%s: %w", item.Title, err)
 				}
 				delete(pending, path)
 			}
@@ -514,19 +519,19 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 		time.Sleep(interval)
 	}
 
-	for _, item := range pending {
-		failures[item.Title] = fmt.Errorf("no Jellyfin item appeared at %s within %s", item.NewPath, timeout)
+	for path, item := range pending {
+		failures[path] = fmt.Errorf("%s: no Jellyfin item appeared at %s within %s", item.Title, item.NewPath, timeout)
 	}
 	if len(failures) == 0 {
 		return nil
 	}
 
-	titles := make([]string, 0, len(failures))
-	for title := range failures {
-		titles = append(titles, fmt.Sprintf("%s (%v)", title, failures[title]))
+	msgs := make([]string, 0, len(failures))
+	for _, err := range failures {
+		msgs = append(msgs, err.Error())
 	}
-	sort.Strings(titles)
-	return fmt.Errorf("could not refresh %d item(s) in Jellyfin: %s", len(failures), strings.Join(titles, "; "))
+	sort.Strings(msgs)
+	return fmt.Errorf("could not refresh %d item(s) in Jellyfin: %s", len(failures), strings.Join(msgs, "; "))
 }
 
 // ServerID returns this Jellyfin server's own ID, needed for the
