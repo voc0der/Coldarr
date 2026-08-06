@@ -40,8 +40,15 @@ and releasing see [DEVELOPMENT.md](DEVELOPMENT.md).
    API returns once the operation is queued, not once the bytes are on
    disk, so trusting it alone isn't enough. Only one apply can run at a
    time, system-wide, enforced by a crash-safe lock. Every completed move
-   is logged to the history file with its real completion time, then
-   Jellyfin is asked to refresh once the whole run finishes.
+   is logged to the history file with its real completion time. Once the
+   whole run finishes, Coldarr tells Jellyfin about each moved item
+   individually: it reports the vacated and new paths, waits for Jellyfin
+   to surface the item at its new path, then forces a full metadata and
+   image refresh on it. A moved item gets a brand-new Jellyfin item ID
+   (Jellyfin derives IDs from the file path), and a plain library scan
+   only fills in artwork it considers *missing* - so without this an item
+   can land in the new tier with no poster at all. A whole-library scan is
+   still used as a fallback if an item can't be found at its new path.
 
 Nothing above ever happens without `report`/`plan` (or the GUI's dashboard
 and plan page) being read-only, or without confirming before an apply
@@ -228,4 +235,6 @@ before it builds a plan. If the fetch fails for any reason, inventory and
 planning fail closed: no manual, CLI, or scheduled apply can start without
 favorite protection. If Jellyfin goes offline after a run starts, the run
 continues using the snapshot captured before it began; only the post-move
-library refresh may fail.
+refresh may fail. That refresh is logged per item (endpoint, resolved
+item ID, parameters, response), so a moved item Jellyfin never picked up
+shows up in the log rather than silently losing its artwork.

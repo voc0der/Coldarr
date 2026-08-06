@@ -75,6 +75,15 @@ type EntryProgress struct {
 	Entry  planner.MoveEntry
 	Status MoveStatus
 	Err    string
+	// LandedPath is the item's own folder after the move, as Radarr/Sonarr
+	// reports it once the transfer is confirmed landed - not Entry.ToPath,
+	// which is only the destination tier root every item in that tier
+	// shares. Consumers that need to point at the item itself (notifying
+	// Jellyfin, which keys items by their exact path) need this; guessing
+	// it by joining ToPath with the old folder's name would be wrong for
+	// any item Radarr/Sonarr renamed as part of the move. Empty if the
+	// move never landed.
+	LandedPath string
 }
 
 // ProgressSnapshot is a point-in-time, race-free copy of an apply run's
@@ -130,6 +139,12 @@ func (p *Progress) setStatus(i int, status MoveStatus, err error) {
 	if err != nil {
 		p.entries[i].Err = err.Error()
 	}
+}
+
+func (p *Progress) setLandedPath(i int, path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.entries[i].LandedPath = path
 }
 
 func (p *Progress) markDone() {
@@ -353,10 +368,12 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (l
 		return false, errors.As(err, &statusErr)
 	}
 
-	if err := m.settle(entry); err != nil {
+	landedPath, err := m.settle(entry)
+	if err != nil {
 		progress.setStatus(idx, StatusFailed, err)
 		return false, false
 	}
+	progress.setLandedPath(idx, landedPath)
 
 	if err := m.History.Append(history.Record{
 		ArrApp:    entry.Item.ArrApp,
@@ -402,7 +419,9 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (l
 // hasn't started yet, so that case is tracked separately (noGrowthChecks)
 // rather than through the growth-based tracker, which never reports
 // stability before any growth at all.
-func (m *Movers) settle(entry planner.MoveEntry) error {
+// It returns the item's own post-move folder path alongside its verdict
+// (see EntryProgress.LandedPath).
+func (m *Movers) settle(entry planner.MoveEntry) (string, error) {
 	interval := m.SettleCheckInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -418,7 +437,7 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 
 	baseline, err := m.stat(entry.ToPath)
 	if err != nil {
-		return fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
+		return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
 	}
 
 	tracker := newSettleTracker(baseline.UsedBytes, entry.Item.SizeBytes)
@@ -431,13 +450,13 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 
 		u, err := m.stat(entry.ToPath)
 		if err != nil {
-			return fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
+			return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
 		}
 
 		if tracker.observe(u.UsedBytes, stableTarget) {
-			landed, err := m.confirmLanded(entry)
+			landed, path, err := m.confirmLanded(entry)
 			if landed {
-				return nil
+				return path, nil
 			}
 			lastConfirmationErr = err
 			tracker.stableCount = 0
@@ -450,9 +469,9 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 		}
 		noGrowthChecks++
 		if noGrowthChecks >= stableTarget {
-			landed, err := m.confirmLanded(entry)
+			landed, path, err := m.confirmLanded(entry)
 			if landed {
-				return nil
+				return path, nil
 			}
 			lastConfirmationErr = err
 			noGrowthChecks = 0
@@ -461,9 +480,9 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 
 	err = fmt.Errorf("move command was accepted, but landing of %q at %s could not be confirmed within %s", entry.Item.Title, entry.ToPath, maxWait)
 	if lastConfirmationErr != nil {
-		return fmt.Errorf("%w: last confirmation failed: %w", err, lastConfirmationErr)
+		return "", fmt.Errorf("%w: last confirmation failed: %w", err, lastConfirmationErr)
 	}
-	return err
+	return "", err
 }
 
 // confirmLanded asks Radarr/Sonarr to rescan the item's folder - forcing
@@ -477,39 +496,42 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 // file is still short. This is the ground-truth check settle() gates
 // every "looks done" signal on; see settle's doc comment for why disk
 // usage alone isn't enough either.
-func (m *Movers) confirmLanded(entry planner.MoveEntry) (bool, error) {
+// It also returns the item's own folder path as Radarr/Sonarr now reports
+// it, which is the only authoritative source for where the item actually
+// ended up - see EntryProgress.LandedPath.
+func (m *Movers) confirmLanded(entry planner.MoveEntry) (bool, string, error) {
 	switch entry.Item.ArrApp {
 	case "radarr":
 		if err := m.Radarr.RescanMovie(entry.Item.ID); err != nil {
-			return false, fmt.Errorf("rescanning movie: %w", err)
+			return false, "", fmt.Errorf("rescanning movie: %w", err)
 		}
 		size, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
 		return landingMatches("Radarr", entry, size, path, found, err)
 	case "sonarr":
 		if err := m.Sonarr.RescanSeries(entry.Item.ID); err != nil {
-			return false, fmt.Errorf("rescanning series: %w", err)
+			return false, "", fmt.Errorf("rescanning series: %w", err)
 		}
 		size, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
 		return landingMatches("Sonarr", entry, size, path, found, err)
 	default:
-		return false, fmt.Errorf("unknown arr app %q", entry.Item.ArrApp)
+		return false, "", fmt.Errorf("unknown arr app %q", entry.Item.ArrApp)
 	}
 }
 
-func landingMatches(app string, entry planner.MoveEntry, size int64, path string, found bool, err error) (bool, error) {
+func landingMatches(app string, entry planner.MoveEntry, size int64, path string, found bool, err error) (bool, string, error) {
 	if err != nil {
-		return false, fmt.Errorf("reading item from %s after rescan: %w", app, err)
+		return false, "", fmt.Errorf("reading item from %s after rescan: %w", app, err)
 	}
 	if !found {
-		return false, fmt.Errorf("%s no longer reports the item", app)
+		return false, "", fmt.Errorf("%s no longer reports the item", app)
 	}
 	if !isUnderPath(path, entry.ToPath) {
-		return false, fmt.Errorf("%s reports path %q, expected it under %q", app, path, entry.ToPath)
+		return false, "", fmt.Errorf("%s reports path %q, expected it under %q", app, path, entry.ToPath)
 	}
 	if !sizeLanded(size, entry.Item.SizeBytes) {
-		return false, fmt.Errorf("%s reports %d bytes, expected approximately %d", app, size, entry.Item.SizeBytes)
+		return false, "", fmt.Errorf("%s reports %d bytes, expected approximately %d", app, size, entry.Item.SizeBytes)
 	}
-	return true, nil
+	return true, path, nil
 }
 
 // sizeLanded reports whether gotBytes - Radarr/Sonarr's freshly-rescanned,

@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -399,4 +400,49 @@ func (e *Engine) JellyfinClient() *jellyfin.Client {
 		return nil
 	}
 	return jellyfin.NewClient(e.jellyfinConn.URL, e.jellyfinConn.APIKey)
+}
+
+// NotifyJellyfinMoved tells Jellyfin about items Coldarr just relocated,
+// so they keep their artwork. A no-op when Jellyfin isn't configured.
+//
+// Per-item targeting is the point: a whole-library scan runs in Jellyfin's
+// "Default" refresh mode, which only fills in artwork it thinks is
+// missing and so cannot displace image records still pointing into the
+// tier an item just left (see jellyfin.FullRefreshOptions). The scan
+// survives only as the fallback for items whose new path couldn't be
+// resolved - better than nothing, but it is not the fix.
+func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
+	jf := e.JellyfinClient()
+	if jf == nil {
+		return nil
+	}
+
+	items := make([]jellyfin.MovedItem, 0, len(moved))
+	var unresolved []string
+	for _, m := range moved {
+		// A confirmed move always records where it landed; anything else
+		// can't be targeted by path and only the library scan can help.
+		if m.LandedPath == "" {
+			unresolved = append(unresolved, m.Entry.Item.Title)
+			continue
+		}
+		items = append(items, jellyfin.MovedItem{
+			Title:   m.Entry.Item.Title,
+			OldPath: m.Entry.Item.Path,
+			NewPath: m.LandedPath,
+		})
+	}
+
+	notifyErr := jf.NotifyMoved(items)
+	if notifyErr == nil && len(unresolved) == 0 {
+		return nil
+	}
+
+	if len(unresolved) > 0 {
+		notifyErr = errors.Join(notifyErr, fmt.Errorf("no landed path recorded for %s", strings.Join(unresolved, ", ")))
+	}
+	if err := jf.RefreshLibrary(); err != nil {
+		return fmt.Errorf("%w; whole-library fallback scan also failed: %w", notifyErr, err)
+	}
+	return fmt.Errorf("%w; fell back to a whole-library scan", notifyErr)
 }

@@ -92,12 +92,10 @@ func newApplyCmd() *cobra.Command {
 				}
 			}
 
-			if len(moved) > 0 {
-				if jf := e.JellyfinClient(); jf != nil {
-					fmt.Println("Triggering Jellyfin library refresh...")
-					if err := jf.RefreshLibrary(); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: jellyfin refresh failed: %v\n", err)
-					}
+			if len(moved) > 0 && e.JellyfinClient() != nil {
+				fmt.Println("Updating Jellyfin - re-resolving each moved item and refreshing its artwork...")
+				if err := e.NotifyJellyfinMoved(moved); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: jellyfin update: %v\n", err)
 				}
 			}
 
