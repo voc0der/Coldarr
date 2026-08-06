@@ -4,6 +4,8 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+
+	"github.com/vocoder/coldarr/internal/model"
 )
 
 //go:embed templates
@@ -40,6 +42,9 @@ func parseTemplates() (map[string]*template.Template, error) {
 		},
 		"pct": func(f float64) string {
 			return fmt.Sprintf("%.1f%%", f)
+		},
+		"defaultHotMax": func() float64 {
+			return model.DefaultHotMaxUsedPercent
 		},
 	}
 

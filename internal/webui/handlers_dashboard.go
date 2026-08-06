@@ -17,10 +17,11 @@ type tierRow struct {
 	UsedBytes        int64
 	TotalBytes       int64
 	UsedPercent      float64
-	UsedPercentOver  bool // usage visibly past the tier's ceiling (MaxPercent for cold, 100% for hot) at the 1-decimal precision the UI displays - never flagged for sub-decimal noise right at the ceiling, since cold tiers are designed to pack up to it
-	HasThresholds    bool // false for hot tiers - not steered toward a usage level
+	UsedPercentOver  bool // cold usage visibly past its hard ceiling, or hot literally full, at the 1-decimal precision the UI displays
+	HasTarget        bool // false for hot tiers, which have a reclaim max but no fill target
 	TargetPercent    float64
 	MaxPercent       float64
+	UsesDefaultMax   bool
 	StatusMsg        string
 	StatusClass      string
 	SharesVolumeWith []string
@@ -84,14 +85,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, tier := range inv.Tiers {
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]
-			row := tierRow{
-				TierName:      tier.Name,
-				Role:          tier.Role,
-				Path:          path,
-				HasThresholds: tier.Role == model.RoleCold,
-				TargetPercent: tier.TargetUsedPercent,
-				MaxPercent:    tier.MaxUsedPercent,
-			}
+			row := dashboardTierRow(tier, path)
 			if status.Err != nil {
 				row.StatusMsg = status.Err.Error()
 				row.StatusClass = "danger"
@@ -113,12 +107,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 					}
 					row.SharedColorClass = sharedVolumeColorClasses[idx]
 				}
-				usedRounded := roundTenth(row.UsedPercent)
-				if row.HasThresholds {
-					row.UsedPercentOver = usedRounded > roundTenth(row.MaxPercent)
-				} else {
-					row.UsedPercentOver = usedRounded >= 100
-				}
+				row.UsedPercentOver = usagePastHardLimit(row)
 			}
 			data.Rows = append(data.Rows, row)
 		}
@@ -138,6 +127,28 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, "dashboard", data)
+}
+
+func dashboardTierRow(tier model.Tier, path string) tierRow {
+	return tierRow{
+		TierName:       tier.Name,
+		Role:           tier.Role,
+		Path:           path,
+		HasTarget:      tier.Role == model.RoleCold,
+		TargetPercent:  tier.TargetUsedPercent,
+		MaxPercent:     tier.EffectiveMaxUsedPercent(),
+		UsesDefaultMax: tier.Role == model.RoleHot && tier.MaxUsedPercent == 0,
+	}
+}
+
+func usagePastHardLimit(row tierRow) bool {
+	usedRounded := roundTenth(row.UsedPercent)
+	if row.HasTarget {
+		return usedRounded > roundTenth(row.MaxPercent)
+	}
+	// Hot max is only an admission limit for future reclaims; runoff hot
+	// storage is allowed to already sit above it.
+	return usedRounded >= 100
 }
 
 // roundTenth matches the precision pct() actually displays (one decimal

@@ -50,14 +50,16 @@ func (f *fakeApprise) notifications() []map[string]string {
 }
 
 // fakeRadarr serves just enough of the Radarr v3 API for one movie to be
-// planned and "moved." It never touches real files - mover's settle wait
-// is configured short in these tests so it simply times out quickly
-// regardless of whether any bytes actually land on the destination path.
+// planned, moved, rescanned, and confirmed at its new destination. It
+// never touches real files; after accepting the editor request it updates
+// the movie path returned by GET, which is the Arr-side ground truth the
+// mover uses when disk usage itself cannot demonstrate growth.
 type fakeRadarr struct {
 	*httptest.Server
 	mu          sync.Mutex
 	editorCalls []map[string]any
 	cutoffCalls int
+	movieRoot   string
 	// activeMoveCommands is how many started move commands GET
 	// /api/v3/command reports - the signal ArrMovesInFlight uses to
 	// detect moves still physically running inside Radarr (possibly
@@ -74,15 +76,27 @@ func (f *fakeRadarr) setActiveMoveCommands(n int) {
 
 func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 	t.Helper()
-	f := &fakeRadarr{}
+	f := &fakeRadarr{movieRoot: hotRoot}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v3/movie", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		root := f.movieRoot
+		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode([]map[string]any{{
 			"id": 1, "title": "Movie A", "titleSlug": "movie-a-2020",
-			"path": hotRoot + "/Movie A", "rootFolderPath": hotRoot,
+			"path": root + "/Movie A", "rootFolderPath": root,
 			"qualityProfileId": 1, "monitored": true, "hasFile": true,
 			"added": "2020-01-01T00:00:00Z", "tags": []int{}, "sizeOnDisk": 5_000_000,
 		}})
+	})
+	mux.HandleFunc("GET /api/v3/movie/1", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		root := f.movieRoot
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "title": "Movie A", "path": root + "/Movie A",
+			"rootFolderPath": root, "sizeOnDisk": 5_000_000,
+		})
 	})
 	mux.HandleFunc("GET /api/v3/tag", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{})
@@ -104,8 +118,17 @@ func newFakeRadarr(t *testing.T, hotRoot string) *fakeRadarr {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.editorCalls = append(f.editorCalls, body)
+		if root, ok := body["rootFolderPath"].(string); ok {
+			f.movieRoot = root
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("POST /api/v3/command", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+	})
+	mux.HandleFunc("GET /api/v3/command/1", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
 	})
 	mux.HandleFunc("GET /api/v3/command", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -189,7 +212,10 @@ func newTestServer(t *testing.T, dir, hotDir, coldDir, radarrURL, appriseURL str
 
 	t.Setenv("COLDARR_SETTLE_CHECK_INTERVAL", "50ms")
 	t.Setenv("COLDARR_SETTLE_STABLE_CHECKS", "1")
-	t.Setenv("COLDARR_SETTLE_MAX_WAIT", "300ms")
+	// Leave enough wall-clock headroom for race-enabled or otherwise
+	// heavily loaded full-suite runs. The fake Arr confirms on the first
+	// check, so this does not make successful tests slower.
+	t.Setenv("COLDARR_SETTLE_MAX_WAIT", "3s")
 
 	srv, err := New(filepath.Join(dir, "coldarr.yaml"), cfg, connStore)
 	if err != nil {

@@ -22,6 +22,7 @@
 package mover
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -168,6 +169,12 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 // entries a valid move because an earlier phase's entries free the space
 // they need. Within a phase, moves are grouped and run exactly as before:
 // serialized per destination volume, concurrent across different volumes.
+// If any entry in a phase fails to land, later phases are not attempted:
+// their capacity assumptions depend on every physical move in that phase.
+// A failure after a confirmed landing (currently, persisting its history)
+// remains visible in Progress but does not invalidate that capacity change.
+// Entries blocked by an unmet prerequisite are marked failed explicitly so
+// a completed Progress never leaves work silently pending.
 func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
 	progress := newProgress(plan)
 
@@ -182,8 +189,17 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 	sort.Ints(phases)
 
 	go func() {
-		for _, p := range phases {
-			m.runPhase(plan, byPhase[p], progress, volumeOf)
+		for phaseIndex, phase := range phases {
+			if m.runPhase(plan, byPhase[phase], progress, volumeOf) {
+				continue
+			}
+
+			for _, laterPhase := range phases[phaseIndex+1:] {
+				for _, i := range byPhase[laterPhase] {
+					progress.setStatus(i, StatusFailed, fmt.Errorf("not attempted: prerequisite phase %d failed", phase))
+				}
+			}
+			break
 		}
 		progress.markDone()
 	}()
@@ -194,8 +210,19 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 // runPhase groups the given plan-entry indices by destination volume and
 // runs each group's moves serially, with different volumes proceeding
 // concurrently; it blocks until every move in this phase has finished
-// (including settling).
-func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress, volumeOf map[string]uint64) {
+// (including settling), and reports whether all physical moves landed.
+// This deliberately differs from every entry having StatusDone: a move can
+// land successfully and then fail only while recording its history, which
+// must remain visible without blocking phases that depend on the disk-space
+// change that already happened.
+//
+// An accepted move whose landing cannot be confirmed, or a command whose
+// response was lost after it may have been accepted, also stops the rest of
+// that destination volume's queue. The transfer may still be running, so
+// starting another write to the same volume would defeat the very
+// serialization this package provides. Other volume groups in the same
+// phase are independent and are allowed to finish.
+func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress, volumeOf map[string]uint64) bool {
 	groups := map[string][]int{}
 	var order []string
 	for _, i := range indices {
@@ -207,17 +234,40 @@ func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress,
 	}
 
 	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	phaseLanded := true
+	markLandingUnmet := func() {
+		resultMu.Lock()
+		phaseLanded = false
+		resultMu.Unlock()
+	}
 	for _, key := range order {
 		groupIndices := groups[key]
 		wg.Add(1)
 		go func(groupIndices []int) {
 			defer wg.Done()
-			for _, i := range groupIndices {
-				m.runOne(plan.Entries[i], progress, i)
+			for groupIndex, i := range groupIndices {
+				landed, destinationSafe := m.runOne(plan.Entries[i], progress, i)
+				if !landed {
+					markLandingUnmet()
+				}
+				if destinationSafe {
+					continue
+				}
+
+				for _, blocked := range groupIndices[groupIndex+1:] {
+					progress.setStatus(blocked, StatusFailed, fmt.Errorf("not attempted: a previous move command to this destination volume may still be running"))
+					markLandingUnmet()
+				}
+				break
 			}
 		}(groupIndices)
 	}
 	wg.Wait()
+
+	resultMu.Lock()
+	defer resultMu.Unlock()
+	return phaseLanded
 }
 
 func volumeKey(path string, volumeOf map[string]uint64) string {
@@ -236,8 +286,9 @@ func volumeKey(path string, volumeOf map[string]uint64) string {
 // an earlier bug), can leave real free space short of what the plan
 // assumed by the time this specific entry's turn comes up. This is the
 // last line of defense against ever handing Radarr/Sonarr a move with
-// nowhere for it to actually land - independent of whether the plan (or
-// anything upstream of it) got the arithmetic right.
+// nowhere for it to actually land or beyond the destination tier's hard
+// usage ceiling - independent of whether the plan (or anything upstream
+// of it) got the arithmetic right.
 func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
 	need := entry.Item.SizeBytes
 	if need <= 0 {
@@ -252,18 +303,32 @@ func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
 		// blind on the plan's stale assumption alone.
 		return fmt.Errorf("checking free space at %s before moving %q: %w", entry.ToPath, entry.Item.Title, err)
 	}
-	if uint64(need) > u.FreeBytes {
+	needBytes := uint64(need)
+	if needBytes > u.FreeBytes {
 		return fmt.Errorf("refusing to move %q to %s: only %.1f GB free right now, need %.1f GB - plan may be stale, re-run Plan", entry.Item.Title, entry.ToPath, float64(u.FreeBytes)/(1<<30), float64(need)/(1<<30))
+	}
+
+	if entry.MaxUsedPercent > 0 {
+		projectedPercent := diskusage.PercentUsed(u.UsedBytes+needBytes, u.FreeBytes-needBytes)
+		if projectedPercent > entry.MaxUsedPercent {
+			return fmt.Errorf("refusing to move %q to %s: it would leave the destination %.1f%% used, above its %.1f%% hard ceiling - plan may be stale, re-run Plan", entry.Item.Title, entry.ToPath, projectedPercent, entry.MaxUsedPercent)
+		}
 	}
 	return nil
 }
 
-func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
+// runOne reports both whether the physical move landed and whether it is
+// safe to start another move to the same destination volume. A failure
+// after confirmed landing (currently history persistence) returns landed
+// even though its visible status is Failed. Failures before Arr accepted a
+// command leave the volume safe but do not satisfy phase prerequisites. A
+// settle failure does neither: the accepted transfer may still be writing.
+func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (landed, destinationSafe bool) {
 	progress.setStatus(idx, StatusMoving, nil)
 
 	if err := m.verifyRoom(entry); err != nil {
 		progress.setStatus(idx, StatusFailed, err)
-		return
+		return false, true
 	}
 
 	var err error
@@ -273,14 +338,25 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 	case "sonarr":
 		err = m.Sonarr.MoveSeries([]int{entry.Item.ID}, entry.ToPath)
 	default:
-		err = fmt.Errorf("unknown arr app %q", entry.Item.ArrApp)
+		progress.setStatus(idx, StatusFailed, fmt.Errorf("unknown arr app %q", entry.Item.ArrApp))
+		return false, true
 	}
 	if err != nil {
 		progress.setStatus(idx, StatusFailed, err)
-		return
+		// A concrete non-2xx response means Arr rejected the command, so
+		// no transfer from this entry is running and the volume itself is
+		// safe for independent same-phase work. Transport and response-
+		// decoding failures are ambiguous: Arr may have accepted the move
+		// before the response was lost, so conservatively stop this
+		// destination queue until a later apply can establish fresh state.
+		var statusErr *arrapi.StatusError
+		return false, errors.As(err, &statusErr)
 	}
 
-	m.settle(entry)
+	if err := m.settle(entry); err != nil {
+		progress.setStatus(idx, StatusFailed, err)
+		return false, false
+	}
 
 	if err := m.History.Append(history.Record{
 		ArrApp:    entry.Item.ArrApp,
@@ -294,10 +370,11 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 		MovedAt:   time.Now(),
 	}); err != nil {
 		progress.setStatus(idx, StatusFailed, fmt.Errorf("moved, but recording history failed: %w", err))
-		return
+		return true, true
 	}
 
 	progress.setStatus(idx, StatusDone, nil)
+	return true, true
 }
 
 // settle waits for entry's move to actually land on the destination's
@@ -325,7 +402,7 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) {
 // hasn't started yet, so that case is tracked separately (noGrowthChecks)
 // rather than through the growth-based tracker, which never reports
 // stability before any growth at all.
-func (m *Movers) settle(entry planner.MoveEntry) {
+func (m *Movers) settle(entry planner.MoveEntry) error {
 	interval := m.SettleCheckInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
@@ -341,27 +418,28 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 
 	baseline, err := m.stat(entry.ToPath)
 	if err != nil {
-		// Can't observe it - don't block this volume's queue guessing
-		// how long to wait; move on.
-		return
+		return fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
 	}
 
 	tracker := newSettleTracker(baseline.UsedBytes, entry.Item.SizeBytes)
 	deadline := time.Now().Add(maxWait)
 	noGrowthChecks := 0
+	var lastConfirmationErr error
 
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 
 		u, err := m.stat(entry.ToPath)
 		if err != nil {
-			return
+			return fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
 		}
 
 		if tracker.observe(u.UsedBytes, stableTarget) {
-			if m.confirmLanded(entry) {
-				return
+			landed, err := m.confirmLanded(entry)
+			if landed {
+				return nil
 			}
+			lastConfirmationErr = err
 			tracker.stableCount = 0
 			continue
 		}
@@ -372,12 +450,20 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 		}
 		noGrowthChecks++
 		if noGrowthChecks >= stableTarget {
-			if m.confirmLanded(entry) {
-				return
+			landed, err := m.confirmLanded(entry)
+			if landed {
+				return nil
 			}
+			lastConfirmationErr = err
 			noGrowthChecks = 0
 		}
 	}
+
+	err = fmt.Errorf("move command was accepted, but landing of %q at %s could not be confirmed within %s", entry.Item.Title, entry.ToPath, maxWait)
+	if lastConfirmationErr != nil {
+		return fmt.Errorf("%w: last confirmation failed: %w", err, lastConfirmationErr)
+	}
+	return err
 }
 
 // confirmLanded asks Radarr/Sonarr to rescan the item's folder - forcing
@@ -391,23 +477,39 @@ func (m *Movers) settle(entry planner.MoveEntry) {
 // file is still short. This is the ground-truth check settle() gates
 // every "looks done" signal on; see settle's doc comment for why disk
 // usage alone isn't enough either.
-func (m *Movers) confirmLanded(entry planner.MoveEntry) bool {
+func (m *Movers) confirmLanded(entry planner.MoveEntry) (bool, error) {
 	switch entry.Item.ArrApp {
 	case "radarr":
 		if err := m.Radarr.RescanMovie(entry.Item.ID); err != nil {
-			return false
+			return false, fmt.Errorf("rescanning movie: %w", err)
 		}
 		size, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
-		return err == nil && found && isUnderPath(path, entry.ToPath) && sizeLanded(size, entry.Item.SizeBytes)
+		return landingMatches("Radarr", entry, size, path, found, err)
 	case "sonarr":
 		if err := m.Sonarr.RescanSeries(entry.Item.ID); err != nil {
-			return false
+			return false, fmt.Errorf("rescanning series: %w", err)
 		}
 		size, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
-		return err == nil && found && isUnderPath(path, entry.ToPath) && sizeLanded(size, entry.Item.SizeBytes)
+		return landingMatches("Sonarr", entry, size, path, found, err)
 	default:
-		return false
+		return false, fmt.Errorf("unknown arr app %q", entry.Item.ArrApp)
 	}
+}
+
+func landingMatches(app string, entry planner.MoveEntry, size int64, path string, found bool, err error) (bool, error) {
+	if err != nil {
+		return false, fmt.Errorf("reading item from %s after rescan: %w", app, err)
+	}
+	if !found {
+		return false, fmt.Errorf("%s no longer reports the item", app)
+	}
+	if !isUnderPath(path, entry.ToPath) {
+		return false, fmt.Errorf("%s reports path %q, expected it under %q", app, path, entry.ToPath)
+	}
+	if !sizeLanded(size, entry.Item.SizeBytes) {
+		return false, fmt.Errorf("%s reports %d bytes, expected approximately %d", app, size, entry.Item.SizeBytes)
+	}
+	return true, nil
 }
 
 // sizeLanded reports whether gotBytes - Radarr/Sonarr's freshly-rescanned,

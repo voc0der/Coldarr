@@ -1,7 +1,7 @@
 {{define "content"}}
 {{template "settings_subnav" .}}
 <h1>Storage tiers</h1>
-<p class="muted">A storage tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a usage level - every cold-eligible item on it is a move candidate whenever cold tiers have room. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it. If two paths (even across different tiers) turn out to be the same physical volume, Coldarr detects that automatically and treats their capacity as shared - see "Shares volume with" below.</p>
+<p class="muted">A storage tier is a named policy applied to one or more physical paths. Hot storage is never steered toward a target usage level, though grow-risk items reclaimed from cold still respect its max. Cold tiers get packed toward their target, falling back to their max as a last resort, never crossing it. If two paths (even across different tiers) turn out to be the same physical volume, Coldarr detects that automatically and treats their capacity as shared - see "Shares volume with" below.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
@@ -21,7 +21,7 @@
   </div>
   <p class="hint">
     media: {{range .Tier.Media}}{{.}} {{end}} &middot;
-    {{if eq (print .Tier.Role) "cold"}}target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}} &middot;{{end}}
+    {{if eq (print .Tier.Role) "cold"}}target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}}{{else}}reclaim max {{pct .EffectiveHotMaxPercent}} {{if .UsesDefaultHotMax}}(default){{else}}(configured){{end}}{{end}} &middot;
     {{if .Tier.RequireMount}}requires real mount point{{else}}no mount check{{end}}
   </p>
   <table>

@@ -44,6 +44,25 @@ func TestTierUsage(t *testing.T) {
 	if !strings.Contains(out, "UNAVAILABLE") {
 		t.Errorf("expected the errored /cold2 path to be reported as UNAVAILABLE:\n%s", out)
 	}
+	if !strings.Contains(out, "97.0 (default)") {
+		t.Errorf("expected the hot tier's effective reclaim ceiling to be visible:\n%s", out)
+	}
+}
+
+func TestTierUsage_PreservesFractionalThresholds(t *testing.T) {
+	inv := testInventory()
+	inv.Tiers[0].MaxUsedPercent = 96.5
+	inv.Tiers[1].TargetUsedPercent = 90.5
+	inv.Tiers[1].MaxUsedPercent = 95.5
+
+	var buf bytes.Buffer
+	TierUsage(&buf, inv)
+	out := buf.String()
+	for _, want := range []string{"96.5 (configured)", "90.5", "95.5"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected fractional threshold %q to be preserved:\n%s", want, out)
+		}
+	}
 }
 
 func TestTierUsage_SharedVolumeNote(t *testing.T) {

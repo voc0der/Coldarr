@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,7 +12,10 @@ import (
 	"github.com/vocoder/coldarr/internal/scoring"
 )
 
-const gib = 1 << 30
+const (
+	gib = 1 << 30
+	tib = 1 << 40
+)
 
 func usage(total, used uint64) diskusage.Usage {
 	return diskusage.Usage{
@@ -352,6 +356,103 @@ func TestBuild_UnavailablePathIsSkippedNotAssumedEmpty(t *testing.T) {
 	}
 }
 
+func TestBuild_UnavailableSourcePathsAreNotPlanned(t *testing.T) {
+	t.Run("fill source", func(t *testing.T) {
+		in := Input{
+			Tiers: testTiers(),
+			Usage: map[string]diskusage.Usage{
+				// /hot is deliberately absent.
+				"/cold1": usage(1000*gib, 100*gib),
+				"/cold2": usage(1000*gib, 100*gib),
+			},
+			Items:   []ItemEval{coldItem(1, "Movie on unavailable hot", 5*gib)},
+			History: emptyHistory(t),
+			Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+			Now:     time.Now(),
+		}
+
+		plan, err := Build(in)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if len(plan.Entries) != 0 {
+			t.Fatalf("must not plan from an unavailable source: %+v", plan.Entries)
+		}
+	})
+
+	t.Run("reclaim source", func(t *testing.T) {
+		in := Input{
+			Tiers: tvTiers(),
+			Usage: map[string]diskusage.Usage{
+				"/hot": usage(1000*gib, 100*gib),
+				// /cold1 is deliberately absent.
+			},
+			Items:   []ItemEval{upcomingItem("Show on unavailable cold", "/cold1", 5*gib)},
+			History: emptyHistory(t),
+			Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+			Now:     time.Now(),
+		}
+
+		plan, err := Build(in)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if len(plan.Entries) != 0 {
+			t.Fatalf("must not plan from an unavailable source: %+v", plan.Entries)
+		}
+	})
+}
+
+func TestBuild_SamePhaseDoesNotSpendAnotherMovesSourceFree(t *testing.T) {
+	tiers := []model.Tier{
+		{Name: "hot-tv", Role: model.RoleHot, Paths: []string{"/hot-tv"}, Media: []model.MediaType{model.TV}},
+		{Name: "hot-movies", Role: model.RoleHot, Paths: []string{"/hot-movies"}, Media: []model.MediaType{model.Movie}},
+		{Name: "cold-tv", Role: model.RoleCold, Paths: []string{"/cold-tv"}, Media: []model.MediaType{model.TV}, TargetUsedPercent: 100, MaxUsedPercent: 100},
+		{Name: "cold-movies", Role: model.RoleCold, Paths: []string{"/cold-movies"}, Media: []model.MediaType{model.Movie}, TargetUsedPercent: 100, MaxUsedPercent: 100},
+	}
+	movie := ItemEval{
+		Item: model.MediaItem{ArrApp: "radarr", ID: 1, Type: model.Movie, Title: "Movie frees shared volume", RootFolderPath: "/hot-movies", SizeBytes: 10 * gib},
+		Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 100},
+	}
+	show := ItemEval{
+		Item: model.MediaItem{ArrApp: "sonarr", ID: 1, Type: model.TV, Title: "Show needs freed space", RootFolderPath: "/hot-tv", SizeBytes: 10 * gib},
+		Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 90},
+	}
+	shared := usage(100*gib, 95*gib)
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot-tv":      usage(100*gib, 50*gib),
+			"/hot-movies":  shared,
+			"/cold-tv":     shared, // same device as /hot-movies: only 5 GB free initially
+			"/cold-movies": usage(100*gib, 10*gib),
+		},
+		VolumeOf: map[string]uint64{
+			"/hot-movies": 2,
+			"/cold-tv":    2,
+		},
+		Items:   []ItemEval{movie, show},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 2 {
+		t.Fatalf("both fills should land after the dependency is phased safely: %+v", plan.Entries)
+	}
+	phaseByTitle := map[string]int{}
+	for _, entry := range plan.Entries {
+		phaseByTitle[entry.Item.Title] = entry.Phase
+	}
+	if phaseByTitle[movie.Item.Title] >= phaseByTitle[show.Item.Title] {
+		t.Fatalf("show must wait for the prior phase to really free its destination volume, phases=%v", phaseByTitle)
+	}
+}
+
 // TestBuild_RespectsRealFreeSpaceNotRawTotal reproduces a real incident: a
 // filesystem with a reserved-blocks margin (e.g. ext4's default 5%
 // root-reserved blocks) reports FreeBytes (Bavail-based, what a writer can
@@ -363,36 +464,40 @@ func TestBuild_UnavailablePathIsSkippedNotAssumedEmpty(t *testing.T) {
 // a cold drive to `df -h` 100% while Coldarr's own projection still showed
 // headroom.
 func TestBuild_RespectsRealFreeSpaceNotRawTotal(t *testing.T) {
+	tiers := testTiers()
+	tiers[1].Paths = []string{"/cold1"}
+	// A 100% policy ceiling deliberately removes percentage as the reason
+	// to reject this move. Only the writer-visible FreeBytes check can do it.
+	tiers[1].MaxUsedPercent = 100
+	tiers[1].TargetUsedPercent = 100
 	in := Input{
-		Tiers: testTiers(),
+		Tiers: tiers,
 		Usage: map[string]diskusage.Usage{
 			"/hot": usage(1000*gib, 500*gib),
 			// Raw total says 10 GB "free" (100-90), but only 5 GB of that
 			// is actually writable (Bavail) - 5 GB is reserved and
 			// invisible to df's Use% and to any unprivileged writer.
 			"/cold1": {TotalBytes: 100 * gib, UsedBytes: 90 * gib, FreeBytes: 5 * gib, UsedPercent: 90.0 / 95.0 * 100},
-			"/cold2": usage(1000*gib, 100*gib),
 		},
 		Items: []ItemEval{
-			// Bigger than the real 5 GB free, but old total-based math
-			// (90+6)/100=96% would have looked fine under a 97% ceiling.
+			// Bigger than the real 5 GB free. applyDelta clamps projected
+			// free to zero, so without a direct check this appears to land
+			// at exactly the otherwise-permitted 100% ceiling.
 			coldItem(1, "Movie A", 6*gib),
 		},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
 	}
-	in.Tiers[1].MaxUsedPercent = 97
-	in.Tiers[1].TargetUsedPercent = 97
-
 	plan, err := Build(in)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	for _, e := range plan.Entries {
-		if e.ToPath == "/cold1" {
-			t.Fatalf("expected /cold1 to be rejected (only 5 GB actually free for a 6 GB item), got it picked: %+v", e)
-		}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected /cold1 to be rejected (only 5 GB actually free for a 6 GB item), got: %+v", plan.Entries)
+	}
+	if len(plan.Warnings) != 1 {
+		t.Fatalf("expected the unplaceable item to be reported once, got %v", plan.Warnings)
 	}
 }
 
@@ -449,6 +554,44 @@ func TestBuild_PromotesUpcomingItemOnColdBackToHot(t *testing.T) {
 	e := plan.Entries[0]
 	if e.FromTier != "cold-tv" || e.FromPath != "/cold1" || e.ToTier != "hot" || e.ToPath != "/hot" {
 		t.Fatalf("unexpected move direction: %+v", e)
+	}
+}
+
+func TestBuild_NeverReclaimsProtectedGrowRiskItems(t *testing.T) {
+	tests := []struct {
+		name string
+		item ItemEval
+	}{
+		{name: "upcoming", item: upcomingItem("Protected upcoming show", "/cold1", 5*gib)},
+		{name: "cutoff unmet", item: cutoffUnmetItem("Protected upgrade", "/cold1", 5*gib)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.item.Eval = scoring.Evaluation{Decision: scoring.Protected, Reasons: []string{"active download/import in progress"}}
+			in := Input{
+				Tiers: tvTiers(),
+				Usage: map[string]diskusage.Usage{
+					"/hot":   usage(1000*gib, 100*gib),
+					"/cold1": usage(1000*gib, 100*gib),
+				},
+				Items:   []ItemEval{tt.item},
+				History: emptyHistory(t),
+				Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+				Now:     time.Now(),
+			}
+
+			plan, err := Build(in)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if len(plan.Entries) != 0 {
+				t.Fatalf("protected item must never move despite grow-risk flags: %+v", plan.Entries)
+			}
+			if len(plan.Warnings) != 0 {
+				t.Fatalf("protected item is not an unplaced candidate and should not warn: %v", plan.Warnings)
+			}
+		})
 	}
 }
 
@@ -670,7 +813,7 @@ func TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking(t *testin
 // hot only has 7 GB free - not enough for the 10 GB reclaim - until an
 // 8 GB fill (moving something else off hot to cold, which has plenty of
 // room) frees up more, landing the reclaim's destination at 95% used,
-// still under pickHotDestination's default 97% ceiling. The reclaim can
+// still under the hot tier's default 97% ceiling. The reclaim can
 // only succeed in a later round than the fill, and its MoveEntry.Phase
 // must reflect that so the mover executes the fill first for real, not
 // just on paper.
@@ -732,7 +875,7 @@ func TestBuild_ReclaimSucceedsAfterFillFreesHotRoom(t *testing.T) {
 
 // TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare
 // proves a reclaim is rejected once it would push its hot destination
-// past defaultHotMaxUsedPercent, even though there is plainly enough raw
+// past the model's default ceiling, even though there is plainly enough raw
 // free space for the bytes themselves - packing a hot tier to the wire
 // defeats the reason reclaim exists (giving a grow-risk item room to
 // actually grow) and risks real filesystem trouble besides.
@@ -740,13 +883,13 @@ func TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare(t *testin
 	in := Input{
 		Tiers: tvTiers(),
 		Usage: map[string]diskusage.Usage{
-			// 96 GB used of 100 GB (96% - under the 97% ceiling), but a
-			// 10 GB reclaim would land at 106% used - well past both the
-			// ceiling and raw capacity.
+			// 96 GB used of 100 GB (96% - under the 97% ceiling), with
+			// enough raw room for a 2 GB reclaim. It would land at 98%, so
+			// only the percentage ceiling rejects it.
 			"/hot":   usage(100*gib, 96*gib),
 			"/cold1": usage(1000*gib, 100*gib),
 		},
-		Items:   []ItemEval{cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib)},
+		Items:   []ItemEval{cutoffUnmetItem("Show A (grow-risk)", "/cold1", 2*gib)},
 		History: emptyHistory(t),
 		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
 		Now:     time.Now(),
@@ -765,8 +908,8 @@ func TestBuild_ReclaimRespectsDefaultHotCeilingEvenWithRawBytesToSpare(t *testin
 }
 
 // TestBuild_ExplicitHotMaxUsedPercentOverridesDefault confirms a hot
-// tier that sets its own MaxUsedPercent uses that instead of
-// defaultHotMaxUsedPercent - an operator who deliberately wants a hot
+// tier that sets its own MaxUsedPercent uses that instead of the model
+// default - an operator who deliberately wants a hot
 // tier packed tighter (or looser) than the built-in default can do so.
 func TestBuild_ExplicitHotMaxUsedPercentOverridesDefault(t *testing.T) {
 	tiers := tvTiers()
@@ -798,6 +941,251 @@ func TestBuild_ExplicitHotMaxUsedPercentOverridesDefault(t *testing.T) {
 	}
 	if len(plan.Entries) != 1 {
 		t.Fatalf("expected the reclaim to succeed under the tier's own 99%% MaxUsedPercent, got %d entries and warnings %v", len(plan.Entries), plan.Warnings)
+	}
+}
+
+func TestBuild_ReclaimAllocationPlacesLargerConstrainedItemFirst(t *testing.T) {
+	tiers := []model.Tier{
+		{Name: "hot-large", Role: model.RoleHot, Paths: []string{"/hot-large"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "hot-small", Role: model.RoleHot, Paths: []string{"/hot-small"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.TV}, TargetUsedPercent: 92, MaxUsedPercent: 95},
+	}
+	small := upcomingItem("Small reclaim", "/cold", 15*gib)
+	large := upcomingItem("Large reclaim", "/cold", 25*gib)
+	large.Item.ID = 2
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot-large": usage(100*gib, 73*gib), // 27 GB writable
+			"/hot-small": usage(100*gib, 83*gib), // 17 GB writable
+			"/cold":      usage(1000*gib, 100*gib),
+		},
+		// Inventory order is deliberately the bad greedy order.
+		Items:   []ItemEval{small, large},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 2 || len(plan.Warnings) != 0 {
+		t.Fatalf("both reclaims have a feasible allocation, got entries=%+v warnings=%v", plan.Entries, plan.Warnings)
+	}
+	destination := map[string]string{}
+	for _, entry := range plan.Entries {
+		destination[entry.Item.Title] = entry.ToPath
+	}
+	if destination["Large reclaim"] != "/hot-large" || destination["Small reclaim"] != "/hot-small" {
+		t.Fatalf("expected 25 GB on the only large slot and 15 GB on the small slot, got %v", destination)
+	}
+}
+
+func TestBuild_ReclaimAllocationPreservesMediaSpecificDestination(t *testing.T) {
+	tiers := []model.Tier{
+		{Name: "hot-shared", Role: model.RoleHot, Paths: []string{"/hot-shared"}, Media: []model.MediaType{model.Movie, model.TV}, MaxUsedPercent: 100},
+		{Name: "hot-tv", Role: model.RoleHot, Paths: []string{"/hot-tv"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.Movie, model.TV}, TargetUsedPercent: 92, MaxUsedPercent: 95},
+	}
+	tv := upcomingItem("TV reclaim", "/cold", 10*gib)
+	movie := upcomingItem("Movie reclaim", "/cold", 10*gib)
+	movie.Item.ArrApp = "radarr"
+	movie.Item.ID = 2
+	movie.Item.Type = model.Movie
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot-shared": usage(100*gib, 90*gib),
+			"/hot-tv":     usage(100*gib, 90*gib),
+			"/cold":       usage(1000*gib, 100*gib),
+		},
+		// TV is first to reproduce the order that used to consume the only
+		// movie-capable slot and strand the movie.
+		Items:   []ItemEval{tv, movie},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 2 || len(plan.Warnings) != 0 {
+		t.Fatalf("both media-specific reclaims have a feasible allocation, got entries=%+v warnings=%v", plan.Entries, plan.Warnings)
+	}
+	destination := map[string]string{}
+	for _, entry := range plan.Entries {
+		destination[entry.Item.Title] = entry.ToPath
+	}
+	if destination["Movie reclaim"] != "/hot-shared" || destination["TV reclaim"] != "/hot-tv" {
+		t.Fatalf("expected movie to retain the shared slot and TV to use its dedicated slot, got %v", destination)
+	}
+}
+
+func TestBuild_ReclaimAllocationRepairsGreedyBinPacking(t *testing.T) {
+	tiers := []model.Tier{
+		{Name: "hot-five", Role: model.RoleHot, Paths: []string{"/hot-five"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "hot-six", Role: model.RoleHot, Paths: []string{"/hot-six"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.TV}, TargetUsedPercent: 92, MaxUsedPercent: 95},
+	}
+	sizes := []int64{2 * gib, 2 * gib, 3 * gib, 4 * gib}
+	items := make([]ItemEval, 0, len(sizes))
+	for i, sizeBytes := range sizes {
+		item := upcomingItem(fmt.Sprintf("Reclaim %d", i+1), "/cold", sizeBytes)
+		item.Item.ID = i + 1
+		items = append(items, item)
+	}
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot-five": usage(100*gib, 95*gib),
+			"/hot-six":  usage(100*gib, 94*gib),
+			"/cold":     usage(1000*gib, 100*gib),
+		},
+		Items:   items,
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 4 || len(plan.Warnings) != 0 {
+		t.Fatalf("all four reclaims fit as 3+2 and 4+2, got entries=%+v warnings=%v", plan.Entries, plan.Warnings)
+	}
+	placedBytes := map[string]int64{}
+	for _, entry := range plan.Entries {
+		placedBytes[entry.ToPath] += entry.Item.SizeBytes
+	}
+	if placedBytes["/hot-five"] != 5*gib || placedBytes["/hot-six"] != 6*gib {
+		t.Fatalf("expected exact 5/6 GB partition, got %v", placedBytes)
+	}
+}
+
+func TestBuild_FirstEnabledReclaimDoesNotWaitForLargerPeer(t *testing.T) {
+	tiers := []model.Tier{
+		{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.TV}, MaxUsedPercent: 100},
+		{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.TV}, TargetUsedPercent: 100, MaxUsedPercent: 100},
+	}
+	small := upcomingItem("Small reclaim", "/cold", 2*gib)
+	large := upcomingItem("Large reclaim", "/cold", 8*gib)
+	large.Item.ID = 2
+	items := []ItemEval{small, large}
+	for i := 0; i < 5; i++ {
+		items = append(items, ItemEval{
+			Item: model.MediaItem{ArrApp: "sonarr", ID: 100 + i, Type: model.TV, Title: fmt.Sprintf("Fill %d", i+1), RootFolderPath: "/hot", SizeBytes: 2 * gib},
+			Eval: scoring.Evaluation{Decision: scoring.Cold, Score: float64(100 - i)},
+		})
+	}
+	in := Input{
+		Tiers: tiers,
+		Usage: map[string]diskusage.Usage{
+			"/hot":  usage(100*gib, 100*gib),
+			"/cold": usage(100*gib, 50*gib),
+		},
+		Items:   items,
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 7 || len(plan.Warnings) != 0 {
+		t.Fatalf("expected all fills and reclaims, got entries=%+v warnings=%v", plan.Entries, plan.Warnings)
+	}
+	phaseByTitle := map[string]int{}
+	for _, entry := range plan.Entries {
+		phaseByTitle[entry.Item.Title] = entry.Phase
+	}
+	smallPhase := phaseByTitle["Small reclaim"]
+	largePhase := phaseByTitle["Large reclaim"]
+	fillsBeforeSmall := 0
+	for i := 0; i < 5; i++ {
+		if phaseByTitle[fmt.Sprintf("Fill %d", i+1)] < smallPhase {
+			fillsBeforeSmall++
+		}
+	}
+	if fillsBeforeSmall != 1 {
+		t.Fatalf("small reclaim should run immediately after its one enabling fill, got %d fills first: %+v", fillsBeforeSmall, plan.Entries)
+	}
+	if largePhase <= smallPhase {
+		t.Fatalf("8 GB reclaim should wait for the later four-fill wave, phases small=%d large=%d", smallPhase, largePhase)
+	}
+}
+
+// TestBuild_ReclaimsRunAsSoonAsFillsMakeEnoughRoom guards against bunching
+// all hot-bound work at the end. Hot starts past its percentage ceiling, so
+// three fills genuinely must precede the two reclaims; the other three fills
+// are unrelated and must remain behind the now-enabled reclaim phase.
+func TestBuild_ReclaimsRunAsSoonAsFillsMakeEnoughRoom(t *testing.T) {
+	items := []ItemEval{
+		// Two grow-risk items on cold: 10 GB each, and hot has ~13 GB
+		// free, so the bytes were never the problem.
+		cutoffUnmetItem("Show A (grow-risk)", "/cold1", 10*gib),
+		upcomingItem("Show B (upcoming)", "/cold1", 10*gib),
+	}
+	items[1].Item.ID = 99 // upcomingItem and cutoffUnmetItem both default to ID 1
+	for i := 2; i < 8; i++ {
+		items = append(items, ItemEval{
+			Item: model.MediaItem{ArrApp: "sonarr", ID: 100 + i, Type: model.TV, Title: fmt.Sprintf("Fill %d", i), RootFolderPath: "/hot", SizeBytes: 12 * gib},
+			Eval: scoring.Evaluation{Decision: scoring.Cold, Score: float64(60 + i)},
+		})
+	}
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 986*gib), // 98.6% used, but 14 GB free
+			"/cold1": usage(10000*gib, 1000*gib),
+		},
+		Items:   items,
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	var fillsBefore, fillsAfter, reclaims int
+	reclaimPhase := -1
+	for _, e := range plan.Entries {
+		if e.ToPath == "/hot" {
+			reclaims++
+			if reclaimPhase < 0 {
+				reclaimPhase = e.Phase
+			} else if e.Phase != reclaimPhase {
+				t.Errorf("expected both reclaims in one enabled batch, got phases %d and %d", reclaimPhase, e.Phase)
+			}
+			continue
+		}
+		if reclaimPhase < 0 {
+			fillsBefore++
+		} else {
+			fillsAfter++
+		}
+	}
+	if reclaims != 2 {
+		t.Fatalf("expected both grow-risk items reclaimed once fills made room, got %d: %+v", reclaims, plan.Entries)
+	}
+	if fillsBefore != 3 || fillsAfter != 3 {
+		t.Fatalf("expected exactly 3 enabling fills, then reclaims, then 3 unrelated fills; got %d before / %d after: %+v", fillsBefore, fillsAfter, plan.Entries)
+	}
+	if reclaimPhase <= 0 {
+		t.Errorf("reclaims ran in phase %d even though hot needed an earlier fill phase", reclaimPhase)
+	}
+	if final := plan.FinalUsage["/hot"]; final.UsedPercent > model.DefaultHotMaxUsedPercent {
+		t.Errorf("hot ended above its ceiling: %.2f%%", final.UsedPercent)
 	}
 }
 

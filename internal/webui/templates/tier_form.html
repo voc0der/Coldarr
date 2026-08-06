@@ -16,7 +16,7 @@
       <option value="hot" {{if eq (print .Tier.Role) "hot"}}selected{{end}}>hot (primary storage)</option>
       <option value="cold" {{if eq (print .Tier.Role) "cold"}}selected{{end}}>cold (overflow storage)</option>
     </select>
-    <div class="hint">Hot storage is never steered toward a usage level - every cold-eligible item on it is a candidate whenever cold tiers have room.</div>
+    <div class="hint">Hot storage is never steered toward a target usage level. Its max only limits grow-risk items reclaimed from cold storage.</div>
   </div>
 
   <div>
@@ -37,20 +37,20 @@
     </div>
   </div>
 
-  <div id="coldarr-cold-fields" style="display:flex; flex-direction:column; gap:0.75rem">
-    <div>
-      <label for="target">Target used %</label>
-      <input type="number" id="target" name="target_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.TargetUsedPercent}}">
-      <div class="hint">The fill goal Coldarr actively packs toward.</div>
-    </div>
+  <div id="coldarr-target-field">
+    <label for="target">Target used %</label>
+    <input type="number" id="target" name="target_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.TargetUsedPercent}}">
+    <div class="hint">The cold-tier fill goal Coldarr actively packs toward.</div>
+  </div>
 
-    <div>
-      <label for="max">Max used %</label>
-      <input type="number" id="max" name="max_used_percent" step="0.1" min="0.01" max="100" value="{{.Tier.MaxUsedPercent}}">
-      <div class="hint">
-        The hard ceiling, used as a fallback destination when no cold tier has room under its target - never
-        crossed even then. No built-in cap - 100 is allowed.
-      </div>
+  <div>
+    <label for="max">Max used %</label>
+    <input type="number" id="max" name="max_used_percent" step="0.1" min="0" max="100" value="{{.Tier.MaxUsedPercent}}">
+    <div class="hint" id="coldarr-hot-max-hint">
+      The hard ceiling for reclaiming grow-risk items onto hot storage. Leave at 0 for the {{pct (defaultHotMax)}} default, or set a value up to 100 to override it.
+    </div>
+    <div class="hint" id="coldarr-cold-max-hint">
+      The hard ceiling, used as a fallback destination when no cold tier has room under its target and never crossed even then. Set up to 100.
     </div>
   </div>
 
@@ -68,13 +68,14 @@
 <script>
   function coldarrToggleColdFields() {
     var isCold = document.getElementById("role").value === "cold";
-    document.getElementById("coldarr-cold-fields").style.display = isCold ? "flex" : "none";
-    // Disabled (not just hidden) so these fields are excluded from
-    // constraint validation and aren't submitted at all for hot tiers -
-    // a display:none field can still fail its min/max constraint with no
-    // visible way to show the validation error, silently blocking submit.
+    document.getElementById("coldarr-target-field").style.display = isCold ? "block" : "none";
+    // Disabled (not just hidden) so a hot tier's irrelevant target is
+    // excluded from constraint validation and submission. Max remains
+    // visible and enabled for both roles because both roles enforce it.
     document.getElementById("target").disabled = !isCold;
-    document.getElementById("max").disabled = !isCold;
+    document.getElementById("max").min = isCold ? "0.01" : "0";
+    document.getElementById("coldarr-hot-max-hint").style.display = isCold ? "none" : "block";
+    document.getElementById("coldarr-cold-max-hint").style.display = isCold ? "block" : "none";
   }
   coldarrToggleColdFields();
 </script>

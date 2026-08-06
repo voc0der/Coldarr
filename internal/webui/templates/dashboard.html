@@ -45,10 +45,10 @@
   <td>{{gb .UsedBytes}} <span class="muted">({{pct .UsedPercent}})</span></td>
   {{end}}
   <td>{{gb .TotalBytes}}</td>
-  {{if .HasThresholds}}
+  {{if .HasTarget}}
   <td class="muted">{{pct .TargetPercent}} / {{pct .MaxPercent}}</td>
   {{else}}
-  <td class="muted">-</td>
+  <td class="muted">reclaim max {{pct .MaxPercent}} {{if .UsesDefaultMax}}(default){{else}}(configured){{end}}</td>
   {{end}}
   <td><span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span></td>
   {{else}}
