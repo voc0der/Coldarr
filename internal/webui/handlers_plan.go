@@ -155,13 +155,10 @@ func (s *Server) renderPlanError(w http.ResponseWriter, err error) {
 // internal/mover), then redirects to the live status page. It never
 // blocks on the moves themselves.
 func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
-	s.applyMu.Lock()
-	if s.currentRun != nil && !s.currentRun.progress.Snapshot().Done {
-		s.applyMu.Unlock()
+	if s.applyInFlight() {
 		http.Redirect(w, r, "/plan", http.StatusSeeOther)
 		return
 	}
-	s.applyMu.Unlock()
 
 	eng, err := s.newEngine()
 	if err != nil {
@@ -224,11 +221,19 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 
 	progress := eng.Movers().Apply(plan, inv.VolumeOf())
 
+	run := &applyRun{progress: progress, lock: lock}
+	run.active.Store(true)
+
 	s.applyMu.Lock()
-	s.currentRun = &applyRun{progress: progress, lock: lock}
+	s.currentRun = run
 	s.applyMu.Unlock()
 
 	go func() {
+		// Deferred LIFO, so the lock is released *before* the run stops
+		// reporting itself as in flight - never the reverse, or there's a
+		// window where a new apply is admitted and then fails on
+		// AcquireLock.
+		defer run.active.Store(false)
 		defer func() { _ = lock.Release() }()
 		progress.Wait()
 
@@ -242,6 +247,16 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 	return progress, nil
 }
 
+// applyInFlight reports whether an apply run is still occupying the mover
+// lock, and is the single answer both the manual "Apply this plan" button
+// and the scheduler gate on. See applyRun.active for why the moves being
+// done is not the same question.
+func (s *Server) applyInFlight() bool {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	return s.currentRun != nil && s.currentRun.active.Load()
+}
+
 type applyStatusEntryView struct {
 	Title  string
 	To     string
@@ -250,12 +265,18 @@ type applyStatusEntryView struct {
 }
 
 type applyStatusData struct {
-	NoRun       bool
-	Running     bool
-	Finished    string
-	MovedCount  int
-	FailedCount int
-	Entries     []applyStatusEntryView
+	NoRun   bool
+	Running bool
+	// SyncingJellyfin is the tail end of a run: every move has landed, but
+	// Coldarr is still waiting on Jellyfin to surface each moved item at
+	// its new path so it can refresh the artwork. The moves table is
+	// already final here, so without saying so the page would look idle
+	// for minutes while still refusing to start another apply.
+	SyncingJellyfin bool
+	Finished        string
+	MovedCount      int
+	FailedCount     int
+	Entries         []applyStatusEntryView
 }
 
 // finishedResultTTL bounds how long a completed apply's result stays
@@ -279,9 +300,13 @@ func (s *Server) currentApplyStatus() applyStatusData {
 		return applyStatusData{NoRun: true}
 	}
 
-	data := applyStatusData{Running: !snap.Done}
+	// Running tracks the whole run, not just the moves - see applyRun.active.
+	// Finished stays keyed on the moves themselves, since that is the time
+	// the table below is reporting.
+	data := applyStatusData{Running: run.active.Load()}
 	if snap.Done {
 		data.Finished = snap.Finished.Format("2006-01-02 15:04")
+		data.SyncingJellyfin = data.Running
 	}
 
 	for _, e := range snap.Entries {
