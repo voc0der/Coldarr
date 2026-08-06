@@ -53,7 +53,7 @@ type scaleDrive struct {
 // whatever it does.
 func scaleDrives() []scaleDrive {
 	return []scaleDrive{
-		// Hot starts at 98.6% used: past pickHotDestination's default
+		// Hot starts at 98.6% used: past the hot tier's default
 		// ceiling, though with ~280 GB free it has far more raw bytes
 		// than any single reclaim needs. Nothing can be reclaimed onto
 		// it until fills bring it back under the ceiling.

@@ -571,29 +571,19 @@ func bestDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt mo
 	return bestTier, bestPath, found
 }
 
-// pickHotDestination finds a hot-tier path with enough free room to accept
-// sizeBytes, for moving a grow-risk item back off cold storage (see
-// misplacedOnCold). Hot storage is never proactively packed toward a usage
-// level the way cold tiers are packed toward TargetUsedPercent - but a
-// destination's projected usage still may not cross its ceiling: the
-// tier's own MaxUsedPercent if it has set one, else the model default.
-// Among viable paths, it chooses the tightest fit, preserving larger slots
-// for reclaims that cannot fit anywhere else.
-func pickHotDestination(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) (model.Tier, string, bool) {
-	options := hotDestinationOptions(tiers, usage, mt, sizeBytes)
-	if len(options) == 0 {
-		return model.Tier{}, "", false
-	}
-	tier, path := bestHotDestination(options)
-	return tier, path, true
-}
-
 type hotDestinationOption struct {
 	tier          model.Tier
 	path          string
 	remainingRoom float64
 }
 
+// hotDestinationOptions returns every hot-tier path with enough free room
+// to accept sizeBytes, for moving a grow-risk item back off cold storage
+// (see misplacedOnCold). Hot storage is never proactively packed toward a
+// usage level the way cold tiers are packed toward TargetUsedPercent - but
+// a destination's projected usage still may not cross its ceiling: the
+// tier's own MaxUsedPercent if it has set one, else the model default.
+// Callers that need a single destination pick with bestHotDestination.
 func hotDestinationOptions(tiers []model.Tier, usage map[string]diskusage.Usage, mt model.MediaType, sizeBytes int64) []hotDestinationOption {
 	var options []hotDestinationOption
 
@@ -633,6 +623,8 @@ func hotDestinationOptions(tiers []model.Tier, usage map[string]diskusage.Usage,
 	return options
 }
 
+// bestHotDestination chooses the tightest fit among options, preserving
+// larger slots for reclaims that cannot fit anywhere else.
 func bestHotDestination(options []hotDestinationOption) (model.Tier, string) {
 	best := options[0]
 	for _, option := range options[1:] {

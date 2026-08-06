@@ -813,7 +813,7 @@ func TestBuild_QualityCutoffPromotionFreesColdRoomForSubsequentPacking(t *testin
 // hot only has 7 GB free - not enough for the 10 GB reclaim - until an
 // 8 GB fill (moving something else off hot to cold, which has plenty of
 // room) frees up more, landing the reclaim's destination at 95% used,
-// still under pickHotDestination's default 97% ceiling. The reclaim can
+// still under the hot tier's default 97% ceiling. The reclaim can
 // only succeed in a later round than the fill, and its MoveEntry.Phase
 // must reflect that so the mover executes the fill first for real, not
 // just on paper.

@@ -461,7 +461,7 @@ func (m *Movers) settle(entry planner.MoveEntry) error {
 
 	err = fmt.Errorf("move command was accepted, but landing of %q at %s could not be confirmed within %s", entry.Item.Title, entry.ToPath, maxWait)
 	if lastConfirmationErr != nil {
-		return fmt.Errorf("%w: last confirmation failed: %v", err, lastConfirmationErr)
+		return fmt.Errorf("%w: last confirmation failed: %w", err, lastConfirmationErr)
 	}
 	return err
 }
