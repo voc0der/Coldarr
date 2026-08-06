@@ -232,11 +232,9 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 		defer func() { _ = lock.Release() }()
 		progress.Wait()
 
-		if len(progress.Snapshot().Moved()) > 0 {
-			if jf := eng.JellyfinClient(); jf != nil {
-				if err := jf.RefreshLibrary(); err != nil {
-					log.Printf("webui: jellyfin refresh after apply failed: %v", err)
-				}
+		if moved := progress.Snapshot().Moved(); len(moved) > 0 {
+			if err := eng.NotifyJellyfinMoved(moved); err != nil {
+				log.Printf("webui: jellyfin update after apply failed: %v", err)
 			}
 		}
 	}()
