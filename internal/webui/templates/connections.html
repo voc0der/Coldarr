@@ -1,7 +1,7 @@
 {{define "content"}}
 {{template "settings_subnav" .}}
 <h1>Connections</h1>
-<p class="muted">Coldarr never touches media files directly - it asks Radarr/Sonarr to relocate items. Jellyfin, if enabled, gets a refresh after moves, and anything a Jellyfin user has marked Favorite is never moved.</p>
+<p class="muted">Coldarr never touches media files directly - it asks Radarr/Sonarr to relocate items. Jellyfin, if enabled, gets a refresh after moves, and anything a Jellyfin user has marked Favorite is kept on hot storage - never moved to cold, and moved back if it's already there.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
@@ -31,7 +31,7 @@
     {{if eq .App "jellyfin"}}
     <div class="checkbox-row">
       <input type="checkbox" id="enabled-{{.App}}" name="enabled" {{if .Enabled}}checked{{end}}>
-      <label for="enabled-{{.App}}" style="font-weight:400">Enabled (refresh library after moves, and protect anyone's Favorites from being moved)</label>
+      <label for="enabled-{{.App}}" style="font-weight:400">Enabled (refresh library after moves, and keep anyone's Favorites on hot storage)</label>
     </div>
     {{end}}
     <div class="btn-row">

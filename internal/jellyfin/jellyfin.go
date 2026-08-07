@@ -1,8 +1,8 @@
 // Package jellyfin re-points Jellyfin at media Coldarr has moved between
 // tiers (see NotifyMoved), reads Favorite status (matched back to
-// Radarr/Sonarr items by path) so favorited items are never moved, and
-// confirms connectivity. Jellyfin is a consumer of the library, never the
-// mover.
+// Radarr/Sonarr items by path) so favorited items are kept on hot storage,
+// and confirms connectivity. Jellyfin is a consumer of the library, never
+// the mover.
 package jellyfin
 
 import (
@@ -365,7 +365,7 @@ func (c *Client) perUserItems(q url.Values) ([]libraryItem, error) {
 // back to Radarr/Sonarr items by path. Favorite status is per-user in
 // Jellyfin's API (there's no library-wide "is this a favorite" flag), so
 // this enumerates every user and unions their favorites - if anyone in the
-// household favorited it, Coldarr treats it as protected.
+// household favorited it, Coldarr keeps it on hot storage.
 func (c *Client) FavoritePaths() (map[string]bool, error) {
 	q := url.Values{}
 	q.Set("Recursive", "true")

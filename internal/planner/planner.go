@@ -444,9 +444,16 @@ type misplacedOnColdItem struct {
 }
 
 // misplacedOnCold returns every item currently sitting on a cold-tier path
-// whose contents aren't actually settled yet, so cold - which Coldarr packs
-// tight toward its target/max on purpose - is the worst possible place for
-// it:
+// that doesn't belong there - either because its contents aren't actually
+// settled yet, so cold (which Coldarr packs tight toward its target/max on
+// purpose) is the worst possible place for it, or because a user has said
+// outright that they want it on hot:
+//
+//   - Marked Favorite in Jellyfin: someone in the household asked for this
+//     title to live on fast storage. Typically it reached cold before it
+//     was favorited - Coldarr demoted it, the user noticed, and starred it
+//     precisely to undo that - so the next plan has to be willing to bring
+//     it back rather than only to leave future favorites alone.
 //
 //   - Upcoming: hasn't been released/premiered yet, and is about to start
 //     actively receiving new episodes/a release. Likely on cold because it
@@ -463,11 +470,13 @@ type misplacedOnColdItem struct {
 //     upgrade lands.
 //
 // Not gated by cooldown or minimum move size: unlike the coldness ranking
-// below, this is a correctness fix, not a stylistic rebalance, and it's a
-// one-time transition per item (once it's released, or upgraded to meet
-// its cutoff, it no longer matches either condition). Protected remains
-// absolute, however: active imports, never-move tags, and other protected
-// states must not be reclaimed even if their raw metadata is grow-risk.
+// below, none of these are a stylistic rebalance. The grow-risk states are
+// one-time transitions (once released, or upgraded to meet its cutoff, an
+// item stops matching), and a Favorite is a direct user instruction that
+// should take effect on the very next plan - most of all when Coldarr moved
+// the item minutes ago, which is exactly what prompted the favoriting.
+// Protected remains absolute, however: active imports, never-move tags, and
+// other protected states must not be reclaimed even for a favorite.
 func misplacedOnCold(items []ItemEval, coldPaths map[string]model.Tier) []misplacedOnColdItem {
 	var out []misplacedOnColdItem
 	for _, it := range items {
@@ -476,6 +485,8 @@ func misplacedOnCold(items []ItemEval, coldPaths map[string]model.Tier) []mispla
 			continue
 		}
 		switch {
+		case it.Item.JellyfinFavorite:
+			out = append(out, misplacedOnColdItem{Item: it, Reason: "marked Favorite in Jellyfin - moving back to hot storage", FromTier: fromTier})
 		case it.Item.Upcoming:
 			out = append(out, misplacedOnColdItem{Item: it, Reason: "upcoming - misplaced on cold storage, moving back before it's released", FromTier: fromTier})
 		case it.Item.Monitored && it.Item.QualityCutoffNotMet:

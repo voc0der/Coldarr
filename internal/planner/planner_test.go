@@ -1217,3 +1217,359 @@ func TestBuild_StillWarnsWhenNoRoundEverMakesRoom(t *testing.T) {
 		t.Fatal("expected a warning when the reclaim never fits in any round")
 	}
 }
+
+// favoriteItem is a Jellyfin-favorited series sitting at rootFolderPath.
+// A Favorite is an explicit user statement that this title belongs on fast
+// storage, so scoring hands the planner Hot (see scoring.Evaluate) - it is
+// only Protected when something stricter (never-move tag, active import)
+// also applies, which the tests below cover separately.
+func favoriteItem(title, rootFolderPath string, sizeBytes int64) ItemEval {
+	return ItemEval{
+		Item: model.MediaItem{
+			ArrApp: "sonarr", ID: 1, Type: model.TV, Title: title,
+			RootFolderPath: rootFolderPath, SizeBytes: sizeBytes,
+			Monitored: true, HasFile: true, JellyfinFavorite: true,
+		},
+		Eval: scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"marked Favorite in Jellyfin"}},
+	}
+}
+
+func TestBuild_ReclaimsFavoriteOnColdBackToHot(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{favoriteItem("Bonkers", "/cold1", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected the favorite to be reclaimed to hot, got %d moves: %+v", len(plan.Entries), plan.Entries)
+	}
+	e := plan.Entries[0]
+	if e.FromTier != "cold-tv" || e.FromPath != "/cold1" || e.ToTier != "hot" || e.ToPath != "/hot" {
+		t.Fatalf("unexpected move direction: %+v", e)
+	}
+}
+
+// TestBuild_FavoriteOnColdEvictsColdCandidateToMakeRoom is the issue #77
+// reproduction: Coldarr moved a show to cold, the user then favorited it in
+// Jellyfin, and the next plan must pull it back - evicting an ordinary
+// cold-eligible item from hot first when hot has no room of its own. The
+// favorite is deliberately inside the move cooldown, because "Coldarr just
+// moved this and I immediately favorited it" is the literal bug report.
+func TestBuild_FavoriteOnColdEvictsColdCandidateToMakeRoom(t *testing.T) {
+	favorite := favoriteItem("Bonkers", "/cold1", 10*gib)
+
+	h := emptyHistory(t)
+	if err := h.Append(history.Record{
+		ArrApp:  favorite.Item.ArrApp,
+		ItemID:  favorite.Item.ID,
+		MovedAt: time.Now().Add(-time.Hour), // Coldarr moved it to cold an hour ago
+	}); err != nil {
+		t.Fatalf("history.Append: %v", err)
+	}
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 93*gib),   // 7 GB free - not enough for a 10 GB reclaim
+			"/cold1": usage(1000*gib, 100*gib), // plenty of room to take the evicted item
+		},
+		Items: []ItemEval{
+			favorite,
+			{
+				Item: model.MediaItem{ArrApp: "sonarr", ID: 2, Type: model.TV, Title: "Show B", RootFolderPath: "/hot", SizeBytes: 8 * gib},
+				Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 80},
+			},
+		},
+		History: h,
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Warnings) != 0 {
+		t.Fatalf("expected no warnings once the eviction makes room, got %v", plan.Warnings)
+	}
+	if len(plan.Entries) != 2 {
+		t.Fatalf("expected the eviction and the favorite reclaim it enables, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+
+	var fillPhase, reclaimPhase int
+	var foundFill, foundReclaim bool
+	for _, e := range plan.Entries {
+		switch e.Item.Title {
+		case "Show B":
+			foundFill = true
+			fillPhase = e.Phase
+			if e.FromTier != "hot" || e.ToTier != "cold-tv" {
+				t.Errorf("eviction entry has wrong direction: %+v", e)
+			}
+		case "Bonkers":
+			foundReclaim = true
+			reclaimPhase = e.Phase
+			if e.FromTier != "cold-tv" || e.ToTier != "hot" {
+				t.Errorf("favorite reclaim entry has wrong direction: %+v", e)
+			}
+		}
+	}
+	if !foundFill || !foundReclaim {
+		t.Fatalf("expected both Bonkers and Show B in the plan, got %+v", plan.Entries)
+	}
+	if fillPhase >= reclaimPhase {
+		t.Errorf("expected the eviction's Phase (%d) strictly before the favorite reclaim's Phase (%d) - the reclaim depends on the eviction having already freed hot room", fillPhase, reclaimPhase)
+	}
+}
+
+// TestBuild_FavoriteReclaimIgnoresCooldownAndMinMoveSize pins the two gates
+// that apply to ordinary hot->cold packing but deliberately do not apply to
+// reclaims. Favoriting a title is an explicit request that must take effect
+// on the next plan, however recently Coldarr moved it and however small it
+// is.
+func TestBuild_FavoriteReclaimIgnoresCooldownAndMinMoveSize(t *testing.T) {
+	favorite := favoriteItem("Bonkers", "/cold1", 2*gib)
+
+	h := emptyHistory(t)
+	if err := h.Append(history.Record{
+		ArrApp:  favorite.Item.ArrApp,
+		ItemID:  favorite.Item.ID,
+		MovedAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("history.Append: %v", err)
+	}
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{favorite},
+		History: h,
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 50}, // both gates would block a fill
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 1 {
+		t.Fatalf("expected the favorite reclaim to bypass cooldown and min move size, got %d moves: %+v", len(plan.Entries), plan.Entries)
+	}
+	if e := plan.Entries[0]; e.ToTier != "hot" {
+		t.Fatalf("expected a cold->hot reclaim, got %+v", e)
+	}
+}
+
+// TestBuild_FavoriteAlreadyOnHotIsLeftAlone is the other half of the
+// guarantee: calling a Favorite Hot rather than Protected must not make it
+// eligible for hot->cold packing, even when everything else about it says
+// "cold" and cold has room waiting.
+func TestBuild_FavoriteAlreadyOnHotIsLeftAlone(t *testing.T) {
+	favorite := favoriteItem("Bonkers", "/hot", 50*gib)
+	favorite.Item.Tags = []string{"cold-ok"}
+	favorite.Item.Added = time.Now().AddDate(-5, 0, 0)
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 95*gib), // hot is nearly full - pressure to evict
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{favorite},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("a favorite on hot must never be moved to cold, got %+v", plan.Entries)
+	}
+}
+
+func TestBuild_FavoriteOnColdWarnsWhenNoHotRoom(t *testing.T) {
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(100*gib, 99*gib), // ~1 GB free - not enough
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{favoriteItem("Bonkers", "/cold1", 5*gib)},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected no move when hot has no room, got %d: %+v", len(plan.Entries), plan.Entries)
+	}
+	if len(plan.Warnings) == 0 {
+		t.Fatal("expected a warning when no hot destination has room for a favorite reclaim")
+	}
+}
+
+// TestBuild_NeverReclaimsFavoriteThatIsAlsoProtected is the safety edge of
+// #77: a Favorite that is simultaneously mid-import or tagged never-move is
+// still Protected by scoring, and Protected stays absolute - the reclaim
+// path must not reach around it.
+func TestBuild_NeverReclaimsFavoriteThatIsAlsoProtected(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+	}{
+		{name: "active import", reason: "active download/import in progress"},
+		{name: "never-move tag", reason: "tagged never-move"},
+		{name: "protected tag", reason: "tagged protected/keep-hot"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := favoriteItem("Bonkers", "/cold1", 5*gib)
+			item.Eval = scoring.Evaluation{Decision: scoring.Protected, Reasons: []string{tt.reason}}
+
+			in := Input{
+				Tiers: tvTiers(),
+				Usage: map[string]diskusage.Usage{
+					"/hot":   usage(1000*gib, 100*gib), // room to spare, so only the Protected check can stop it
+					"/cold1": usage(1000*gib, 100*gib),
+				},
+				Items:   []ItemEval{item},
+				History: emptyHistory(t),
+				Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+				Now:     time.Now(),
+			}
+
+			plan, err := Build(in)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if len(plan.Entries) != 0 {
+				t.Fatalf("a protected favorite must never move: %+v", plan.Entries)
+			}
+			if len(plan.Warnings) != 0 {
+				t.Fatalf("a protected favorite is not an unplaced candidate and should not warn: %v", plan.Warnings)
+			}
+		})
+	}
+}
+
+// TestBuild_NonFavoriteHotItemOnColdIsNotReclaimed keeps the new reclaim
+// case scoped: being Hot for some ordinary reason (inside the grace period,
+// a continuing series, a below-threshold score) is not on its own grounds to
+// pull a title back off cold storage.
+func TestBuild_NonFavoriteHotItemOnColdIsNotReclaimed(t *testing.T) {
+	item := favoriteItem("Show A", "/cold1", 5*gib)
+	item.Item.JellyfinFavorite = false
+	item.Eval = scoring.Evaluation{Decision: scoring.Hot, Reasons: []string{"series is continuing/currently airing"}}
+
+	in := Input{
+		Tiers: tvTiers(),
+		Usage: map[string]diskusage.Usage{
+			"/hot":   usage(1000*gib, 100*gib),
+			"/cold1": usage(1000*gib, 100*gib),
+		},
+		Items:   []ItemEval{item},
+		History: emptyHistory(t),
+		Policy:  config.PolicyConfig{CooldownDays: 30, MinMoveSizeGB: 1},
+		Now:     time.Now(),
+	}
+
+	plan, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(plan.Entries) != 0 {
+		t.Fatalf("expected reclaim to stay scoped to favorites/upcoming/cutoff-unmet, got %d moves: %+v", len(plan.Entries), plan.Entries)
+	}
+}
+
+// TestBuild_FavoriteScoredByRealPolicyIsReclaimed wires the real scoring
+// policy into Build instead of a hand-written Evaluation, so the two halves
+// of the #77 fix cannot drift apart: whatever Decision scoring.Evaluate
+// hands a favorite has to be one misplacedOnCold is willing to act on. The
+// identical item without the star is the control - it is genuinely cold by
+// every other measure and must be left on cold storage.
+func TestBuild_FavoriteScoredByRealPolicyIsReclaimed(t *testing.T) {
+	policy := config.PolicyConfig{
+		CooldownDays:            30,
+		HotGraceDays:            14,
+		MinMoveSizeGB:           1,
+		NeverMoveTags:           []string{"never-move"},
+		ProtectedTags:           []string{"keep-hot"},
+		ColdOkTags:              []string{"cold-ok"},
+		ProtectContinuingSeries: true,
+		ColdScoreThreshold:      40,
+	}
+	now := time.Now()
+	lastAired := now.AddDate(-2, 0, 0)
+
+	for _, tt := range []struct {
+		name          string
+		favorite      bool
+		wantReclaimed bool
+	}{
+		{name: "favorited", favorite: true, wantReclaimed: true},
+		{name: "not favorited", favorite: false, wantReclaimed: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			item := model.MediaItem{
+				ArrApp: "sonarr", ID: 1, Type: model.TV, Title: "Bonkers",
+				RootFolderPath: "/cold1", SizeBytes: 10 * gib,
+				Added: now.AddDate(-3, 0, 0), Ended: true, LastAired: &lastAired,
+				Monitored: true, HasFile: true,
+				JellyfinFavorite: tt.favorite,
+			}
+
+			eval := scoring.Evaluate(item, policy, now)
+			if tt.favorite && eval.Decision != scoring.Hot {
+				t.Fatalf("precondition: expected a favorite to score Hot, got %v", eval.Decision)
+			}
+			if !tt.favorite && eval.Decision != scoring.Cold {
+				t.Fatalf("precondition: expected the unfavorited control to score Cold, got %v (score %.1f)", eval.Decision, eval.Score)
+			}
+
+			in := Input{
+				Tiers: tvTiers(),
+				Usage: map[string]diskusage.Usage{
+					"/hot":   usage(1000*gib, 100*gib),
+					"/cold1": usage(1000*gib, 100*gib),
+				},
+				Items:   []ItemEval{{Item: item, Eval: eval}},
+				History: emptyHistory(t),
+				Policy:  policy,
+				Now:     now,
+			}
+
+			plan, err := Build(in)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			reclaimed := len(plan.Entries) == 1 && plan.Entries[0].ToTier == "hot"
+			if reclaimed != tt.wantReclaimed {
+				t.Fatalf("reclaimed = %v, want %v (entries: %+v)", reclaimed, tt.wantReclaimed, plan.Entries)
+			}
+		})
+	}
+}
