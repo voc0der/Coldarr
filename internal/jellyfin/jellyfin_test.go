@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -157,26 +158,22 @@ func TestClient_ReportMediaUpdated_SendsPaths(t *testing.T) {
 	}
 }
 
-// TestClient_NotifyMoved_ResolvesNewPathThenRefreshes covers the whole
-// point of the sequence: the item ID is re-resolved from the item's NEW
-// path (Jellyfin hashes paths into IDs, so the pre-move ID is dead), and
-// the refresh targets that ID. The Movie's Path is the video file, one
+// TestClient_ResolveAndRefresh_ResolvesNewPathThenRefreshes covers the
+// whole point of the sequence: the item ID is re-resolved from the item's
+// NEW path (Jellyfin hashes paths into IDs, so the pre-move ID is dead),
+// and the refresh targets that ID. The Movie's Path is the video file, one
 // level below the folder Radarr reports, which is what makes the
 // itemFolderPath normalization load-bearing here.
-func TestClient_NotifyMoved_ResolvesNewPathThenRefreshes(t *testing.T) {
+//
+// It also pins that resolving reports nothing itself, which is what makes
+// reporting each item mid-run safe: Jellyfin folds a repeat report into
+// the refresher already pending for that path and restarts its timer, so
+// re-reporting here would push back by another LibraryMonitorDelay the
+// very rescan this is waiting on.
+func TestClient_ResolveAndRefresh_ResolvesNewPathThenRefreshes(t *testing.T) {
 	var refreshed []string
-	var reported []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/Library/Media/Updated":
-			var body struct {
-				Updates []mediaUpdate `json:"Updates"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			for _, u := range body.Updates {
-				reported = append(reported, u.Path)
-			}
-			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/Users":
 			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
 		case r.URL.Path == "/Users/u1/Items":
@@ -188,44 +185,31 @@ func TestClient_NotifyMoved_ResolvesNewPathThenRefreshes(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
+			// Catches /Library/Media/Updated in particular.
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
 
-	err := testClient(t, srv.URL).NotifyMoved([]MovedItem{
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
 		{Title: "Movie A", OldPath: "/hot/Movie A", NewPath: "/cold/Movie A"},
 	})
 	if err != nil {
-		t.Fatalf("NotifyMoved: %v", err)
+		t.Fatalf("ResolveAndRefresh: %v", err)
 	}
 
 	if len(refreshed) != 1 || refreshed[0] != "cold-movie-1" {
 		t.Errorf("refreshed = %v, want [cold-movie-1] (the ID at the NEW path)", refreshed)
 	}
-	// Both the vacated and the new path are reported, so Jellyfin drops
-	// the old entry instead of leaving a phantom behind.
-	for _, want := range []string{"/hot/Movie A", "/cold/Movie A"} {
-		found := false
-		for _, p := range reported {
-			if p == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("path %q was never reported to Jellyfin, got %v", want, reported)
-		}
-	}
 }
 
-// TestClient_NotifyMoved_UnresolvedItemIsReported guards the case that
-// used to be invisible: Jellyfin never surfaces the item at its new path,
-// and the caller has to learn about it rather than get a cheerful nil.
-func TestClient_NotifyMoved_UnresolvedItemIsReported(t *testing.T) {
+// TestClient_ResolveAndRefresh_UnresolvedItemIsReported guards the case
+// that used to be invisible: Jellyfin never surfaces the item at its new
+// path, and the caller has to learn about it rather than get a cheerful
+// nil.
+func TestClient_ResolveAndRefresh_UnresolvedItemIsReported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/Library/Media/Updated":
-			w.WriteHeader(http.StatusNoContent)
 		case "/Users":
 			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
 		case "/Users/u1/Items":
@@ -236,7 +220,7 @@ func TestClient_NotifyMoved_UnresolvedItemIsReported(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := testClient(t, srv.URL).NotifyMoved([]MovedItem{
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
 		{Title: "Movie A", OldPath: "/hot/Movie A", NewPath: "/cold/Movie A"},
 	})
 	if err == nil {
@@ -247,17 +231,15 @@ func TestClient_NotifyMoved_UnresolvedItemIsReported(t *testing.T) {
 	}
 }
 
-// TestClient_NotifyMoved_SameTitledItemsReportedSeparately covers a real
-// library shape: two distinct items sharing a title (a remake, or the same
-// show tracked under two roots). They are different files in different
-// folders, so both can fail independently and an operator needs to see
-// both - keying the failure set by title silently collapsed them into one,
-// under-reporting how much artwork was left stale.
-func TestClient_NotifyMoved_SameTitledItemsReportedSeparately(t *testing.T) {
+// TestClient_ResolveAndRefresh_SameTitledItemsReportedSeparately covers a
+// real library shape: two distinct items sharing a title (a remake, or the
+// same show tracked under two roots). They are different files in
+// different folders, so both can fail independently and an operator needs
+// to see both - keying the failure set by title silently collapsed them
+// into one, under-reporting how much artwork was left stale.
+func TestClient_ResolveAndRefresh_SameTitledItemsReportedSeparately(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/Library/Media/Updated":
-			w.WriteHeader(http.StatusNoContent)
 		case "/Users":
 			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
 		case "/Users/u1/Items":
@@ -268,7 +250,7 @@ func TestClient_NotifyMoved_SameTitledItemsReportedSeparately(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := testClient(t, srv.URL).NotifyMoved([]MovedItem{
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
 		{Title: "The Thing", OldPath: "/hot/The Thing (1982)", NewPath: "/cold/The Thing (1982)"},
 		{Title: "The Thing", OldPath: "/hot/The Thing (2011)", NewPath: "/cold/The Thing (2011)"},
 	})
@@ -350,5 +332,112 @@ func TestClient_LibraryItemIDs_DedupsAcrossUsers(t *testing.T) {
 	}
 	if len(ids) != 2 {
 		t.Fatalf("expected 2 distinct items, got %d: %+v", len(ids), ids)
+	}
+}
+
+// TestClient_ReportMoved_SendsVacatedAndOccupiedPaths pins both halves of
+// the hint: the folder the item left, so the stale entry there gets
+// revalidated away, and the folder it now occupies.
+func TestClient_ReportMoved_SendsVacatedAndOccupiedPaths(t *testing.T) {
+	byType := map[string][]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/Library/Media/Updated" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			Updates []mediaUpdate `json:"Updates"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		for _, u := range body.Updates {
+			byType[u.UpdateType] = append(byType[u.UpdateType], u.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ReportMoved([]MovedItem{
+		{Title: "Movie A", OldPath: "/hot/movies/Movie A", NewPath: "/cold/movies/Movie A"},
+	})
+	if err != nil {
+		t.Fatalf("ReportMoved: %v", err)
+	}
+
+	if got := byType["Deleted"]; len(got) != 1 || got[0] != "/hot/movies/Movie A" {
+		t.Errorf("vacated paths = %v, want [/hot/movies/Movie A]", got)
+	}
+	if got := byType["Created"]; len(got) != 1 || got[0] != "/cold/movies/Movie A" {
+		t.Errorf("occupied paths = %v, want [/cold/movies/Movie A]", got)
+	}
+}
+
+// TestClient_ResolveAndRefresh_BacksOffBetweenPolls guards what the long
+// resolve budget costs. Every poll lists the entire library once per user,
+// and it runs while Jellyfin is busy with the scan being waited for, so
+// holding a short fixed interval for the whole timeout would aim this
+// function's heaviest read load at precisely the worst moment.
+func TestClient_ResolveAndRefresh_BacksOffBetweenPolls(t *testing.T) {
+	var mu sync.Mutex
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case "/Users/u1/Items":
+			mu.Lock()
+			polls++
+			mu.Unlock()
+			// Never resolves, so this runs the full timeout.
+			_, _ = w.Write([]byte(`{"Items": []}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// testClient polls every 1ms with a 200ms budget, so a fixed interval
+	// would be ~200 listings; backing off to the 8ms cap is ~30.
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
+		{Title: "Movie A", NewPath: "/cold/movies/Movie A"},
+	})
+	if err == nil {
+		t.Fatal("expected an error naming the item that never appeared")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if polls > 60 {
+		t.Errorf("polled %d times in the resolve budget, want the interval to back off", polls)
+	}
+	if polls < 2 {
+		t.Errorf("polled %d times, want it to retry rather than give up after one look", polls)
+	}
+}
+
+// TestResolveBackoffCeiling_NeverBelowConfiguredInterval pins the
+// direction backoff is allowed to move. Driving this through
+// ResolveAndRefresh would mean a test that sleeps for real minutes, since
+// the case only bites at intervals above maxResolvePollInterval.
+func TestResolveBackoffCeiling_NeverBelowConfiguredInterval(t *testing.T) {
+	cases := []struct {
+		name string
+		base time.Duration
+		want time.Duration
+	}{
+		{"default interval backs off to the cap", 10 * time.Second, maxResolvePollInterval},
+		{"short interval backs off to 8x, under the cap", time.Millisecond, 8 * time.Millisecond},
+		{"interval at the cap stays there", maxResolvePollInterval, maxResolvePollInterval},
+		// The regression: an operator asking for less polling pressure than
+		// the cap allows must not be sped back up to it.
+		{"interval above the cap is never shortened", 5 * time.Minute, 5 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveBackoffCeiling(tc.base); got != tc.want {
+				t.Errorf("resolveBackoffCeiling(%s) = %s, want %s", tc.base, got, tc.want)
+			}
+			if got := resolveBackoffCeiling(tc.base); got < tc.base {
+				t.Errorf("resolveBackoffCeiling(%s) = %s, which polls faster than configured", tc.base, got)
+			}
+		})
 	}
 }

@@ -2,11 +2,13 @@ package mover
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1208,4 +1210,135 @@ func indexOf(haystack []string, needle string) int {
 		}
 	}
 	return -1
+}
+
+// recordingReporter appends each report into the same ordered log the fake
+// Radarr server writes its move calls to, so a test can assert where a
+// report falls relative to the moves around it.
+type recordingReporter struct {
+	mu    *sync.Mutex
+	order *[]string
+	err   error
+}
+
+func (r *recordingReporter) ReportMoved(oldPath, newPath string) error {
+	r.mu.Lock()
+	*r.order = append(*r.order, fmt.Sprintf("report:%s -> %s", oldPath, newPath))
+	r.mu.Unlock()
+	return r.err
+}
+
+// TestApply_ReportsEachMoveAsItLands is the timing guarantee the reporter
+// exists for. A consumer's indexing is slow and starts late - Jellyfin
+// sits on a reported path for a minute before touching it, then
+// revalidates the whole containing library root - so what matters is not
+// merely that every move gets reported, but that each one is handed over
+// while there are still moves left for that work to overlap. Interleaving
+// is what proves it: item 1's report lands before item 2's move is even
+// issued, which a batch built up and delivered at the end cannot do.
+func TestApply_ReportsEachMoveAsItLands(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		Reporter:            &recordingReporter{mu: &mu, order: &callOrder},
+		Logf:                t.Logf,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+		},
+	}
+
+	// Both entries target the same destination, so they're serialized and
+	// the interleaving asserted below is deterministic.
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Movie 1", Path: "/hot/Movie 1"}, ToTier: "cold", ToPath: "/cold"},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Movie 2", Path: "/hot/Movie 2"}, ToTier: "cold", ToPath: "/cold"},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	got := append([]string(nil), callOrder...)
+	mu.Unlock()
+
+	want := []string{
+		"1@/cold",
+		"report:/hot/Movie 1 -> /cold",
+		"2@/cold",
+		"report:/hot/Movie 2 -> /cold",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("call order = %v, want %v", got, want)
+	}
+
+	for _, e := range progress.Snapshot().Moved() {
+		if !e.Reported {
+			t.Errorf("%s: Reported = false, want true so the end-of-run pass doesn't report it a second time", e.Entry.Item.Title)
+		}
+	}
+}
+
+// TestApply_ReporterFailureLeavesTheMoveUnreported: a downstream consumer
+// being unreachable says nothing about whether the media moved, which
+// Radarr already confirmed, so the entry still completes. But it must not
+// claim to have been reported - that flag is exactly what the end-of-run
+// pass uses to pick out the items still needing one.
+func TestApply_ReporterFailureLeavesTheMoveUnreported(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		Reporter:            &recordingReporter{mu: &mu, order: &callOrder, err: errors.New("jellyfin unreachable")},
+		Logf:                t.Logf,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50, UsedPercent: 50}, nil
+		},
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Movie 1", Path: "/hot/Movie 1"}, ToTier: "cold", ToPath: "/cold"},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	moved := progress.Snapshot().Moved()
+	if len(moved) != 1 {
+		t.Fatalf("expected the move to complete despite the reporter failing, got %+v", progress.Snapshot().Entries)
+	}
+	if moved[0].LandedPath != "/cold" {
+		t.Errorf("LandedPath = %q, want /cold", moved[0].LandedPath)
+	}
+	if moved[0].Reported {
+		t.Error("Reported = true after the report failed, which would make the end-of-run pass skip the one item that still needs reporting")
+	}
 }

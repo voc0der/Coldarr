@@ -1,8 +1,8 @@
 // Package jellyfin re-points Jellyfin at media Coldarr has moved between
-// tiers (see NotifyMoved), reads Favorite status (matched back to
-// Radarr/Sonarr items by path) so favorited items are kept on hot storage,
-// and confirms connectivity. Jellyfin is a consumer of the library, never
-// the mover.
+// tiers (see ReportMoved and ResolveAndRefresh), reads Favorite status
+// (matched back to Radarr/Sonarr items by path) so favorited items are
+// kept on hot storage, and confirms connectivity. Jellyfin is a consumer
+// of the library, never the mover.
 package jellyfin
 
 import (
@@ -34,13 +34,41 @@ type Client struct {
 	// with, so the status code alone proves nothing. Replaceable in tests.
 	Logf func(format string, args ...any)
 
-	// ResolvePollInterval and ResolveTimeout bound how long NotifyMoved
-	// waits for Jellyfin to notice a moved item at its new path. Jellyfin
-	// debounces filesystem-change reports before acting on them, so the
-	// new item is never visible immediately after the move lands.
+	// ResolvePollInterval and ResolveTimeout bound how long
+	// ResolveAndRefresh waits for Jellyfin to notice a moved item at its
+	// new path. Jellyfin debounces filesystem-change reports before acting
+	// on them, so the new item is never visible immediately after the move
+	// lands.
 	ResolvePollInterval time.Duration
 	ResolveTimeout      time.Duration
 }
+
+const (
+	// DefaultResolvePollInterval is how long ResolveAndRefresh waits before
+	// its second look at the library. Subsequent waits back off from here
+	// (see maxResolvePollInterval).
+	DefaultResolvePollInterval = 10 * time.Second
+
+	// DefaultResolveTimeout budgets for Jellyfin actually doing the work a
+	// reported path asks for, which is far more than the report costs.
+	// Jellyfin sits on a filesystem-change report for LibraryMonitorDelay
+	// (60s out of the box) before touching it, and a path it has never seen
+	// before then resolves up to its containing library root and
+	// re-validates that root - minutes on a large library, serialized
+	// against every other root in the same batch.
+	//
+	// Items reported as they landed (see ReportMoved) have usually been
+	// indexed long before this matters; the budget exists for the tail of a
+	// run, where the last item lands with no head start at all.
+	DefaultResolveTimeout = 15 * time.Minute
+
+	// maxResolvePollInterval caps the backoff between polls. Each poll
+	// lists every movie and series in the library, once per Jellyfin user,
+	// so polling on a fixed short interval for the whole timeout would put
+	// its heaviest read load on a server that is, by construction, busy
+	// running the very scan being waited for.
+	maxResolvePollInterval = 60 * time.Second
+)
 
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
@@ -48,8 +76,8 @@ func NewClient(baseURL, apiKey string) *Client {
 		apiKey:              apiKey,
 		http:                &http.Client{Timeout: 30 * time.Second},
 		Logf:                log.Printf,
-		ResolvePollInterval: 10 * time.Second,
-		ResolveTimeout:      3 * time.Minute,
+		ResolvePollInterval: DefaultResolvePollInterval,
+		ResolveTimeout:      DefaultResolveTimeout,
 	}
 }
 
@@ -424,27 +452,31 @@ type MovedItem struct {
 	NewPath string
 }
 
-// NotifyMoved brings Jellyfin back in sync after Coldarr relocates items
-// between tiers, and is the reason a moved item keeps its artwork.
+// ReportMoved tells Jellyfin which folders items have just vacated and
+// occupied, so it rescans those rather than walking every library root.
 //
-// The sequence matters, and none of it can be collapsed into a single
-// library scan:
+// This is deliberately callable on its own, one item at a time, and that
+// is how a mid-run caller should use it. Jellyfin does not act on a report
+// when it arrives: it debounces for LibraryMonitorDelay (60s by default)
+// and only then validates the affected folder, which for a path it has
+// never seen before means resolving up to the containing library root and
+// re-validating the whole root. Reporting each item the moment it lands
+// puts that work in parallel with the rest of the run - moves take minutes
+// to hours - instead of starting it cold after the last move finishes and
+// then waiting on it. See ResolveAndRefresh for the other half.
 //
-//  1. Report both the old and new paths, so Jellyfin rescans just those
-//     folders rather than walking every library root.
-//  2. Wait for the item to reappear at its new path, re-resolving its ID.
-//     Jellyfin hashes an item's path into its ID, so the move necessarily
-//     produced a *different* item; any ID held from before the move now
-//     refers to something that no longer exists.
-//  3. Refresh that newly-resolved ID with FullRefresh + replace, the only
-//     mode that displaces artwork records still pointing at the old tier.
+// Reporting the same path twice is not free. Jellyfin folds a new report
+// into the pending refresher already covering that path and restarts its
+// timer, so a redundant second report pushes the rescan back by another
+// LibraryMonitorDelay - delaying the very work the first report asked for.
+// Callers that reported an item during the run must not report it again.
 //
-// Returns an error naming every item it could not refresh, so the caller
-// can fall back to a whole-library scan. Items that did get refreshed stay
-// refreshed - a partial failure is never rolled back.
-func (c *Client) NotifyMoved(items []MovedItem) error {
+// Errors are worth returning rather than swallowing: ResolveAndRefresh is
+// what ultimately establishes the item exists, so a failed report is not
+// fatal, but it does mean this item got no head start and the caller may
+// want to retry it later.
+func (c *Client) ReportMoved(items []MovedItem) error {
 	var oldPaths, newPaths []string
-	pending := map[string]MovedItem{}
 	for _, it := range items {
 		if it.NewPath == "" {
 			continue
@@ -453,29 +485,73 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 			oldPaths = append(oldPaths, it.OldPath)
 		}
 		newPaths = append(newPaths, it.NewPath)
+		c.logf("jellyfin: reporting move %s -> %s", it.OldPath, it.NewPath)
+	}
+	if len(newPaths) == 0 {
+		return nil
+	}
+
+	var errs []error
+	if err := c.ReportMediaUpdated(oldPaths, "Deleted"); err != nil {
+		errs = append(errs, fmt.Errorf("reporting vacated paths: %w", err))
+	}
+	if err := c.ReportMediaUpdated(newPaths, "Created"); err != nil {
+		errs = append(errs, fmt.Errorf("reporting new paths: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// resolveBackoffCeiling returns how far ResolveAndRefresh may back its
+// poll interval off from the configured base.
+//
+// Floored at base, because backoff must only ever slow polling down.
+// maxResolvePollInterval is there to stop a short interval from hammering
+// a server that's mid-scan; an operator who configures an interval above
+// it is asking for even less polling pressure, so folding their interval
+// into the cap unconditionally would silently poll more often than they
+// asked for - the opposite of what the knob is for, aimed at exactly the
+// large-library setup most likely to be reaching for it.
+func resolveBackoffCeiling(base time.Duration) time.Duration {
+	return max(base, min(8*base, maxResolvePollInterval))
+}
+
+// ResolveAndRefresh waits for each moved item to reappear at its new path
+// and then refreshes it, which is the reason a moved item keeps its
+// artwork. It does not report any paths itself - see ReportMoved, which
+// the caller is expected to have already done, ideally per item as each
+// move landed.
+//
+// Re-resolving is not optional, and cannot be collapsed into a library
+// scan. Jellyfin hashes an item's path into its ID, so the move
+// necessarily produced a *different* item; any ID held from before the
+// move now refers to something that no longer exists. And only FullRefresh
+// + replace displaces artwork records still pointing at the old tier (see
+// FullRefreshOptions), which needs that new ID.
+//
+// Returns an error naming every item it could not refresh, so the caller
+// can fall back to a whole-library scan. Items that did get refreshed stay
+// refreshed - a partial failure is never rolled back.
+func (c *Client) ResolveAndRefresh(items []MovedItem) error {
+	pending := map[string]MovedItem{}
+	for _, it := range items {
+		if it.NewPath == "" {
+			continue
+		}
 		pending[filepath.Clean(it.NewPath)] = it
 	}
 	if len(pending) == 0 {
 		return nil
 	}
 
-	// Best effort: the poll below is what actually establishes the item
-	// exists, so a failure to hand Jellyfin a hint isn't fatal on its own.
-	if err := c.ReportMediaUpdated(oldPaths, "Deleted"); err != nil {
-		c.logf("jellyfin: reporting vacated paths failed, continuing: %v", err)
-	}
-	if err := c.ReportMediaUpdated(newPaths, "Created"); err != nil {
-		c.logf("jellyfin: reporting new paths failed, continuing: %v", err)
-	}
-
 	interval := c.ResolvePollInterval
 	if interval <= 0 {
-		interval = 10 * time.Second
+		interval = DefaultResolvePollInterval
 	}
 	timeout := c.ResolveTimeout
 	if timeout <= 0 {
-		timeout = 3 * time.Minute
+		timeout = DefaultResolveTimeout
 	}
+	maxInterval := resolveBackoffCeiling(interval)
 
 	// Keyed by the item's new path, the same key space as pending, rather
 	// than by title: two items can legitimately share a title (a remake, or
@@ -484,6 +560,7 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 	// which items were actually left with stale artwork.
 	failures := map[string]error{}
 	deadline := time.Now().Add(timeout)
+	wait := interval
 	for {
 		// One library snapshot per round, matched against every
 		// outstanding item - resolving them one at a time would re-list
@@ -513,10 +590,20 @@ func (c *Client) NotifyMoved(items []MovedItem) error {
 		if len(pending) == 0 {
 			break
 		}
-		if !time.Now().Add(interval).Before(deadline) {
+
+		// Clamp the sleep to what's left rather than breaking out early on
+		// a backed-off interval that overshoots the deadline: a poll that
+		// still fits inside the budget is always worth taking, so the last
+		// one lands right at it. Clamping `sleep` and not `wait` keeps that
+		// from also shortening the interval every round after it.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			break
 		}
-		time.Sleep(interval)
+		sleep := min(wait, remaining)
+		c.logf("jellyfin: %d item(s) not yet visible at their new path, re-checking in %s", len(pending), sleep.Round(time.Second))
+		time.Sleep(sleep)
+		wait = min(2*wait, maxInterval)
 	}
 
 	for path, item := range pending {

@@ -24,6 +24,7 @@ package mover
 import (
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -36,10 +37,31 @@ import (
 	"github.com/vocoder/coldarr/internal/planner"
 )
 
+// MoveReporter is told where an item landed the moment its move is
+// confirmed, so a downstream consumer of the library (in practice
+// Jellyfin) can begin re-indexing it while the rest of the run is still
+// moving. The mover depends on this narrow interface rather than on the
+// jellyfin package directly: telling a consumer where media went is a
+// courtesy to something downstream, not part of executing a plan, and
+// nothing here should be able to fail a move.
+type MoveReporter interface {
+	// ReportMoved names the folder the item vacated and the folder it now
+	// occupies, both as the owning Arr app reports them. An error is
+	// advisory - the item is simply left for the caller to report again at
+	// the end of the run (see EntryProgress.Reported).
+	ReportMoved(oldPath, newPath string) error
+}
+
 type Movers struct {
 	Radarr  *arrapi.RadarrClient
 	Sonarr  *arrapi.SonarrClient
 	History *history.Store
+
+	// Reporter, when set, is handed each item's new location as soon as
+	// that move is confirmed landed. Nil disables mid-run reporting
+	// entirely, which is not a failure: every move still ends up reported
+	// by whatever runs after the plan finishes.
+	Reporter MoveReporter
 
 	// SettleCheckInterval, SettleStableChecks, and SettleMaxWait
 	// control how long Apply waits, after asking Radarr/Sonarr to move
@@ -50,9 +72,22 @@ type Movers struct {
 	SettleStableChecks  int
 	SettleMaxWait       time.Duration
 
+	// Logf defaults to log.Printf; tests override it to capture output.
+	// Reporting is the only thing this package logs, because it's the only
+	// thing it does whose outcome isn't already carried on Progress.
+	Logf func(format string, args ...any)
+
 	// statFunc defaults to diskusage.Stat; tests override it to observe
 	// and control settling without touching a real filesystem.
 	statFunc func(path string) (diskusage.Usage, error)
+}
+
+func (m *Movers) logf(format string, args ...any) {
+	if m.Logf != nil {
+		m.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 func (m *Movers) stat(path string) (diskusage.Usage, error) {
@@ -84,6 +119,16 @@ type EntryProgress struct {
 	// any item Radarr/Sonarr renamed as part of the move. Empty if the
 	// move never landed.
 	LandedPath string
+	// Reported records that Movers.Reporter was successfully told about
+	// this move as it landed, rather than at the end of the run.
+	//
+	// Consumers need this to avoid reporting the same path twice: Jellyfin
+	// restarts its library-monitor debounce every time a path it already
+	// has pending is reported again, so a redundant second report delays
+	// the rescan the first one asked for. False also covers "the mid-run
+	// report failed", which is why it means "still needs reporting" rather
+	// than merely "no reporter was configured".
+	Reported bool
 }
 
 // ProgressSnapshot is a point-in-time, race-free copy of an apply run's
@@ -145,6 +190,12 @@ func (p *Progress) setLandedPath(i int, path string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[i].LandedPath = path
+}
+
+func (p *Progress) setReported(i int, reported bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.entries[i].Reported = reported
 }
 
 func (p *Progress) markDone() {
@@ -374,6 +425,7 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (l
 		return false, false
 	}
 	progress.setLandedPath(idx, landedPath)
+	progress.setReported(idx, m.reportMoved(entry, landedPath))
 
 	if err := m.History.Append(history.Record{
 		ArrApp:    entry.Item.ArrApp,
@@ -392,6 +444,39 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (l
 
 	progress.setStatus(idx, StatusDone, nil)
 	return true, true
+}
+
+// reportMoved hands this item's old and new folders to Reporter inline
+// with the move that just landed, rather than leaving every item in the
+// run to be reported in one batch at the end, and reports whether that
+// succeeded.
+//
+// Timing is the whole point. A consumer's indexing work is slow and
+// starts late - Jellyfin sits on a reported path for a minute before
+// touching it, then re-validates the entire containing library root - so
+// a batch delivered after the last move means all of that begins from a
+// standstill, with nothing left to overlap it. Delivered here it runs
+// against the remaining moves, which take minutes to hours apiece.
+//
+// Synchronous, not fired into a goroutine: this is one small POST to a
+// service the run is going to poll anyway, bounded by that client's own
+// timeout, which is nothing beside the transfer it follows. Waiting for it
+// is also what makes the result trustworthy enough to record, so the
+// end-of-run pass can pick up precisely the items still needing a report
+// instead of re-reporting everything and resetting their debounce.
+//
+// Never fatal, and deliberately not reflected in the entry's status: a
+// consumer being unreachable says nothing about whether the media moved,
+// which Radarr/Sonarr already confirmed.
+func (m *Movers) reportMoved(entry planner.MoveEntry, landedPath string) bool {
+	if m.Reporter == nil {
+		return false
+	}
+	if err := m.Reporter.ReportMoved(entry.Item.Path, landedPath); err != nil {
+		m.logf("mover: reporting %q moved to %s failed, leaving it for the end of the run: %v", entry.Item.Title, landedPath, err)
+		return false
+	}
+	return true
 }
 
 // settle waits for entry's move to actually land on the destination's

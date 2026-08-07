@@ -359,7 +359,7 @@ func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error)
 // strings like "5s", "6h") - useful for storage that settles much faster
 // or slower than the defaults assume.
 func (e *Engine) Movers() *mover.Movers {
-	return &mover.Movers{
+	m := &mover.Movers{
 		Radarr:              e.Radarr,
 		Sonarr:              e.Sonarr,
 		History:             e.History,
@@ -367,6 +367,14 @@ func (e *Engine) Movers() *mover.Movers {
 		SettleStableChecks:  envInt("COLDARR_SETTLE_STABLE_CHECKS"),
 		SettleMaxWait:       envDuration("COLDARR_SETTLE_MAX_WAIT"),
 	}
+	// Assigned through an explicit nil check rather than straight from
+	// JellyfinClient(): a typed nil *jellyfin.Client stored in the
+	// interface field would leave it non-nil and panic on first use.
+	// One client for the whole run, since it's called per landed move.
+	if jf := e.JellyfinClient(); jf != nil {
+		m.Reporter = jellyfinMoveReporter{jf: jf}
+	}
+	return m
 }
 
 func envDuration(name string) time.Duration {
@@ -399,11 +407,39 @@ func (e *Engine) JellyfinClient() *jellyfin.Client {
 	if !e.jellyfinOK {
 		return nil
 	}
-	return jellyfin.NewClient(e.jellyfinConn.URL, e.jellyfinConn.APIKey)
+	c := jellyfin.NewClient(e.jellyfinConn.URL, e.jellyfinConn.APIKey)
+	// How long Jellyfin takes to surface a moved item depends on its own
+	// LibraryMonitorDelay and on how long re-validating a library root
+	// takes, neither of which Coldarr can see - so both bounds are
+	// overridable for libraries where the defaults don't fit.
+	if d := envDuration("COLDARR_JELLYFIN_RESOLVE_INTERVAL"); d > 0 {
+		c.ResolvePollInterval = d
+	}
+	if d := envDuration("COLDARR_JELLYFIN_RESOLVE_TIMEOUT"); d > 0 {
+		c.ResolveTimeout = d
+	}
+	return c
 }
 
-// NotifyJellyfinMoved tells Jellyfin about items Coldarr just relocated,
-// so they keep their artwork. A no-op when Jellyfin isn't configured.
+// jellyfinMoveReporter adapts the Jellyfin client to mover.MoveReporter,
+// so the mover can hand Jellyfin each item's new location as it lands
+// without the mover package knowing Jellyfin exists.
+type jellyfinMoveReporter struct{ jf *jellyfin.Client }
+
+func (r jellyfinMoveReporter) ReportMoved(oldPath, newPath string) error {
+	return r.jf.ReportMoved([]jellyfin.MovedItem{{OldPath: oldPath, NewPath: newPath}})
+}
+
+// NotifyJellyfinMoved finishes the Jellyfin side of a completed apply run,
+// so moved items keep their artwork. A no-op when Jellyfin isn't
+// configured.
+//
+// This is only half the exchange. The mover already reported each item's
+// paths to Jellyfin as that item landed (see mover.Movers.Reporter), which
+// is what gives Jellyfin's debounce-then-rescan a chance to run against
+// the rest of the run rather than after it. What's left here is the part
+// that genuinely cannot happen until an item is indexed at its new path:
+// re-resolving its ID and refreshing it.
 //
 // Per-item targeting is the point: a whole-library scan runs in Jellyfin's
 // "Default" refresh mode, which only fills in artwork it thinks is
@@ -418,6 +454,7 @@ func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
 	}
 
 	items := make([]jellyfin.MovedItem, 0, len(moved))
+	var unreported []jellyfin.MovedItem
 	var unresolved []string
 	for _, m := range moved {
 		// A confirmed move always records where it landed; anything else
@@ -426,14 +463,31 @@ func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
 			unresolved = append(unresolved, m.Entry.Item.Title)
 			continue
 		}
-		items = append(items, jellyfin.MovedItem{
+		item := jellyfin.MovedItem{
 			Title:   m.Entry.Item.Title,
 			OldPath: m.Entry.Item.Path,
 			NewPath: m.LandedPath,
-		})
+		}
+		items = append(items, item)
+		if !m.Reported {
+			unreported = append(unreported, item)
+		}
 	}
 
-	notifyErr := jf.NotifyMoved(items)
+	// Strictly the items the run couldn't report as they landed - Jellyfin
+	// wasn't configured when the move ran, or the report failed. Reporting
+	// the rest a second time would restart Jellyfin's debounce on paths it
+	// already has queued, pushing back the very rescans this is waiting on.
+	if len(unreported) > 0 {
+		// Discarded deliberately, not overlooked: resolving below is what
+		// actually establishes the item exists, so a missed hint costs
+		// only a head start, and the client has already logged the failing
+		// request itself. Surfacing it here would turn a run that then
+		// refreshed everything fine into a reported failure.
+		_ = jf.ReportMoved(unreported)
+	}
+
+	notifyErr := jf.ResolveAndRefresh(items)
 	if notifyErr == nil && len(unresolved) == 0 {
 		return nil
 	}
