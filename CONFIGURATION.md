@@ -12,11 +12,12 @@ and releasing see [DEVELOPMENT.md](DEVELOPMENT.md).
    and every series from Sonarr, including tags, quality profile, and
    whether an active download/import is in progress for it.
 2. **Score** - each item is evaluated into one of three buckets:
-   - `protected` - tagged `never-move`/`keep-hot`/etc, marked Favorite by
-     any Jellyfin user, or has an active download/import. Never touched.
-   - `hot` - should stay on primary storage (recently added, a
-     currently-airing series, or just didn't score high enough to be
-     cold).
+   - `protected` - tagged `never-move`/`keep-hot`/etc, or has an active
+     download/import. Never touched.
+   - `hot` - should stay on primary storage (marked Favorite by any
+     Jellyfin user, recently added, a currently-airing series, or just
+     didn't score high enough to be cold). Never moved to cold, and
+     reclaimed back from cold when it's a Favorite.
    - `cold` - safe to relocate to overflow storage, with a score used to
      rank *which* cold items move first.
 3. **Plan** - Coldarr does not steer hot storage toward any usage level -
@@ -217,8 +218,8 @@ double-commit the same disk across two differently-named destinations.
 ## Scoring
 
 See [internal/scoring/scoring.go](internal/scoring/scoring.go) for the
-full, small set of rules. In short: tags, an active download, or a
-Jellyfin Favorite mark can force `protected` or `hot` outright; otherwise
+full, small set of rules. In short: tags or an active download can force
+`protected` outright, and a Jellyfin Favorite mark forces `hot`; otherwise
 items accumulate a score from age, size, a series having ended, time
 since last aired, a low-priority quality profile, and unmonitored/missing
 state. Items at or above `cold_score_threshold` are cold candidates,
@@ -227,8 +228,15 @@ for now - not yet exposed in the GUI.)
 
 **Jellyfin Favorites:** if Jellyfin is connected and enabled, Coldarr
 fetches every user's favorited movies/series and matches them back to
-Radarr/Sonarr items by path - anything favorited by anyone is protected,
-same as a `never-move` tag. Matching is by path, so this only works
+Radarr/Sonarr items by path - anything favorited by anyone is kept on hot
+storage. That means it is never moved to cold, and if it is already on
+cold (you favorited it *after* Coldarr moved it), the next plan moves it
+back to hot, evicting cold-eligible items from hot first if that's what it
+takes to make room. Favoriting takes effect on the very next plan: unlike
+ordinary hot->cold packing, the reclaim ignores `cooldown_days` and
+`min_move_size_gb`. A `never-move`/`keep-hot` tag or an active
+download/import still outranks a Favorite - those stay `protected` and are
+not moved in either direction. Matching is by path, so this only works
 correctly if Jellyfin sees the same paths Radarr/Sonarr do (see
 [Docker's path note](#docker) above). Coldarr snapshots these favorites
 before it builds a plan. If the fetch fails for any reason, inventory and

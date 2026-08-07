@@ -159,7 +159,7 @@ type Inventory struct {
 	// inventory that the operator should see but that shouldn't block
 	// report/plan/apply. Failure to fetch enabled Jellyfin favorites is
 	// deliberately fatal instead: without that snapshot, Coldarr cannot
-	// know which items must be protected from moves.
+	// know which items must be kept on hot storage.
 	Warnings []string
 }
 

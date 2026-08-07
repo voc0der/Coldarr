@@ -208,3 +208,57 @@ func TestEvaluate_SmallRecentUnremarkableMovieStaysHot(t *testing.T) {
 		t.Fatalf("expected Hot for unremarkable recent movie, got %v (score %.1f)", eval.Decision, eval.Score)
 	}
 }
+
+// TestEvaluate_JellyfinFavoriteStaysHot pins the semantics issue #77 asked
+// for: a Favorite belongs on hot storage. Hot (not Protected) is what makes
+// the planner willing to pull it back off cold, while still keeping it out
+// of the hot->cold candidate set, which requires exactly Cold.
+func TestEvaluate_JellyfinFavoriteStaysHot(t *testing.T) {
+	now := time.Now()
+	for _, mt := range []model.MediaType{model.Movie, model.TV} {
+		item := model.MediaItem{
+			Type:             mt,
+			Added:            now.AddDate(-5, 0, 0), // old enough to clear grace period
+			Tags:             []string{"cold-ok"},   // and tagged cold-ok
+			SizeBytes:        500 << 30,             // and big - would otherwise easily clear the threshold
+			Ended:            true,
+			Monitored:        true,
+			HasFile:          true,
+			JellyfinFavorite: true,
+		}
+		eval := Evaluate(item, basePolicy(), now)
+		if eval.Decision != Hot {
+			t.Fatalf("%s: expected Hot for a favorited item despite old age/cold-ok tag/size, got %v (score %.1f)", mt, eval.Decision, eval.Score)
+		}
+	}
+}
+
+// TestEvaluate_FavoriteStillProtectedByStricterStates confirms that making
+// Favorite mean "hot" did not weaken any of the absolute protections that
+// outrank it - each of these must still win, or the planner's reclaim path
+// could move a file out from under an active import.
+func TestEvaluate_FavoriteStillProtectedByStricterStates(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		item model.MediaItem
+	}{
+		{name: "never-move tag", item: model.MediaItem{Tags: []string{"never-move"}}},
+		{name: "protected tag", item: model.MediaItem{Tags: []string{"keep-hot"}}},
+		{name: "active queue", item: model.MediaItem{InActiveQueue: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := tt.item
+			item.Type = model.Movie
+			item.Added = now.AddDate(-5, 0, 0)
+			item.JellyfinFavorite = true
+
+			eval := Evaluate(item, basePolicy(), now)
+			if eval.Decision != Protected {
+				t.Fatalf("expected Protected to outrank Favorite, got %v (reasons %v)", eval.Decision, eval.Reasons)
+			}
+		})
+	}
+}

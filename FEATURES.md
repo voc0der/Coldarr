@@ -41,7 +41,9 @@ refactor or throw more infrastructure at it.
 
 - Anything tagged `never-move` (or whatever you call it) in your config
 - Anything actively downloading or importing right now
-- Anything any Jellyfin user has favorited
+- Anything any Jellyfin user has favorited - and if you favorite something
+  that's already on cold, the next plan pulls it back to hot, evicting
+  cold-eligible titles from hot first if that's what it takes to fit
 - Anything added recently (a grace period, before it's even considered)
 - Currently-airing TV, if you want that on
 - Anything not released/premiered yet (an unreleased movie, a show that

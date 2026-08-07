@@ -137,7 +137,8 @@ type MediaItem struct {
 
 	// JellyfinFavorite is true if this item is marked as a Favorite in
 	// Jellyfin (matched by path), only ever set when Jellyfin is
-	// configured. Favorited items are never moved.
+	// configured. Favorited items are kept on hot storage: never moved to
+	// cold, and pulled back to hot if they are already on cold.
 	JellyfinFavorite bool
 }
 

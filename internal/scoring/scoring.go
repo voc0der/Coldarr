@@ -56,8 +56,15 @@ func Evaluate(item model.MediaItem, policy config.PolicyConfig, now time.Time) E
 	if item.InActiveQueue {
 		return Evaluation{Decision: Protected, Reasons: []string{"active download/import in progress"}}
 	}
+	// A Favorite is an explicit "this belongs on fast storage" from a user,
+	// so it is Hot rather than Protected: Hot already keeps it out of the
+	// hot->cold candidate set (which requires exactly Cold), and it also
+	// lets the planner pull the item back if it is currently on cold - a
+	// Favorite marked after Coldarr already demoted the title. It sits
+	// below the absolute states above on purpose: a Favorite mid-import or
+	// tagged never-move must still not be touched at all.
 	if item.JellyfinFavorite {
-		return Evaluation{Decision: Protected, Reasons: []string{"marked Favorite in Jellyfin"}}
+		return Evaluation{Decision: Hot, Reasons: []string{"marked Favorite in Jellyfin"}}
 	}
 	if item.Upcoming {
 		return Evaluation{Decision: Hot, Reasons: []string{"upcoming - not yet released/premiered"}}
