@@ -41,15 +41,18 @@ and releasing see [DEVELOPMENT.md](DEVELOPMENT.md).
    API returns once the operation is queued, not once the bytes are on
    disk, so trusting it alone isn't enough. Only one apply can run at a
    time, system-wide, enforced by a crash-safe lock. Every completed move
-   is logged to the history file with its real completion time. Once the
-   whole run finishes, Coldarr tells Jellyfin about each moved item
-   individually: it reports the vacated and new paths, waits for Jellyfin
-   to surface the item at its new path, then forces a full metadata and
-   image refresh on it. A moved item gets a brand-new Jellyfin item ID
-   (Jellyfin derives IDs from the file path), and a plain library scan
-   only fills in artwork it considers *missing* - so without this an item
-   can land in the new tier with no poster at all. A whole-library scan is
-   still used as a fallback if an item can't be found at its new path.
+   is logged to the history file with its real completion time. Each move
+   is reported to Jellyfin the moment it lands - naming the vacated and new
+   paths - so Jellyfin's rescan of those folders runs against the rest of
+   the run instead of starting from cold once the last move finishes. Then,
+   after the whole run, Coldarr refreshes each moved item individually: it
+   waits for Jellyfin to surface the item at its new path and forces a full
+   metadata and image refresh on it. A moved item gets a brand-new Jellyfin
+   item ID (Jellyfin derives IDs from the file path), and a plain library
+   scan only fills in artwork it considers *missing* - so without this an
+   item can land in the new tier with no poster at all. A whole-library
+   scan is still used as a fallback if an item can't be found at its new
+   path. See [Jellyfin](#jellyfin).
 
 Nothing above ever happens without `report`/`plan` (or the GUI's dashboard
 and plan page) being read-only, or without confirming before an apply
@@ -143,6 +146,7 @@ volume instead of the GUI, see [CLI.md](CLI.md#running-the-cli-in-docker).
 | `COLDARR_OIDC_CLIENT_SECRET_POST` | set to `true` for providers whose client registration uses `token_endpoint_auth_method: client_secret_post` (common with Authelia). The GUI exposes this as a checkbox under Settings -> Auth. |
 | `RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`) | connection overrides - see [Connections](#connections). |
 | `COLDARR_SETTLE_CHECK_INTERVAL` / `COLDARR_SETTLE_STABLE_CHECKS` / `COLDARR_SETTLE_MAX_WAIT` | tune how long `apply` waits for a move to actually land on disk before starting the next one queued for the same volume (Go duration strings, e.g. `5s`/`6h`). Defaults suit typical local disks; raise `MAX_WAIT` for very large files on slow/network storage. |
+| `COLDARR_JELLYFIN_RESOLVE_TIMEOUT` / `COLDARR_JELLYFIN_RESOLVE_INTERVAL` | how long `apply` waits, after the moves finish, for Jellyfin to index each item at its new path so its artwork can be refreshed (Go duration strings; defaults `15m` / `10s`, the interval backing off to a minute between polls). Raise the timeout if you see `no Jellyfin item appeared at ... within` in the logs - see [Jellyfin](#jellyfin) below. |
 
 **Everything else** (tiers, tags, thresholds) goes through `coldarr.yaml`,
 which supports `${VAR}` substitution against whatever environment
@@ -214,6 +218,50 @@ Paths sharing a volume show up flagged as such in `report` and the
 dashboard/Tiers page, and the planner treats their capacity as one shared
 pool: moving into one is reflected on the other, so it can never
 double-commit the same disk across two differently-named destinations.
+
+## Jellyfin
+
+Jellyfin is optional, and only ever a consumer of the library - it never
+moves anything. It is used to read Favorites (so favorited items are kept
+on, or reclaimed to, hot storage) and to keep artwork intact across a move.
+
+**Every tier path must be inside a Jellyfin library folder**, mounted at
+the same path Coldarr and Radarr/Sonarr use. Jellyfin can only index media
+under a configured library location, so an item moved to a tier no library
+covers doesn't merely lose its poster - it disappears from Jellyfin
+altogether. Check Dashboard -> Libraries, or:
+
+```
+curl -s -H "X-Emby-Token: $KEY" "$JELLYFIN_URL/Library/VirtualFolders" \
+  | jq -r '.[] | "\(.Name): \(.Locations|join(", "))"'
+```
+
+**Jellyfin is slow to notice a move, by design.** Reporting a changed path
+does not trigger an immediate scan: Jellyfin debounces it by
+`LibraryMonitorDelay` (Dashboard -> Advanced, 60 seconds out of the box),
+and re-reporting a path it already has queued *restarts* that timer. Only
+then does it act - and for a path it has never seen before, that means
+re-validating the whole library root containing it, which on a large
+library takes minutes per root.
+
+This is why moves are reported individually as they land rather than in one
+batch at the end: it gives that work the length of the run to happen in.
+What can't be moved earlier is the refresh itself, since it needs the item's
+*new* ID, which doesn't exist until Jellyfin has indexed it. If you see
+
+```
+could not refresh N item(s) in Jellyfin: "..." no Jellyfin item appeared at ... within 15m0s
+```
+
+Jellyfin hadn't finished scanning within the budget. The items are fine and
+will appear once it does, but they keep the artwork records pointing at the
+tier they left, because the whole-library fallback scan runs in Jellyfin's
+"Default" refresh mode and only fills in artwork it considers *missing*. Fix
+them by hand (select them -> Refresh metadata -> Replace existing images),
+and raise `COLDARR_JELLYFIN_RESOLVE_TIMEOUT` so the next run waits long
+enough. Note that an apply run holds Coldarr's apply lock until this
+finishes, so the timeout is also the longest a finished run can block the
+next one.
 
 ## Scoring
 

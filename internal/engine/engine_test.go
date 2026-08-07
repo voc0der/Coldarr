@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 	"github.com/vocoder/coldarr/internal/cutoffcache"
 	"github.com/vocoder/coldarr/internal/history"
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/mover"
+	"github.com/vocoder/coldarr/internal/planner"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
@@ -411,5 +416,93 @@ func TestEnvInt(t *testing.T) {
 	t.Setenv(name, "not-a-number")
 	if got := envInt(name); got != 0 {
 		t.Errorf("invalid int: got %v, want 0", got)
+	}
+}
+
+// TestNotifyJellyfinMoved_ReportsOnlyWhatTheRunCouldNot is the join
+// between the mover's mid-run reporting and the end-of-run refresh.
+// Reporting a path Jellyfin already has queued restarts its library
+// monitor's debounce, pushing back the very rescan that earlier report
+// asked for - so an item the run already reported has to be resolved and
+// refreshed here without being reported a second time.
+func TestNotifyJellyfinMoved_ReportsOnlyWhatTheRunCouldNot(t *testing.T) {
+	// Bounds the test against the real multi-minute budget if resolution
+	// ever regresses, rather than hanging the suite.
+	t.Setenv("COLDARR_JELLYFIN_RESOLVE_TIMEOUT", "5s")
+
+	var mu sync.Mutex
+	var reported, refreshed []string
+	jf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/Library/Media/Updated":
+			var body struct {
+				Updates []struct {
+					Path string `json:"Path"`
+				} `json:"Updates"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			for _, u := range body.Updates {
+				reported = append(reported, u.Path)
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items":
+			// A Movie reports its video file, a Series its folder - so this
+			// also covers itemFolderPath normalizing both onto the folder
+			// Radarr/Sonarr named.
+			_, _ = w.Write([]byte(`{"Items": [
+				{"Id": "id-reported", "Type": "Movie", "Path": "/cold/movies/Reported (2024)/Reported (2024).mkv"},
+				{"Id": "id-unreported", "Type": "Series", "Path": "/cold/tv/Unreported"}
+			]}`))
+		case strings.HasSuffix(r.URL.Path, "/Refresh"):
+			mu.Lock()
+			refreshed = append(refreshed, r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer jf.Close()
+
+	e := &Engine{
+		jellyfinConn: secrets.Connection{URL: jf.URL, APIKey: "key", Enabled: true},
+		jellyfinOK:   true,
+	}
+
+	err := e.NotifyJellyfinMoved([]mover.EntryProgress{
+		{
+			Entry:      planner.MoveEntry{Item: model.MediaItem{Title: "Reported", Path: "/hot/movies/Reported (2024)"}},
+			LandedPath: "/cold/movies/Reported (2024)",
+			Reported:   true,
+		},
+		{
+			Entry:      planner.MoveEntry{Item: model.MediaItem{Title: "Unreported", Path: "/hot/tv/Unreported"}},
+			LandedPath: "/cold/tv/Unreported",
+			Reported:   false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NotifyJellyfinMoved: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Only the item the run couldn't report, and both halves of it.
+	wantReported := []string{"/cold/tv/Unreported", "/hot/tv/Unreported"}
+	slices.Sort(reported)
+	if !slices.Equal(reported, wantReported) {
+		t.Errorf("reported paths = %v, want %v", reported, wantReported)
+	}
+
+	// Both items still get the full refresh - that half is never skipped.
+	wantRefreshed := []string{"/Items/id-reported/Refresh", "/Items/id-unreported/Refresh"}
+	slices.Sort(refreshed)
+	if !slices.Equal(refreshed, wantRefreshed) {
+		t.Errorf("refreshed = %v, want %v", refreshed, wantRefreshed)
 	}
 }
