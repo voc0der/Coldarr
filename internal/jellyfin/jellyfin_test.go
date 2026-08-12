@@ -12,14 +12,42 @@ import (
 	"time"
 )
 
+// assertAuthorized pins the credential on a request. Getting the scheme
+// wrong locks Coldarr out of every Jellyfin 12 server, and no other
+// assertion in this file would notice: the test servers here never check
+// credentials.
+func assertAuthorized(t *testing.T, r *http.Request) {
+	t.Helper()
+	got := r.Header.Get("Authorization")
+	if !strings.HasPrefix(got, "MediaBrowser ") {
+		t.Errorf("Authorization = %q, want the MediaBrowser scheme", got)
+	}
+	if !strings.Contains(got, `Token="key"`) {
+		t.Errorf(`Authorization = %q, want it to carry Token="key"`, got)
+	}
+}
+
+// TestClient_Post_Authorizes covers writes as well as reads: the two share
+// no code path, and a refresh that 401s is easy to miss because the failure
+// surfaces as an item that simply never updated.
+func TestClient_Post_Authorizes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAuthorized(t, r)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := testClient(t, srv.URL).RefreshItem("item-1", FullRefreshOptions()); err != nil {
+		t.Fatalf("RefreshItem: %v", err)
+	}
+}
+
 func TestClient_Ping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/System/Info" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		if r.Header.Get("X-Emby-Token") != "key" {
-			t.Errorf("missing/incorrect X-Emby-Token header: %q", r.Header.Get("X-Emby-Token"))
-		}
+		assertAuthorized(t, r)
 		_, _ = w.Write([]byte(`{"Version": "10.9.0", "ServerName": "home"}`))
 	}))
 	defer srv.Close()

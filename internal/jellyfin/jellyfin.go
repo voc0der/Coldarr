@@ -87,6 +87,30 @@ func (c *Client) logf(format string, args ...any) {
 	}
 }
 
+// Client identity sent in the Authorization header. Only the token
+// authorizes; these fields are metadata, but they're what Jellyfin writes
+// to its logs and shows under Dashboard -> Devices, so an anonymous entry
+// there is worth avoiding when something needs tracing back to Coldarr.
+const (
+	clientName = "Coldarr"
+	deviceID   = "coldarr"
+)
+
+// Version is stamped into the Authorization header as the client version.
+// main sets it from the build-time version at startup; "dev" otherwise.
+var Version = "dev"
+
+// authorize applies Jellyfin's authorization header to req. The
+// MediaBrowser scheme is the only credential sent, and the only one
+// accepted across both the 10.x line and 12.0, which defaults legacy
+// authorization off.
+func (c *Client) authorize(req *http.Request) {
+	req.Header.Set("Authorization", fmt.Sprintf(
+		"MediaBrowser Client=%q, Device=%q, DeviceId=%q, Version=%q, Token=%q",
+		clientName, clientName, deviceID, Version, c.apiKey,
+	))
+}
+
 func (c *Client) get(path string, query url.Values) ([]byte, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
@@ -97,7 +121,7 @@ func (c *Client) get(path string, query url.Values) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building request: %w", err)
 	}
-	req.Header.Set("X-Emby-Token", c.apiKey)
+	c.authorize(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -141,7 +165,7 @@ func (c *Client) post(path string, query url.Values, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}
-	req.Header.Set("X-Emby-Token", c.apiKey)
+	c.authorize(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -232,7 +232,8 @@ covers doesn't merely lose its poster - it disappears from Jellyfin
 altogether. Check Dashboard -> Libraries, or:
 
 ```
-curl -s -H "X-Emby-Token: $KEY" "$JELLYFIN_URL/Library/VirtualFolders" \
+curl -s -H "Authorization: MediaBrowser Token=\"$KEY\"" \
+  "$JELLYFIN_URL/Library/VirtualFolders" \
   | jq -r '.[] | "\(.Name): \(.Locations|join(", "))"'
 ```
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/engine"
+	"github.com/vocoder/coldarr/internal/jellyfin"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
@@ -22,6 +23,10 @@ var version = "dev"
 var configPath string
 
 func main() {
+	// So Jellyfin's logs and Dashboard -> Devices name the Coldarr build
+	// that made a request, not a bare "Coldarr".
+	jellyfin.Version = version
+
 	defaultConfig := "coldarr.yaml"
 	if v := os.Getenv("COLDARR_CONFIG"); v != "" {
 		defaultConfig = v
