@@ -192,9 +192,9 @@ func TestNotifier_Code_DoesNotEscapeWhenMarkdownOn(t *testing.T) {
 	}
 }
 
-func TestNotifier_JoinLines_UsesBrWhenMarkdownOn(t *testing.T) {
+func TestNotifier_JoinLines_UsesNewlineWhenMarkdownOn(t *testing.T) {
 	n := &Notifier{Markdown: true}
-	if got, want := n.JoinLines([]string{"a", "b"}), "a<br/>b"; got != want {
+	if got, want := n.JoinLines([]string{"a", "b"}), "a\nb"; got != want {
 		t.Fatalf("JoinLines() = %q, want %q", got, want)
 	}
 }
