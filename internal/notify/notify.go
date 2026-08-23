@@ -85,15 +85,12 @@ func (n *Notifier) Code(s string) string {
 	return "`" + s + "`"
 }
 
-// JoinLines joins lines the way each mode reads best: "<br/>" under
-// Markdown, since chat targets that render it collapse a bare newline to
-// a space, matching the same separator used by the underlying Radarr/
-// Sonarr notification scripts Coldarr's messages sit alongside; "; "
-// otherwise, unchanged from before Markdown existed.
+// JoinLines joins lines with newlines under Markdown and "; " otherwise,
+// unchanged from before Markdown existed.
 func (n *Notifier) JoinLines(lines []string) string {
 	sep := "; "
 	if n != nil && n.Markdown {
-		sep = "<br/>"
+		sep = "\n"
 	}
 	return strings.Join(lines, sep)
 }
