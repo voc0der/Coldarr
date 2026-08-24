@@ -128,6 +128,13 @@ func TestTest_Markdown(t *testing.T) {
 		if p.Format != "markdown" {
 			t.Fatalf("payload.Format = %q, want %q", p.Format, "markdown")
 		}
+		if p.Title != "" {
+			t.Fatalf("payload.Title = %q, want empty for Markdown body header", p.Title)
+		}
+		wantBody := "❄️`Coldarr` *Coldarr test notification*:\nIf you can reach your Apprise endpoint, and **this** is bold and `this` is code (not literal asterisks/backticks), Markdown formatting is working."
+		if p.Body != wantBody {
+			t.Fatalf("payload.Body = %q, want %q", p.Body, wantBody)
+		}
 	default:
 		t.Fatal("Test() did not send a notification")
 	}
@@ -203,12 +210,18 @@ func TestNotifier_Summary_IncludesFormatWhenMarkdown(t *testing.T) {
 	srv, received := captureServer(t)
 
 	n := &Notifier{URL: srv.URL, Markdown: true}
-	n.Summary("title", "**body**", LevelInfo)
+	n.Summary("Apply_finished*", "**body**", LevelInfo)
 
 	select {
 	case p := <-received:
 		if p.Format != "markdown" {
 			t.Fatalf("payload.Format = %q, want %q", p.Format, "markdown")
+		}
+		if p.Title != "" {
+			t.Fatalf("payload.Title = %q, want empty for Markdown body header", p.Title)
+		}
+		if got, want := p.Body, "❄️`Coldarr` *Apply\\_finished\\**:\n**body**"; got != want {
+			t.Fatalf("payload.Body = %q, want %q", got, want)
 		}
 	default:
 		t.Fatal("Summary() did not send a notification")

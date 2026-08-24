@@ -25,7 +25,7 @@ const (
 )
 
 type payload struct {
-	Title  string `json:"title"`
+	Title  string `json:"title,omitempty"`
 	Body   string `json:"body"`
 	Type   string `json:"type"`
 	Tag    string `json:"tag,omitempty"`
@@ -41,7 +41,8 @@ type Notifier struct {
 	// Markdown tells Apprise ("format": "markdown" in the outgoing
 	// payload) to interpret Body as Markdown rather than plain text, and
 	// makes Bold/Code/JoinLines actually apply Markdown syntax instead of
-	// passing text through unchanged.
+	// passing text through unchanged. Markdown messages also put their
+	// action in a formatted body header rather than Apprise's title field.
 	Markdown bool
 	// Tag restricts delivery to the Apprise notification target(s)
 	// registered under this tag on the receiving end - many Apprise API
@@ -139,6 +140,8 @@ func Test(url, tag string, markdown bool) error {
 func post(url, tag, title, body string, lvl Level, markdown bool) error {
 	p := payload{Title: title, Body: body, Type: string(lvl), Tag: tag}
 	if markdown {
+		p.Title = ""
+		p.Body = fmt.Sprintf("❄️`Coldarr` *%s*:\n%s", markdownEscaper.Replace(title), body)
 		p.Format = "markdown"
 	}
 	data, err := json.Marshal(p)
