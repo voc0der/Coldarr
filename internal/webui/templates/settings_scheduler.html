@@ -5,6 +5,25 @@
 
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
 
+<div class="card scheduler-omit-card">
+  <h2 id="weekly-omit-days-heading" style="margin-top:0">Weekly Omit Days</h2>
+  <p class="hint">Coldarr won't start any scheduled task on these days. Manual actions still work. Days use the server's local time.</p>
+  {{if .OmitError}}<div class="alert alert-error">{{.OmitError}}</div>{{end}}
+  <form class="stacked" method="post" action="/settings/scheduler/omit-days">
+    <div class="weekday-picker" role="group" aria-labelledby="weekly-omit-days-heading">
+      {{range .OmitDays}}
+      <label class="weekday-option">
+        <input type="checkbox" name="omit_days" value="{{.Value}}" {{if .Checked}}checked{{end}}>
+        <span>{{.Label}}</span>
+      </label>
+      {{end}}
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save omit days</button>
+    </div>
+  </form>
+</div>
+
 {{template "schedule_form" .RunPlan}}
 {{template "schedule_form" .RescanCold}}
 {{template "schedule_form" .RefreshLinks}}

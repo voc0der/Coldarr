@@ -85,8 +85,9 @@ func TestApplyDefaults_AuthOIDC(t *testing.T) {
 
 func TestValidateScheduler(t *testing.T) {
 	valid := SchedulerConfig{
-		RunPlan:    scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "03:00"},
-		RescanCold: scheduler.Schedule{Enabled: false},
+		WeeklyOmitDays: []scheduler.Weekday{scheduler.Monday, scheduler.Friday},
+		RunPlan:        scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "03:00"},
+		RescanCold:     scheduler.Schedule{Enabled: false},
 	}
 	if err := ValidateScheduler(valid); err != nil {
 		t.Fatalf("ValidateScheduler(valid) = %v, want nil", err)
@@ -97,6 +98,11 @@ func TestValidateScheduler(t *testing.T) {
 	}
 	if err := ValidateScheduler(invalid); err == nil {
 		t.Fatal("ValidateScheduler(invalid) = nil, want an error for run_plan.every=0")
+	}
+
+	invalidOmitDay := SchedulerConfig{WeeklyOmitDays: []scheduler.Weekday{"funday"}}
+	if err := ValidateScheduler(invalidOmitDay); err == nil {
+		t.Fatal("ValidateScheduler(invalidOmitDay) = nil, want an error for an unknown weekly omit day")
 	}
 }
 

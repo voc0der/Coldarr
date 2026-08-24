@@ -68,6 +68,11 @@ default so a big move doesn't spam you.
 
 Settings > Scheduler adds three jobs, all off until you turn them on:
 
+Pick one or more **Weekly Omit Days** at the top of the page to create a
+recurring blackout for every automatic job. For example, a daily 1:00am Run
+the Plan schedule with Monday omitted waits until Tuesday at 1:00am. Manual
+actions remain available on omitted days.
+
 - **Run the Plan** - does exactly what clicking Apply does, just on a
   schedule (every N hours, or daily at a time you pick). No cron entry to
   write, no `-y` flag to remember.

@@ -217,6 +217,43 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-heig
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; }
 .checkbox-row input { width: auto; }
 
+.scheduler-omit-card form.stacked { max-width: none; }
+.weekday-picker {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(78px, 1fr));
+  gap: 0.5rem;
+  max-width: 760px;
+}
+.weekday-option { position: relative; cursor: pointer; }
+.weekday-option input { position: absolute; opacity: 0; }
+.weekday-option span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.weekday-option:hover span { border-color: var(--accent); }
+.weekday-option input:checked + span {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.weekday-option input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .weekday-picker { grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); }
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

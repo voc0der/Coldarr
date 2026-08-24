@@ -45,11 +45,40 @@ type scheduleFormView struct {
 type schedulerData struct {
 	Title        string
 	Saved        string
+	OmitDays     []omitDayView
+	OmitError    string
 	RunPlan      scheduleFormView
 	RescanCold   scheduleFormView
 	RefreshLinks scheduleFormView
 	ScanCutoffs  scheduleFormView
 	ScanOrphans  scheduleFormView
+}
+
+type omitDayView struct {
+	Value   string
+	Label   string
+	Checked bool
+}
+
+func omitDayViews(selected []scheduler.Weekday) []omitDayView {
+	days := []omitDayView{
+		{Value: string(scheduler.Sunday), Label: "Sunday"},
+		{Value: string(scheduler.Monday), Label: "Monday"},
+		{Value: string(scheduler.Tuesday), Label: "Tuesday"},
+		{Value: string(scheduler.Wednesday), Label: "Wednesday"},
+		{Value: string(scheduler.Thursday), Label: "Thursday"},
+		{Value: string(scheduler.Friday), Label: "Friday"},
+		{Value: string(scheduler.Saturday), Label: "Saturday"},
+	}
+	for i := range days {
+		for _, selectedDay := range selected {
+			if days[i].Value == string(selectedDay) {
+				days[i].Checked = true
+				break
+			}
+		}
+	}
+	return days
 }
 
 func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule, lastRun time.Time) scheduleFormView {
@@ -79,7 +108,8 @@ func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule
 func (s *Server) schedulerData() schedulerData {
 	cfg := s.currentConfig()
 	return schedulerData{
-		Title: "Scheduler",
+		Title:    "Scheduler",
+		OmitDays: omitDayViews(cfg.Scheduler.WeeklyOmitDays),
 		RunPlan: s.scheduleView("run_plan", "Run the Plan",
 			`Builds a fresh plan using your current policy and executes it - identical to clicking "Apply this plan" yourself, just unattended. Always scans quality cutoffs first (see "Scan Quality Cutoffs" below) so it acts on current data, even if that schedule is off.`,
 			cfg.Scheduler.RunPlan, s.getLastRanPlan()),
@@ -104,12 +134,28 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" && task != "scan_orphans" {
+	if task != "omit-days" && task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" && task != "scan_orphans" {
 		http.NotFound(w, r)
 		return
 	}
 
 	_ = r.ParseForm()
+	if task == "omit-days" {
+		days, err := scheduler.ParseOmitDays(r.Form["omit_days"])
+		if err == nil {
+			err = s.updateWeeklyOmitDays(days)
+		}
+		data := s.schedulerData()
+		if err != nil {
+			data.OmitDays = omitDayViews(days)
+			data.OmitError = err.Error()
+		} else {
+			data.Saved = "Weekly omit days saved."
+		}
+		s.render(w, "settings_scheduler", data)
+		return
+	}
+
 	sched := scheduler.Schedule{
 		Enabled: r.FormValue("enabled") == "on",
 		Unit:    scheduler.Unit(r.FormValue("unit")),

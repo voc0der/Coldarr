@@ -412,6 +412,9 @@ func tickInterval() time.Duration {
 
 func (s *Server) tick(now time.Time) {
 	cfg := s.currentConfig()
+	if scheduler.OmittedOn(cfg.Scheduler.WeeklyOmitDays, now) {
+		return
+	}
 
 	if scheduler.Due(cfg.Scheduler.ScanCutoffs, s.getLastRunScanCutoffs(), now) {
 		s.runScheduledScanCutoffs(now)
@@ -428,6 +431,27 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.ScanOrphans, s.getLastRunScanOrphans(), now) {
 		s.runScheduledScanOrphans(now)
 	}
+}
+
+// updateWeeklyOmitDays persists the page-level scheduler blackout. It does
+// not touch any task's timing anchor: an omitted daily occurrence resumes at
+// its normal clock time on the next eligible day, while an overdue hourly
+// task resumes on the first tick of that day.
+func (s *Server) updateWeeklyOmitDays(days []scheduler.Weekday) error {
+	if err := scheduler.ValidateOmitDays(days); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := *s.cfg
+	updated.Scheduler.WeeklyOmitDays = append([]scheduler.Weekday(nil), days...)
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		return err
+	}
+	s.cfg = &updated
+	return nil
 }
 
 func (s *Server) getLastRunPlan() time.Time {

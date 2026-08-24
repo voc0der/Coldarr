@@ -71,14 +71,13 @@ type NotificationsConfig struct {
 	Tag string `yaml:"tag"`
 }
 
-// SchedulerConfig holds the recurrence for each of Coldarr's four
-// schedulable tasks. All default to disabled - an unattended apply,
-// cold-storage rescan, Links-cache refresh, or quality-cutoff scan only
-// ever runs if explicitly turned on.
+// SchedulerConfig holds the recurrence for Coldarr's schedulable tasks and
+// the global weekly blackout shared by them. All tasks default to disabled.
 type SchedulerConfig struct {
-	RunPlan      scheduler.Schedule `yaml:"run_plan"`
-	RescanCold   scheduler.Schedule `yaml:"rescan_cold"`
-	RefreshLinks scheduler.Schedule `yaml:"refresh_links"`
+	WeeklyOmitDays []scheduler.Weekday `yaml:"weekly_omit_days,omitempty"`
+	RunPlan        scheduler.Schedule  `yaml:"run_plan"`
+	RescanCold     scheduler.Schedule  `yaml:"rescan_cold"`
+	RefreshLinks   scheduler.Schedule  `yaml:"refresh_links"`
 	// ScanCutoffs refreshes internal/cutoffcache - which items have an
 	// unmet quality-profile cutoff - by calling Radarr/Sonarr's
 	// wanted/cutoff endpoint. Deliberately never done live on a
@@ -169,11 +168,14 @@ func LoadForServer(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// ValidateScheduler checks both of the scheduler's task schedules -
+// ValidateScheduler checks the scheduler's global omit days and task schedules -
 // invoked wherever config is loaded, and again before saving a schedule
 // change through the web GUI, so a malformed Every/At value never reaches
 // coldarr.yaml.
 func ValidateScheduler(cfg SchedulerConfig) error {
+	if err := scheduler.ValidateOmitDays(cfg.WeeklyOmitDays); err != nil {
+		return fmt.Errorf("scheduler.weekly_omit_days: %w", err)
+	}
 	if err := scheduler.Validate(cfg.RunPlan); err != nil {
 		return fmt.Errorf("scheduler.run_plan: %w", err)
 	}

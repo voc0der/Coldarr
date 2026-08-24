@@ -283,6 +283,107 @@ func TestTick_RunScheduledPlan_MovesAndNotifiesSummary(t *testing.T) {
 	}
 }
 
+func TestTick_WeeklyOmitDay_SkipsDailyPlanUntilNextEligibleDay(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+	srv.cfg.Scheduler.WeeklyOmitDays = []scheduler.Weekday{scheduler.Monday}
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "01:00"}
+
+	mondayAtOne := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
+	srv.tick(mondayAtOne)
+	if got := len(radarr.calls()); got != 0 {
+		t.Fatalf("radarr editor calls on omitted Monday = %d, want 0", got)
+	}
+	if got := radarr.cutoffHits(); got != 0 {
+		t.Fatalf("quality-cutoff scans on omitted Monday = %d, want 0", got)
+	}
+	if got := srv.getLastRunPlan(); !got.IsZero() {
+		t.Fatalf("lastRunPlan on omitted Monday = %v, want zero", got)
+	}
+
+	tuesdayBeforeOne := mondayAtOne.AddDate(0, 0, 1).Add(-time.Minute)
+	srv.tick(tuesdayBeforeOne)
+	if got := len(radarr.calls()); got != 0 {
+		t.Fatalf("radarr editor calls Tuesday before scheduled time = %d, want 0", got)
+	}
+
+	tuesdayAtOne := mondayAtOne.AddDate(0, 0, 1)
+	srv.tick(tuesdayAtOne)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(radarr.calls()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(radarr.calls()); got != 1 {
+		t.Fatalf("radarr editor calls Tuesday at scheduled time = %d, want 1", got)
+	}
+	if got := srv.getLastRunPlan(); !got.Equal(tuesdayAtOne) {
+		t.Errorf("lastRunPlan = %v, want %v", got, tuesdayAtOne)
+	}
+}
+
+func TestTick_WeeklyOmitDay_BlocksEveryAutomaticTask(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+	hourly := scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+	srv.cfg.Scheduler.WeeklyOmitDays = []scheduler.Weekday{scheduler.Monday}
+	srv.cfg.Scheduler.RunPlan = hourly
+	srv.cfg.Scheduler.RescanCold = hourly
+	srv.cfg.Scheduler.RefreshLinks = hourly
+	srv.cfg.Scheduler.ScanCutoffs = hourly
+	srv.cfg.Scheduler.ScanOrphans = hourly
+
+	srv.tick(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC))
+
+	if got := radarr.cutoffHits(); got != 0 {
+		t.Errorf("quality-cutoff calls = %d, want 0", got)
+	}
+	anchors := map[string]time.Time{
+		"run_plan":      srv.getLastRunPlan(),
+		"rescan_cold":   srv.getLastRunRescan(),
+		"refresh_links": srv.getLastRunRefreshLinks(),
+		"scan_cutoffs":  srv.getLastRunScanCutoffs(),
+		"scan_orphans":  srv.getLastRunScanOrphans(),
+	}
+	for task, anchor := range anchors {
+		if !anchor.IsZero() {
+			t.Errorf("%s anchor = %v on omitted day, want zero", task, anchor)
+		}
+	}
+}
+
+func TestHandleSchedulerSave_WeeklyOmitDaysPersistsAndRenders(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, "", "", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/scheduler/omit-days", strings.NewReader("omit_days=monday&omit_days=friday"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("task", "omit-days")
+	rec := httptest.NewRecorder()
+	srv.handleSchedulerSave(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Weekly omit days saved.") {
+		t.Errorf("response body missing save confirmation: %s", rec.Body.String())
+	}
+	got := srv.currentConfig().Scheduler.WeeklyOmitDays
+	if len(got) != 2 || got[0] != scheduler.Monday || got[1] != scheduler.Friday {
+		t.Fatalf("live weekly omit days = %v, want [monday friday]", got)
+	}
+
+	reloaded, err := config.LoadForServer(filepath.Join(dir, "coldarr.yaml"))
+	if err != nil {
+		t.Fatalf("LoadForServer: %v", err)
+	}
+	got = reloaded.Scheduler.WeeklyOmitDays
+	if len(got) != 2 || got[0] != scheduler.Monday || got[1] != scheduler.Friday {
+		t.Fatalf("persisted weekly omit days = %v, want [monday friday]", got)
+	}
+}
+
 // TestTick_RunScheduledPlan_RefusesWhenJellyfinUnavailable proves the
 // fail-closed inventory rule reaches the unattended/destructive path: when
 // Jellyfin is enabled but its favorites cannot be snapshotted, a due run

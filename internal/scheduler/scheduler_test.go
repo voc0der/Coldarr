@@ -30,6 +30,42 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateOmitDays(t *testing.T) {
+	tests := []struct {
+		name    string
+		days    []Weekday
+		wantErr bool
+	}{
+		{name: "empty"},
+		{name: "one day", days: []Weekday{Monday}},
+		{name: "several days", days: []Weekday{Sunday, Wednesday, Saturday}},
+		{name: "unknown day", days: []Weekday{"funday"}, wantErr: true},
+		{name: "duplicate day", days: []Weekday{Monday, Monday}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateOmitDays(tt.days)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateOmitDays(%v) error = %v, wantErr %v", tt.days, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestOmittedOn(t *testing.T) {
+	days := []Weekday{Monday, Friday}
+	monday := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
+	tuesday := monday.AddDate(0, 0, 1)
+
+	if !OmittedOn(days, monday) {
+		t.Fatal("OmittedOn() = false on selected Monday, want true")
+	}
+	if OmittedOn(days, tuesday) {
+		t.Fatal("OmittedOn() = true on unselected Tuesday, want false")
+	}
+}
+
 func TestDue(t *testing.T) {
 	loc := time.UTC
 	day := func(y int, m time.Month, d, hh, mm int) time.Time {

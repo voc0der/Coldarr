@@ -21,6 +21,30 @@ const (
 	Hourly Unit = "hourly"
 )
 
+// Weekday is the stable, human-readable form used for weekly scheduler
+// blackout days in coldarr.yaml.
+type Weekday string
+
+const (
+	Sunday    Weekday = "sunday"
+	Monday    Weekday = "monday"
+	Tuesday   Weekday = "tuesday"
+	Wednesday Weekday = "wednesday"
+	Thursday  Weekday = "thursday"
+	Friday    Weekday = "friday"
+	Saturday  Weekday = "saturday"
+)
+
+var weekdayForTime = [...]Weekday{
+	Sunday,
+	Monday,
+	Tuesday,
+	Wednesday,
+	Thursday,
+	Friday,
+	Saturday,
+}
+
 // Schedule is one task's recurrence: run every Every Unit(s), and for a
 // Daily schedule, at clock time At.
 type Schedule struct {
@@ -49,6 +73,57 @@ func Validate(s Schedule) error {
 		}
 	}
 	return nil
+}
+
+// ValidateOmitDays checks that a weekly omit-day list only contains known
+// weekdays and does not repeat one. An empty list means there is no weekly
+// blackout.
+func ValidateOmitDays(days []Weekday) error {
+	seen := make(map[Weekday]bool, len(days))
+	for _, day := range days {
+		if !validWeekday(day) {
+			return fmt.Errorf("weekly omit days: unknown weekday %q", day)
+		}
+		if seen[day] {
+			return fmt.Errorf("weekly omit days: weekday %q is repeated", day)
+		}
+		seen[day] = true
+	}
+	return nil
+}
+
+// ParseOmitDays converts form values to Weekdays and validates the result.
+func ParseOmitDays(values []string) ([]Weekday, error) {
+	days := make([]Weekday, len(values))
+	for i, value := range values {
+		days[i] = Weekday(value)
+	}
+	if err := ValidateOmitDays(days); err != nil {
+		return nil, err
+	}
+	return days, nil
+}
+
+// OmittedOn reports whether automated scheduler work should be suppressed
+// at now. time.Weekday is location-aware through now, so this follows the
+// same server-local calendar as daily schedules.
+func OmittedOn(days []Weekday, now time.Time) bool {
+	day := weekdayForTime[now.Weekday()]
+	for _, omitted := range days {
+		if omitted == day {
+			return true
+		}
+	}
+	return false
+}
+
+func validWeekday(day Weekday) bool {
+	for _, candidate := range weekdayForTime {
+		if day == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // Due reports whether s should fire now, given the last time it actually
