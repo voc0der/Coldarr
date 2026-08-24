@@ -26,6 +26,15 @@
       <input type="time" id="at-{{.Task}}" name="at" value="{{.At}}">
       <p class="hint">24h local time - only used when Recurrence is Daily.</p>
     </div>
+    {{if .ShowUserDataRestore}}
+    <div class="scheduler-followup">
+      <div class="checkbox-row">
+        <input type="checkbox" id="start-userdata-restore" name="start_userdata_restore_after_move" {{if .StartUserDataRestoreAfterMove}}checked{{end}}>
+        <label for="start-userdata-restore">On completion, start Restore user data after move</label>
+      </div>
+      <a href="https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move" target="_blank" rel="noopener noreferrer">(required plugin)</a>
+    </div>
+    {{end}}
     <div class="btn-row">
       <button type="submit" class="btn btn-primary">Save</button>
     </div>

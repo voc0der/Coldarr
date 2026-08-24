@@ -40,6 +40,10 @@ type scheduleFormView struct {
 	// Orphaned Storage page would otherwise stay empty).
 	ShowRunNow  bool
 	RunNowLabel string
+	// The restore follow-up belongs only to Run the Plan. It is rendered
+	// inside that schedule's form so both values save atomically.
+	ShowUserDataRestore           bool
+	StartUserDataRestoreAfterMove bool
 }
 
 type schedulerData struct {
@@ -107,12 +111,15 @@ func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule
 
 func (s *Server) schedulerData() schedulerData {
 	cfg := s.currentConfig()
+	runPlan := s.scheduleView("run_plan", "Run the Plan",
+		`Builds a fresh plan using your current policy and executes it - identical to clicking "Apply this plan" yourself, just unattended. Always scans quality cutoffs first (see "Scan Quality Cutoffs" below) so it acts on current data, even if that schedule is off.`,
+		cfg.Scheduler.RunPlan, s.getLastRanPlan())
+	runPlan.ShowUserDataRestore = true
+	runPlan.StartUserDataRestoreAfterMove = cfg.Scheduler.StartUserDataRestoreAfterMove
 	return schedulerData{
 		Title:    "Scheduler",
 		OmitDays: omitDayViews(cfg.Scheduler.WeeklyOmitDays),
-		RunPlan: s.scheduleView("run_plan", "Run the Plan",
-			`Builds a fresh plan using your current policy and executes it - identical to clicking "Apply this plan" yourself, just unattended. Always scans quality cutoffs first (see "Scan Quality Cutoffs" below) so it acts on current data, even if that schedule is off.`,
-			cfg.Scheduler.RunPlan, s.getLastRanPlan()),
+		RunPlan:  runPlan,
 		RescanCold: s.scheduleView("rescan_cold", "Rescan Cold Storage",
 			"Refreshes disk usage and Radarr/Sonarr's library for your cold tiers only, and reports what it finds - a health check, not a move.",
 			cfg.Scheduler.RescanCold, s.getLastRanRescan()),
@@ -163,7 +170,14 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 		At:      r.FormValue("at"),
 	}
 
-	if err := s.updateSchedule(task, sched); err != nil {
+	startUserDataRestore := task == "run_plan" && r.FormValue("start_userdata_restore_after_move") == "on"
+	var err error
+	if task == "run_plan" {
+		err = s.updateRunPlanSchedule(sched, startUserDataRestore)
+	} else {
+		err = s.updateSchedule(task, sched)
+	}
+	if err != nil {
 		data := s.schedulerData()
 		submitted := scheduleFormView{
 			Task: task, Enabled: sched.Enabled, Unit: string(sched.Unit), Every: sched.Every, At: sched.At,
@@ -172,6 +186,8 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 		switch task {
 		case "run_plan":
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RunPlan.Label, data.RunPlan.Hint, data.RunPlan.LastRan
+			submitted.ShowUserDataRestore = true
+			submitted.StartUserDataRestoreAfterMove = startUserDataRestore
 			data.RunPlan = submitted
 		case "rescan_cold":
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RescanCold.Label, data.RescanCold.Hint, data.RescanCold.LastRan
@@ -279,7 +295,7 @@ func (s *Server) runScheduledPlan(now time.Time) {
 		return
 	}
 
-	progress, err := s.startApply(eng, inv, plan)
+	progress, err := s.startApply(eng, inv, plan, s.currentConfig().Scheduler.StartUserDataRestoreAfterMove)
 	if err != nil {
 		// Most likely the mover lock is held by something else (a manual
 		// apply that started between the inFlight check above and here,

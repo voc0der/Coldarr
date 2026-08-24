@@ -68,6 +68,12 @@ const (
 	// its heaviest read load on a server that is, by construction, busy
 	// running the very scan being waited for.
 	maxResolvePollInterval = 60 * time.Second
+
+	// UserDataRestoreTaskKey is the stable IScheduledTask key published by
+	// the Restore User Data After Move plugin. Jellyfin's task ID is a
+	// separate runtime value, so callers must resolve this key before each
+	// launch rather than guessing an endpoint ID.
+	UserDataRestoreTaskKey = "UserDataRestore"
 )
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -191,6 +197,45 @@ func (c *Client) post(path string, query url.Values, body []byte) error {
 		return fmt.Errorf("POST %s: unexpected status %d", path, resp.StatusCode)
 	}
 	return nil
+}
+
+// StartScheduledTask starts one Jellyfin scheduled task by its stable key.
+// Jellyfin's start endpoint accepts the task's runtime ID, while plugin code
+// exposes a stable Key, so this first resolves key -> ID from /ScheduledTasks
+// and then issues exactly one start request. An already-running task needs no
+// second start and is treated as success.
+func (c *Client) StartScheduledTask(key string) error {
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("scheduled task key is required")
+	}
+
+	body, err := c.get("/ScheduledTasks", nil)
+	if err != nil {
+		return fmt.Errorf("listing scheduled tasks: %w", err)
+	}
+	var tasks []struct {
+		ID    string `json:"Id"`
+		Key   string `json:"Key"`
+		State string `json:"State"`
+	}
+	if err := json.Unmarshal(body, &tasks); err != nil {
+		return fmt.Errorf("GET /ScheduledTasks: decoding response: %w", err)
+	}
+
+	for _, task := range tasks {
+		if !strings.EqualFold(task.Key, key) {
+			continue
+		}
+		if task.ID == "" {
+			return fmt.Errorf("scheduled task %q has no runtime ID", key)
+		}
+		if strings.EqualFold(task.State, "Running") {
+			return nil
+		}
+		return c.post("/ScheduledTasks/Running/"+url.PathEscape(task.ID), nil, nil)
+	}
+
+	return fmt.Errorf("scheduled task %q not found (required plugin is not installed or loaded)", key)
 }
 
 // Refresh modes accepted by /Items/{itemId}/Refresh. Jellyfin's OpenAPI

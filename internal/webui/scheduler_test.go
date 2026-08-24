@@ -384,6 +384,41 @@ func TestHandleSchedulerSave_WeeklyOmitDaysPersistsAndRenders(t *testing.T) {
 	}
 }
 
+func TestHandleSchedulerSave_RunPlanRestoreFollowupPersistsAndRenders(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, "", "", false)
+
+	body := "enabled=on&unit=daily&every=1&at=03%3A00&start_userdata_restore_after_move=on"
+	req := httptest.NewRequest(http.MethodPost, "/settings/scheduler/run_plan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("task", "run_plan")
+	rec := httptest.NewRecorder()
+	srv.handleSchedulerSave(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	page := rec.Body.String()
+	if !strings.Contains(page, `name="start_userdata_restore_after_move" checked`) {
+		t.Errorf("response does not render the saved checkbox as checked: %s", page)
+	}
+	const repoURL = "https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move"
+	if strings.Count(page, repoURL) != 1 {
+		t.Errorf("plugin repo link count = %d, want 1", strings.Count(page, repoURL))
+	}
+	if !srv.currentConfig().Scheduler.StartUserDataRestoreAfterMove {
+		t.Fatal("live scheduler config did not retain the restore follow-up")
+	}
+
+	reloaded, err := config.LoadForServer(filepath.Join(dir, "coldarr.yaml"))
+	if err != nil {
+		t.Fatalf("LoadForServer: %v", err)
+	}
+	if !reloaded.Scheduler.StartUserDataRestoreAfterMove {
+		t.Fatal("persisted scheduler config did not retain the restore follow-up")
+	}
+}
+
 // TestTick_RunScheduledPlan_RefusesWhenJellyfinUnavailable proves the
 // fail-closed inventory rule reaches the unattended/destructive path: when
 // Jellyfin is enabled but its favorites cannot be snapshotted, a due run
@@ -452,7 +487,7 @@ func TestTick_RunScheduledPlan_SkipsWhenApplyAlreadyInFlight(t *testing.T) {
 	if len(plan.Entries) == 0 {
 		t.Fatal("test setup: expected at least one planned move")
 	}
-	if _, err := srv.startApply(eng, inv, plan); err != nil {
+	if _, err := srv.startApply(eng, inv, plan, false); err != nil {
 		t.Fatalf("startApply: %v", err)
 	}
 
@@ -546,7 +581,7 @@ func TestStartApply_RefusesWhileArrStillExecutingMoves(t *testing.T) {
 	}
 
 	radarr.setActiveMoveCommands(1)
-	if _, err := srv.startApply(eng, inv, plan); err == nil {
+	if _, err := srv.startApply(eng, inv, plan, false); err == nil {
 		t.Fatal("expected startApply to refuse while Radarr reports a move command still running")
 	}
 	if got := len(radarr.calls()); got != 0 {

@@ -217,6 +217,22 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-heig
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; }
 .checkbox-row input { width: auto; }
 
+.scheduler-followup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 0.75rem;
+}
+.scheduler-followup label { color: var(--fg); font-size: 0.8rem; font-weight: 400; }
+.scheduler-followup a { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+
 .scheduler-omit-card form.stacked { max-width: none; }
 .weekday-picker {
   display: grid;

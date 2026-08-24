@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vocoder/coldarr/internal/engine"
+	"github.com/vocoder/coldarr/internal/jellyfin"
 	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/planner"
 )
@@ -184,7 +185,7 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.startApply(eng, inv, plan); err != nil {
+	if _, err := s.startApply(eng, inv, plan, false); err != nil {
 		s.renderPlanError(w, err)
 		return
 	}
@@ -198,10 +199,12 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 // flight - shared by the manual "Apply this plan" button and the
 // scheduled "Run the Plan" task. It always spawns a goroutine that waits
 // for the moves to finish and triggers a Jellyfin refresh if anything
-// moved. A caller that also needs to know when the run finishes (e.g. to
-// send a notification) calls progress.Wait() again itself -
+// moved. For a scheduled run whose restore follow-up is enabled, that same
+// goroutine starts the Jellyfin task once, after the complete plan and
+// Jellyfin confirmation phase. A caller that also needs to know when the run
+// finishes (e.g. to send a notification) calls progress.Wait() again itself -
 // mover.Progress supports any number of independent waiters.
-func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *planner.Plan) (*mover.Progress, error) {
+func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *planner.Plan, startUserDataRestore bool) (*mover.Progress, error) {
 	// The flock below only guards against a concurrently *running* Coldarr
 	// apply - it dies with Coldarr's process, while move commands already
 	// handed to Radarr/Sonarr keep physically copying on their own. This
@@ -240,6 +243,20 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 		if moved := progress.Snapshot().Moved(); len(moved) > 0 {
 			if err := eng.NotifyJellyfinMoved(moved); err != nil {
 				log.Printf("webui: jellyfin update after apply failed: %v", err)
+				return
+			}
+
+			// This is deliberately one post-plan launch, after the complete
+			// move set has drained and Jellyfin has resolved every successful
+			// move at its new path. Per-item move reports only start Jellyfin
+			// indexing; they never launch the recovery task.
+			if startUserDataRestore {
+				jf := eng.JellyfinClient()
+				if jf == nil {
+					log.Printf("webui: cannot start Jellyfin user-data restore after apply: Jellyfin connection is not configured or enabled")
+				} else if err := jf.StartScheduledTask(jellyfin.UserDataRestoreTaskKey); err != nil {
+					log.Printf("webui: starting Jellyfin user-data restore after apply failed: %v", err)
+				}
 			}
 		}
 	}()

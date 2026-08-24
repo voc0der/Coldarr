@@ -76,8 +76,13 @@ type NotificationsConfig struct {
 type SchedulerConfig struct {
 	WeeklyOmitDays []scheduler.Weekday `yaml:"weekly_omit_days,omitempty"`
 	RunPlan        scheduler.Schedule  `yaml:"run_plan"`
-	RescanCold     scheduler.Schedule  `yaml:"rescan_cold"`
-	RefreshLinks   scheduler.Schedule  `yaml:"refresh_links"`
+	// StartUserDataRestoreAfterMove starts the companion Jellyfin plugin's
+	// recovery task once a scheduled plan has completely drained and every
+	// successful move has been resolved at its new Jellyfin path. It is a
+	// single post-plan action, not a per-item hook.
+	StartUserDataRestoreAfterMove bool               `yaml:"start_userdata_restore_after_move,omitempty"`
+	RescanCold                    scheduler.Schedule `yaml:"rescan_cold"`
+	RefreshLinks                  scheduler.Schedule `yaml:"refresh_links"`
 	// ScanCutoffs refreshes internal/cutoffcache - which items have an
 	// unmet quality-profile cutoff - by calling Radarr/Sonarr's
 	// wanted/cutoff endpoint. Deliberately never done live on a

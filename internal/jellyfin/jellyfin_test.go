@@ -42,6 +42,69 @@ func TestClient_Post_Authorizes(t *testing.T) {
 	}
 }
 
+func TestClient_StartScheduledTask_ResolvesKeyAndStartsOnce(t *testing.T) {
+	starts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAuthorized(t, r)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/ScheduledTasks":
+			_, _ = w.Write([]byte(`[
+				{"Id":"other-id","Key":"RefreshLibrary","State":"Idle"},
+				{"Id":"restore-runtime-id","Key":"UserDataRestore","State":"Idle"}
+			]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/ScheduledTasks/Running/restore-runtime-id":
+			starts++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	if err := testClient(t, srv.URL).StartScheduledTask(UserDataRestoreTaskKey); err != nil {
+		t.Fatalf("StartScheduledTask: %v", err)
+	}
+	if starts != 1 {
+		t.Fatalf("task starts = %d, want exactly 1", starts)
+	}
+}
+
+func TestClient_StartScheduledTask_AlreadyRunningDoesNotRestart(t *testing.T) {
+	starts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/ScheduledTasks":
+			_, _ = w.Write([]byte(`[{"Id":"restore-runtime-id","Key":"UserDataRestore","State":"Running"}]`))
+		case r.Method == http.MethodPost:
+			starts++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	if err := testClient(t, srv.URL).StartScheduledTask(UserDataRestoreTaskKey); err != nil {
+		t.Fatalf("StartScheduledTask: %v", err)
+	}
+	if starts != 0 {
+		t.Fatalf("task starts = %d, want 0 for a task already running", starts)
+	}
+}
+
+func TestClient_StartScheduledTask_RequiredPluginMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"Id":"other-id","Key":"RefreshLibrary","State":"Idle"}]`))
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).StartScheduledTask(UserDataRestoreTaskKey)
+	if err == nil || !strings.Contains(err.Error(), "required plugin") {
+		t.Fatalf("error = %v, want a required-plugin explanation", err)
+	}
+}
+
 func TestClient_Ping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/System/Info" {

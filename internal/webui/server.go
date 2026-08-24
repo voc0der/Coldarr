@@ -596,6 +596,17 @@ func (s *Server) recordScanOrphansRan(t time.Time) {
 // This does not touch the "last ran" fact shown on the settings page -
 // only a genuine run does that.
 func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
+	return s.updateScheduleConfig(task, sched, nil)
+}
+
+// updateRunPlanSchedule saves Run the Plan's recurrence and its optional
+// one-shot Jellyfin follow-up together, so a failed config write cannot leave
+// the checkbox and schedule describing different behavior.
+func (s *Server) updateRunPlanSchedule(sched scheduler.Schedule, startUserDataRestore bool) error {
+	return s.updateScheduleConfig("run_plan", sched, &startUserDataRestore)
+}
+
+func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, startUserDataRestore *bool) error {
 	if err := scheduler.Validate(sched); err != nil {
 		return err
 	}
@@ -605,6 +616,9 @@ func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
 	switch task {
 	case "run_plan":
 		updated.Scheduler.RunPlan = sched
+		if startUserDataRestore != nil {
+			updated.Scheduler.StartUserDataRestoreAfterMove = *startUserDataRestore
+		}
 	case "rescan_cold":
 		updated.Scheduler.RescanCold = sched
 	case "refresh_links":
