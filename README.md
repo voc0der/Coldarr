@@ -42,7 +42,9 @@ Open `http://localhost:8478`, add your Radarr/Sonarr/Jellyfin connections
 and tiers under Settings, then use the Plan page to preview a move and
 Apply it.
 
-Get the optional Restore User Data After Move plugin from its [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
+> [!NOTE]
+> Get the optional Restore User Data After Move plugin from its
+> [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
 
 Prefer the CLI, or building from source? See [CLI.md](CLI.md). Tuning
 tiers, notifications/scheduling, or the full Docker env var reference? See
