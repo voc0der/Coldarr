@@ -8,6 +8,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/github/license/voc0der/Coldarr" alt="License"></a>
   <a href="https://github.com/voc0der/Coldarr/releases/latest"><img src="https://img.shields.io/github/v/release/voc0der/Coldarr" alt="Latest release"></a>
   <a href="https://github.com/voc0der/Coldarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="CONTRIBUTING.md#coverage"><img src="https://img.shields.io/badge/coverage-61.5%25-yellow" alt="Test coverage"></a>
   <a href="https://hub.docker.com/r/voc0der/coldarr"><img src="https://img.shields.io/docker/pulls/voc0der/coldarr" alt="Docker pulls"></a>
 </p>
 
@@ -41,7 +42,9 @@ Open `http://localhost:8478`, add your Radarr/Sonarr/Jellyfin connections
 and tiers under Settings, then use the Plan page to preview a move and
 Apply it.
 
-Get the optional Restore User Data After Move plugin from its [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
+> [!NOTE]
+> Get the optional Restore User Data After Move plugin from its
+> [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
 
 Prefer the CLI, or building from source? See [CLI.md](CLI.md). Tuning
 tiers, notifications/scheduling, or the full Docker env var reference? See

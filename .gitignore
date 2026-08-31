@@ -8,3 +8,4 @@ connections.enc.json
 docker-compose.yml
 .env
 *.tmp
+coverage.out

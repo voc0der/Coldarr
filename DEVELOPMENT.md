@@ -26,6 +26,10 @@ go test ./... -race
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
 ```
 
+Coverage is not part of that list and is not computed by CI - the README
+badge is static, refreshed locally with `scripts/coverage.sh` when a change
+moves the number. See [CONTRIBUTING.md](CONTRIBUTING.md#coverage).
+
 Unit tests cover every `internal/` package. `cmd/coldarr` (cobra command
 wiring) and most of `internal/webui` are the exception - `internal/webui`
 is a set of Go `html/template` pages with no JS framework, so verifying a
