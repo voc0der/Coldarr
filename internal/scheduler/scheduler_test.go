@@ -145,6 +145,116 @@ func TestDue(t *testing.T) {
 	}
 }
 
+func TestArm(t *testing.T) {
+	loc := time.UTC
+	day := func(d, hh, mm int) time.Time {
+		return time.Date(2026, 9, d, hh, mm, 0, 0, loc)
+	}
+	daily := Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"}
+
+	cases := []struct {
+		name   string
+		sched  Schedule
+		anchor time.Time
+		now    time.Time
+		want   time.Time
+	}{
+		{
+			"daily armed before today's slot keeps its anchor",
+			daily, day(12, 6, 0), day(13, 3, 0), day(12, 6, 0),
+		},
+		{
+			"daily armed after today's slot already ran keeps its anchor",
+			daily, day(13, 6, 0), day(13, 14, 0), day(13, 6, 0),
+		},
+		{
+			"daily armed after a slot missed while down skips to the next slot",
+			daily, day(12, 6, 0), day(13, 14, 0), day(13, 6, 0),
+		},
+		{
+			"daily armed days after its last run skips to the next slot",
+			daily, day(1, 6, 0), day(13, 14, 0), day(13, 6, 0),
+		},
+		{
+			"every=2 armed mid-cycle keeps its place",
+			Schedule{Enabled: true, Unit: Daily, Every: 2, At: "06:00"},
+			day(12, 6, 0), day(13, 14, 0), day(12, 6, 0),
+		},
+		{
+			"never-run daily armed before today's slot stays never-run",
+			daily, time.Time{}, day(13, 3, 0), time.Time{},
+		},
+		{
+			"never-run daily armed after today's slot skips to the next slot",
+			daily, time.Time{}, day(13, 14, 0), day(13, 6, 0),
+		},
+		{
+			"hourly armed mid-period keeps its anchor",
+			Schedule{Enabled: true, Unit: Hourly, Every: 6}, day(13, 1, 0), day(13, 3, 0), day(13, 1, 0),
+		},
+		{
+			"hourly armed after a missed period waits one full period",
+			Schedule{Enabled: true, Unit: Hourly, Every: 6}, day(13, 1, 0), day(13, 9, 17), day(13, 9, 17),
+		},
+		{
+			"disabled keeps its anchor",
+			Schedule{Enabled: false, Unit: Daily, Every: 1, At: "06:00"}, day(1, 6, 0), day(13, 14, 0), day(1, 6, 0),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Arm(c.sched, c.anchor, c.now); !got.Equal(c.want) {
+				t.Fatalf("Arm() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestArm_RestartTimeNeverMatters pins the guarantee Arm exists for: a
+// daily task restarted at any moment of the day, with the anchor it had
+// just before the restart read back from disk, keeps exactly that anchor -
+// so its next run is whatever it would have been with no restart at all -
+// and is never due on the spot.
+func TestArm_RestartTimeNeverMatters(t *testing.T) {
+	sched := Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"}
+	yesterdaySlot := time.Date(2026, 9, 12, 6, 0, 0, 0, time.UTC)
+	todaySlot := yesterdaySlot.AddDate(0, 0, 1)
+
+	for restartAt := todaySlot.Add(-6 * time.Hour); restartAt.Before(todaySlot.Add(18 * time.Hour)); restartAt = restartAt.Add(15 * time.Minute) {
+		// The anchor a process that was up all along would hold: today's
+		// run has genuinely happened once its slot has passed.
+		persisted := yesterdaySlot
+		if !restartAt.Before(todaySlot) {
+			persisted = todaySlot
+		}
+
+		armed := Arm(sched, persisted, restartAt)
+		if !armed.Equal(persisted) {
+			t.Errorf("restart at %v: Arm() = %v, want unchanged %v", restartAt, armed, persisted)
+		}
+		if Due(sched, armed, restartAt) {
+			t.Errorf("restart at %v: Due() = true on the spot, want false", restartAt)
+		}
+	}
+}
+
+// TestDue_PersistedAnchorInAnotherOffset proves an anchor read back from
+// disk - carrying a fixed UTC offset rather than the process's Location -
+// is judged on the calendar day it was recorded on in now's Location.
+func TestDue_PersistedAnchorInAnotherOffset(t *testing.T) {
+	loc := time.FixedZone("UTC+10", 10*60*60)
+	sched := Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"}
+
+	// 06:00 on the 13th in loc is 20:00 on the 12th in UTC.
+	ranAt := time.Date(2026, 9, 13, 6, 0, 0, 0, loc).UTC()
+	if Due(sched, ranAt, time.Date(2026, 9, 13, 14, 0, 0, 0, loc)) {
+		t.Fatal("Due() = true later the same local day, want false")
+	}
+	if !Due(sched, ranAt, time.Date(2026, 9, 14, 6, 0, 0, 0, loc)) {
+		t.Fatal("Due() = false at the next local day's slot, want true")
+	}
+}
+
 // TestDue_DST proves the daily due-check survives a real US DST
 // transition (a 23-hour calendar day) by comparing calendar dates
 // (AddDate) rather than a naive Duration - a lastRun on the day before

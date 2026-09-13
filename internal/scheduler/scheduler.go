@@ -127,11 +127,15 @@ func validWeekday(day Weekday) bool {
 }
 
 // Due reports whether s should fire now, given the last time it actually
-// started running (the zero Time means "hasn't run this process's
-// lifetime yet"). lastRun and now must share a Location.
+// started running (the zero Time means "has never run"). lastRun is
+// evaluated in now's Location, so an anchor read back from disk with a
+// fixed UTC offset still lands on the calendar day it was recorded on.
 func Due(s Schedule, lastRun, now time.Time) bool {
 	if !s.Enabled {
 		return false
+	}
+	if !lastRun.IsZero() {
+		lastRun = lastRun.In(now.Location())
 	}
 	every := s.Every
 	if every < 1 {
@@ -144,6 +148,32 @@ func Due(s Schedule, lastRun, now time.Time) bool {
 		return !now.Before(lastRun.Add(time.Duration(every) * time.Hour))
 	}
 	return dueDaily(s, every, lastRun, now)
+}
+
+// Arm returns s's due-check anchor after (re)arming it at now without a
+// genuine run - at process start, or when its schedule is saved - given the
+// anchor it already has (the zero Time if none). Arming must never start a
+// task, and must never change when a task next runs.
+//
+// So an anchor that isn't due yet is returned untouched: a restart at
+// 03:00 still runs at 06:00, and an every-2-days cycle keeps its place. Only
+// when s would fire on the spot - a slot came and went while nothing was
+// ticking, or it has never run and today's slot has passed - is that slot
+// treated as consumed: a Daily schedule anchors to today's slot (Due being
+// true means it has passed), so its next fire is the next scheduled one;
+// an Hourly schedule has no slot, so it anchors to now.
+func Arm(s Schedule, anchor, now time.Time) time.Time {
+	if !Due(s, anchor, now) {
+		return anchor
+	}
+	if s.Unit != Daily {
+		return now
+	}
+	hh, mm, ok := parseHHMM(s.At)
+	if !ok {
+		hh, mm = 0, 0
+	}
+	return time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
 }
 
 func dueDaily(s Schedule, every int, lastRun, now time.Time) bool {

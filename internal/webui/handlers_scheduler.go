@@ -417,9 +417,9 @@ func (s *Server) runScheduledRefreshLinks(now time.Time) {
 
 // handleRefreshLinksNow is the manual counterpart to runScheduledRefreshLinks
 // - since the schedule (like every schedule in this app) defaults to off,
-// and even once enabled deliberately waits out a full period before its
-// first fire, an operator would otherwise see an empty Links column
-// indefinitely unless they also knew to wait. This runs the exact same
+// and even once enabled deliberately waits for its next scheduled slot
+// before its first fire, an operator would otherwise see an empty Links
+// column indefinitely unless they also knew to wait. This runs the exact same
 // refresh synchronously and reports the result inline, and - like a
 // genuine scheduled run - resets the due-check anchor so an already-
 // enabled schedule doesn't immediately fire again right after this.

@@ -49,26 +49,12 @@ type Server struct {
 	verifyMu      sync.Mutex
 	currentVerify *verifyProgress
 
-	// schedMu guards the scheduler's in-memory (not persisted across
-	// restarts) timing state. lastRunPlan/lastRunRescan are the due-check
-	// anchor scheduler.Due compares against - reset both when a task
-	// genuinely runs AND whenever its schedule is saved (so enabling or
-	// editing a schedule can never itself trigger a surprise immediate
-	// fire). lastRanPlan/lastRanRescan are the user-facing "last ran"
-	// fact shown on the Scheduler settings page - unlike the anchor,
-	// these are only ever updated by a genuine run, never by a save, so
-	// the page never claims a task ran when it was really just edited.
-	schedMu             sync.Mutex
-	lastRunPlan         time.Time
-	lastRunRescan       time.Time
-	lastRunRefreshLinks time.Time
-	lastRunScanCutoffs  time.Time
-	lastRunScanOrphans  time.Time
-	lastRanPlan         time.Time
-	lastRanRescan       time.Time
-	lastRanRefreshLinks time.Time
-	lastRanScanCutoffs  time.Time
-	lastRanScanOrphans  time.Time
+	// schedMu guards the scheduler's timing state, keyed by task (see
+	// taskRunState) and persisted to schedStatePath on every change, so a
+	// restart never changes when a task next runs.
+	schedMu        sync.Mutex
+	schedState     map[string]taskRunState
+	schedStatePath string
 	// rescanMu keeps a scheduled "Rescan Cold Storage" tick from
 	// overlapping itself. It's read-only and independent of applyMu -
 	// unlike a scheduled Plan run, it never competes with a manual Apply
@@ -126,15 +112,21 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 	if err != nil {
 		return nil, err
 	}
+	schedState, err := loadSchedulerState(schedulerStatePath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
-		cfgPath:      cfgPath,
-		cfg:          cfg,
-		connStore:    connStore,
-		linkCache:    linkCache,
-		orphanStore:  orphanStore,
-		pages:        pages,
-		authSessions: map[string]authSession{},
-		oidcStates:   map[string]oidcLoginState{},
+		cfgPath:        cfgPath,
+		cfg:            cfg,
+		connStore:      connStore,
+		linkCache:      linkCache,
+		orphanStore:    orphanStore,
+		schedState:     schedState,
+		schedStatePath: schedulerStatePath(cfgPath),
+		pages:          pages,
+		authSessions:   map[string]authSession{},
+		oidcStates:     map[string]oidcLoginState{},
 	}
 
 	if !s.effectiveOIDCConfig().Enabled {
@@ -362,31 +354,13 @@ func (s *Server) updateAuthOIDC(auth config.OIDCAuthConfig) error {
 	return nil
 }
 
-// StartScheduler resets each currently-enabled task's due-check anchor to
-// now - a process restart defers its next run rather than firing
-// immediately, since none of the scheduler's timing state is persisted
-// across restarts - then launches the background ticker that checks both
-// tasks every tickInterval(). Meant to be called once, after New, before
-// ListenAndServe; there's no corresponding Stop - like ListenAndServe
-// itself, this runs for the life of the process.
+// StartScheduler arms every currently-enabled task (see armSchedules), then
+// launches the background ticker that checks them every tickInterval().
+// Meant to be called once, after New, before ListenAndServe; there's no
+// corresponding Stop - like ListenAndServe itself, this runs for the life
+// of the process.
 func (s *Server) StartScheduler() {
-	now := time.Now()
-	cfg := s.currentConfig()
-	if cfg.Scheduler.RunPlan.Enabled {
-		s.touchPlanSchedule(now)
-	}
-	if cfg.Scheduler.RescanCold.Enabled {
-		s.touchRescanSchedule(now)
-	}
-	if cfg.Scheduler.RefreshLinks.Enabled {
-		s.touchRefreshLinksSchedule(now)
-	}
-	if cfg.Scheduler.ScanCutoffs.Enabled {
-		s.touchScanCutoffsSchedule(now)
-	}
-	if cfg.Scheduler.ScanOrphans.Enabled {
-		s.touchScanOrphansSchedule(now)
-	}
+	s.armSchedules(time.Now())
 
 	go func() {
 		ticker := time.NewTicker(tickInterval())
@@ -408,6 +382,18 @@ func tickInterval() time.Duration {
 		}
 	}
 	return time.Minute
+}
+
+// armSchedules re-arms every task against its persisted timing as of now
+// (see scheduler.Arm): a task that isn't due keeps its anchor, so a restart
+// never changes when it next runs; one that would fire on the spot - its
+// slot passed while Coldarr was down - skips to its next scheduled time
+// instead, so starting up never starts a task.
+func (s *Server) armSchedules(now time.Time) {
+	cfg := s.currentConfig()
+	for _, task := range scheduledTasks {
+		s.armTask(task, scheduleFor(cfg, task), now)
+	}
 }
 
 func (s *Server) tick(now time.Time) {
@@ -454,159 +440,25 @@ func (s *Server) updateWeeklyOmitDays(days []scheduler.Weekday) error {
 	return nil
 }
 
-func (s *Server) getLastRunPlan() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRunPlan
-}
-
-func (s *Server) getLastRunRescan() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRunRescan
-}
-
-func (s *Server) getLastRunRefreshLinks() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRunRefreshLinks
-}
-
-func (s *Server) getLastRunScanCutoffs() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRunScanCutoffs
-}
-
-func (s *Server) getLastRunScanOrphans() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRunScanOrphans
-}
-
-func (s *Server) getLastRanPlan() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRanPlan
-}
-
-func (s *Server) getLastRanRescan() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRanRescan
-}
-
-func (s *Server) getLastRanRefreshLinks() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRanRefreshLinks
-}
-
-func (s *Server) getLastRanScanCutoffs() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRanScanCutoffs
-}
-
-func (s *Server) getLastRanScanOrphans() time.Time {
-	s.schedMu.Lock()
-	defer s.schedMu.Unlock()
-	return s.lastRanScanOrphans
-}
-
-// touchPlanSchedule resets run_plan's due-check anchor without recording
-// a genuine run - called when the schedule itself is saved (see
-// updateSchedule) or the process starts, so enabling or editing it can
-// never trigger a surprise immediate fire.
-func (s *Server) touchPlanSchedule(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunPlan = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) touchRescanSchedule(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunRescan = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) touchRefreshLinksSchedule(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunRefreshLinks = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) touchScanCutoffsSchedule(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunScanCutoffs = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) touchScanOrphansSchedule(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunScanOrphans = t
-	s.schedMu.Unlock()
-}
-
-// recordPlanRan records that run_plan genuinely executed at t - resets
-// the due-check anchor (so it isn't considered due again until the next
-// full period) and updates the "last ran" fact shown on the Scheduler
-// settings page.
-func (s *Server) recordPlanRan(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunPlan = t
-	s.lastRanPlan = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) recordRescanRan(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunRescan = t
-	s.lastRanRescan = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) recordRefreshLinksRan(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunRefreshLinks = t
-	s.lastRanRefreshLinks = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) recordScanCutoffsRan(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunScanCutoffs = t
-	s.lastRanScanCutoffs = t
-	s.schedMu.Unlock()
-}
-
-func (s *Server) recordScanOrphansRan(t time.Time) {
-	s.schedMu.Lock()
-	s.lastRunScanOrphans = t
-	s.lastRanScanOrphans = t
-	s.schedMu.Unlock()
-}
-
 // updateSchedule validates and persists a single named task's schedule
 // ("run_plan", "rescan_cold", "refresh_links", "scan_cutoffs", or
-// "scan_orphans"), then always resets that task's due-check anchor to now
-// - whether enabling,
-// disabling, or just adjusting the time - so saving a schedule can never
-// itself trigger an immediate unattended run as a surprise side effect.
-// This does not touch the "last ran" fact shown on the settings page -
-// only a genuine run does that.
+// "scan_orphans"), then re-arms that task (see scheduler.Arm) - whether
+// enabling, disabling, or just adjusting the time - so saving a schedule
+// can never itself trigger an immediate unattended run as a surprise side
+// effect. This does not touch the "last ran" fact shown on the settings
+// page - only a genuine run does that.
 func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
-	return s.updateScheduleConfig(task, sched, nil)
+	return s.updateScheduleConfig(task, sched, nil, time.Now())
 }
 
 // updateRunPlanSchedule saves Run the Plan's recurrence and its optional
 // one-shot Jellyfin follow-up together, so a failed config write cannot leave
 // the checkbox and schedule describing different behavior.
 func (s *Server) updateRunPlanSchedule(sched scheduler.Schedule, startUserDataRestore bool) error {
-	return s.updateScheduleConfig("run_plan", sched, &startUserDataRestore)
+	return s.updateScheduleConfig(taskRunPlan, sched, &startUserDataRestore, time.Now())
 }
 
-func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, startUserDataRestore *bool) error {
+func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, startUserDataRestore *bool, now time.Time) error {
 	if err := scheduler.Validate(sched); err != nil {
 		return err
 	}
@@ -614,18 +466,18 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 	s.mu.Lock()
 	updated := *s.cfg
 	switch task {
-	case "run_plan":
+	case taskRunPlan:
 		updated.Scheduler.RunPlan = sched
 		if startUserDataRestore != nil {
 			updated.Scheduler.StartUserDataRestoreAfterMove = *startUserDataRestore
 		}
-	case "rescan_cold":
+	case taskRescanCold:
 		updated.Scheduler.RescanCold = sched
-	case "refresh_links":
+	case taskRefreshLinks:
 		updated.Scheduler.RefreshLinks = sched
-	case "scan_cutoffs":
+	case taskScanCutoffs:
 		updated.Scheduler.ScanCutoffs = sched
-	case "scan_orphans":
+	case taskScanOrphans:
 		updated.Scheduler.ScanOrphans = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
@@ -635,19 +487,7 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 	s.cfg = &updated
 	s.mu.Unlock()
 
-	now := time.Now()
-	switch task {
-	case "run_plan":
-		s.touchPlanSchedule(now)
-	case "rescan_cold":
-		s.touchRescanSchedule(now)
-	case "refresh_links":
-		s.touchRefreshLinksSchedule(now)
-	case "scan_cutoffs":
-		s.touchScanCutoffsSchedule(now)
-	case "scan_orphans":
-		s.touchScanOrphansSchedule(now)
-	}
+	s.armTask(task, sched, now)
 	return nil
 }
 
