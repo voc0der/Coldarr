@@ -1,7 +1,7 @@
 {{define "content"}}
 {{template "settings_subnav" .}}
 <h1>Scheduler</h1>
-<p class="muted">Coldarr can run these tasks on its own. All are off until you turn them on below. A task never fires just because Coldarr came back up or you saved its schedule - a daily task waits for its next "At" time (still today, if that hasn't passed yet), and an hourly task waits out one full period.</p>
+<p class="muted">Coldarr can run these tasks on its own. All are off until you turn them on below. Coldarr remembers when each task last ran, so restarting it or saving a schedule never changes when a task next runs, and never starts one. A run that comes due while Coldarr is down is skipped, not made up when it starts again.</p>
 
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
 
