@@ -362,31 +362,13 @@ func (s *Server) updateAuthOIDC(auth config.OIDCAuthConfig) error {
 	return nil
 }
 
-// StartScheduler resets each currently-enabled task's due-check anchor to
-// now - a process restart defers its next run rather than firing
-// immediately, since none of the scheduler's timing state is persisted
-// across restarts - then launches the background ticker that checks both
-// tasks every tickInterval(). Meant to be called once, after New, before
-// ListenAndServe; there's no corresponding Stop - like ListenAndServe
-// itself, this runs for the life of the process.
+// StartScheduler arms every currently-enabled task (see armSchedules), then
+// launches the background ticker that checks them every tickInterval().
+// Meant to be called once, after New, before ListenAndServe; there's no
+// corresponding Stop - like ListenAndServe itself, this runs for the life
+// of the process.
 func (s *Server) StartScheduler() {
-	now := time.Now()
-	cfg := s.currentConfig()
-	if cfg.Scheduler.RunPlan.Enabled {
-		s.touchPlanSchedule(now)
-	}
-	if cfg.Scheduler.RescanCold.Enabled {
-		s.touchRescanSchedule(now)
-	}
-	if cfg.Scheduler.RefreshLinks.Enabled {
-		s.touchRefreshLinksSchedule(now)
-	}
-	if cfg.Scheduler.ScanCutoffs.Enabled {
-		s.touchScanCutoffsSchedule(now)
-	}
-	if cfg.Scheduler.ScanOrphans.Enabled {
-		s.touchScanOrphansSchedule(now)
-	}
+	s.armSchedules(time.Now())
 
 	go func() {
 		ticker := time.NewTicker(tickInterval())
@@ -408,6 +390,31 @@ func tickInterval() time.Duration {
 		}
 	}
 	return time.Minute
+}
+
+// armSchedules sets each currently-enabled task's due-check anchor as of
+// now. None of the scheduler's timing state is persisted across restarts,
+// so without an anchor a task whose slot has already passed today would
+// fire on the first tick after boot. scheduler.Anchor prevents that
+// without also cancelling a slot still ahead today - a restart at 03:00
+// must not skip a 06:00 daily run.
+func (s *Server) armSchedules(now time.Time) {
+	cfg := s.currentConfig()
+	if cfg.Scheduler.RunPlan.Enabled {
+		s.touchPlanSchedule(scheduler.Anchor(cfg.Scheduler.RunPlan, now))
+	}
+	if cfg.Scheduler.RescanCold.Enabled {
+		s.touchRescanSchedule(scheduler.Anchor(cfg.Scheduler.RescanCold, now))
+	}
+	if cfg.Scheduler.RefreshLinks.Enabled {
+		s.touchRefreshLinksSchedule(scheduler.Anchor(cfg.Scheduler.RefreshLinks, now))
+	}
+	if cfg.Scheduler.ScanCutoffs.Enabled {
+		s.touchScanCutoffsSchedule(scheduler.Anchor(cfg.Scheduler.ScanCutoffs, now))
+	}
+	if cfg.Scheduler.ScanOrphans.Enabled {
+		s.touchScanOrphansSchedule(scheduler.Anchor(cfg.Scheduler.ScanOrphans, now))
+	}
 }
 
 func (s *Server) tick(now time.Time) {
@@ -516,8 +523,9 @@ func (s *Server) getLastRanScanOrphans() time.Time {
 
 // touchPlanSchedule resets run_plan's due-check anchor without recording
 // a genuine run - called when the schedule itself is saved (see
-// updateSchedule) or the process starts, so enabling or editing it can
-// never trigger a surprise immediate fire.
+// updateSchedule) or the process starts (see armSchedules), with t from
+// scheduler.Anchor, so enabling or editing it can never trigger a surprise
+// immediate fire.
 func (s *Server) touchPlanSchedule(t time.Time) {
 	s.schedMu.Lock()
 	s.lastRunPlan = t
@@ -589,10 +597,11 @@ func (s *Server) recordScanOrphansRan(t time.Time) {
 
 // updateSchedule validates and persists a single named task's schedule
 // ("run_plan", "rescan_cold", "refresh_links", "scan_cutoffs", or
-// "scan_orphans"), then always resets that task's due-check anchor to now
-// - whether enabling,
-// disabling, or just adjusting the time - so saving a schedule can never
-// itself trigger an immediate unattended run as a surprise side effect.
+// "scan_orphans"), then always re-arms that task's due-check anchor (see
+// scheduler.Anchor) - whether enabling, disabling, or just adjusting the
+// time - so saving a schedule can never itself trigger an immediate
+// unattended run as a surprise side effect, nor skip a slot still ahead
+// today.
 // This does not touch the "last ran" fact shown on the settings page -
 // only a genuine run does that.
 func (s *Server) updateSchedule(task string, sched scheduler.Schedule) error {
@@ -635,18 +644,18 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 	s.cfg = &updated
 	s.mu.Unlock()
 
-	now := time.Now()
+	anchor := scheduler.Anchor(sched, time.Now())
 	switch task {
 	case "run_plan":
-		s.touchPlanSchedule(now)
+		s.touchPlanSchedule(anchor)
 	case "rescan_cold":
-		s.touchRescanSchedule(now)
+		s.touchRescanSchedule(anchor)
 	case "refresh_links":
-		s.touchRefreshLinksSchedule(now)
+		s.touchRefreshLinksSchedule(anchor)
 	case "scan_cutoffs":
-		s.touchScanCutoffsSchedule(now)
+		s.touchScanCutoffsSchedule(anchor)
 	case "scan_orphans":
-		s.touchScanOrphansSchedule(now)
+		s.touchScanOrphansSchedule(anchor)
 	}
 	return nil
 }

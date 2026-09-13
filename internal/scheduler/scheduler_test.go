@@ -145,6 +145,82 @@ func TestDue(t *testing.T) {
 	}
 }
 
+func TestAnchor(t *testing.T) {
+	loc := time.UTC
+	day := func(y int, m time.Month, d, hh, mm int) time.Time {
+		return time.Date(y, m, d, hh, mm, 0, 0, loc)
+	}
+
+	cases := []struct {
+		name  string
+		sched Schedule
+		now   time.Time
+		want  time.Time
+	}{
+		{
+			"daily armed before today's slot anchors to yesterday's slot",
+			Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"},
+			day(2026, 9, 13, 3, 0), day(2026, 9, 12, 6, 0),
+		},
+		{
+			"daily armed after today's slot anchors to today's slot",
+			Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"},
+			day(2026, 9, 13, 14, 0), day(2026, 9, 13, 6, 0),
+		},
+		{
+			"daily armed exactly at the slot anchors to that slot",
+			Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"},
+			day(2026, 9, 13, 6, 0), day(2026, 9, 13, 6, 0),
+		},
+		{
+			"daily armed before the slot on the 1st crosses the month",
+			Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"},
+			day(2026, 10, 1, 0, 30), day(2026, 9, 30, 6, 0),
+		},
+		{
+			"hourly anchors to now",
+			Schedule{Enabled: true, Unit: Hourly, Every: 6},
+			day(2026, 9, 13, 3, 17), day(2026, 9, 13, 3, 17),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Anchor(c.sched, c.now); !got.Equal(c.want) {
+				t.Fatalf("Anchor() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestAnchor_ArmingNeverFiresNorSkips pins the two guarantees Anchor exists
+// for, end to end through Due: arming a daily task never makes it due on
+// the spot, and arming it before today's slot never cancels that slot - the
+// bug where a restart at 03:00 silently skipped that day's 06:00 run.
+func TestAnchor_ArmingNeverFiresNorSkips(t *testing.T) {
+	sched := Schedule{Enabled: true, Unit: Daily, Every: 1, At: "06:00"}
+	at := func(d, hh, mm int) time.Time {
+		return time.Date(2026, 9, d, hh, mm, 0, 0, time.UTC)
+	}
+
+	for _, armedAt := range []time.Time{at(13, 0, 0), at(13, 3, 0), at(13, 5, 59), at(13, 6, 0), at(13, 14, 0), at(13, 23, 59)} {
+		anchor := Anchor(sched, armedAt)
+		if Due(sched, anchor, armedAt) {
+			t.Errorf("armed at %v: Due() = true on the spot, want false", armedAt)
+		}
+
+		nextSlot := at(13, 6, 0)
+		if !armedAt.Before(nextSlot) {
+			nextSlot = at(14, 6, 0)
+		}
+		if Due(sched, anchor, nextSlot.Add(-time.Minute)) {
+			t.Errorf("armed at %v: Due() = true a minute before next slot %v, want false", armedAt, nextSlot)
+		}
+		if !Due(sched, anchor, nextSlot) {
+			t.Errorf("armed at %v: Due() = false at next slot %v, want true", armedAt, nextSlot)
+		}
+	}
+}
+
 // TestDue_DST proves the daily due-check survives a real US DST
 // transition (a 23-hour calendar day) by comparing calendar dates
 // (AddDate) rather than a naive Duration - a lastRun on the day before

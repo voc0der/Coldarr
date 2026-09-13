@@ -656,8 +656,72 @@ func TestUpdateSchedule_ResetsAnchorNotLastRan(t *testing.T) {
 	if got := srv.getLastRanPlan(); !got.Equal(ranAt) {
 		t.Errorf("lastRanPlan = %v, want unchanged %v - saving a schedule must not claim a run that didn't happen", got, ranAt)
 	}
-	if got := srv.getLastRunPlan(); got.Equal(ranAt) || got.IsZero() {
-		t.Errorf("lastRunPlan anchor = %v, want reset to ~now (not %v or zero)", got, ranAt)
+	// The anchor is the most recent 03:00 slot, not the moment of saving -
+	// anchoring to "now" would make a save before 03:00 cancel that day's run.
+	got := srv.getLastRunPlan()
+	if got.Equal(ranAt) || got.IsZero() {
+		t.Errorf("lastRunPlan anchor = %v, want reset (not %v or zero)", got, ranAt)
+	}
+	if got.Hour() != 3 || got.Minute() != 0 || got.After(time.Now()) || time.Since(got) > 24*time.Hour {
+		t.Errorf("lastRunPlan anchor = %v, want the most recent 03:00 slot", got)
+	}
+}
+
+// TestArmSchedules_RestartBeforeDailySlotStillFiresThatDay is the
+// regression test for a restart silently cancelling a daily run: Coldarr
+// restarting at 03:00 armed run_plan with an anchor of "03:00 today",
+// which the date-based due-check read as "already ran today", so the 06:00
+// run never happened - and a restart in that window every day meant it
+// never ran at all.
+func TestArmSchedules_RestartBeforeDailySlotStillFiresThatDay(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "06:00"}
+
+	restartAt := time.Date(2026, 9, 13, 3, 0, 0, 0, time.UTC)
+	srv.armSchedules(restartAt)
+
+	srv.tick(restartAt.Add(time.Minute))
+	if got := len(radarr.calls()); got != 0 {
+		t.Fatalf("radarr editor calls right after restart = %d, want 0", got)
+	}
+
+	slot := time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)
+	srv.tick(slot)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(radarr.calls()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := len(radarr.calls()); got != 1 {
+		t.Fatalf("radarr editor calls at 06:00 after a 03:00 restart = %d, want 1", got)
+	}
+	if got := srv.getLastRunPlan(); !got.Equal(slot) {
+		t.Errorf("lastRunPlan = %v, want %v", got, slot)
+	}
+}
+
+// TestArmSchedules_RestartAfterDailySlotDoesNotFireOnBoot keeps the
+// original reason arming exists: a restart after today's slot has passed
+// must not run the plan on the first tick, only at tomorrow's slot.
+func TestArmSchedules_RestartAfterDailySlotDoesNotFireOnBoot(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Daily, Every: 1, At: "06:00"}
+
+	restartAt := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+	srv.armSchedules(restartAt)
+
+	srv.tick(restartAt.Add(time.Minute))
+	if got := len(radarr.calls()); got != 0 {
+		t.Fatalf("radarr editor calls on the first tick after a 14:00 restart = %d, want 0", got)
+	}
+	if got := radarr.cutoffHits(); got != 0 {
+		t.Fatalf("quality-cutoff scans on the first tick after a 14:00 restart = %d, want 0", got)
+	}
+	if got := srv.getLastRunPlan(); !got.Equal(time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)) {
+		t.Errorf("lastRunPlan anchor = %v, want today's 06:00 slot", got)
 	}
 }
 

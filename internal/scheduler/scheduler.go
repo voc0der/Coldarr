@@ -146,6 +146,34 @@ func Due(s Schedule, lastRun, now time.Time) bool {
 	return dueDaily(s, every, lastRun, now)
 }
 
+// Anchor is the due-check anchor to use when s is (re)armed at now without
+// a genuine run - at process start, or when its schedule is saved. It must
+// satisfy two things at once: nothing fires just because the task was
+// armed, and no scheduled slot that hasn't happened yet is skipped.
+//
+// Anchoring to now satisfies only the first for a Daily schedule: Due
+// compares calendar dates, so an anchor of "03:00 today" reads as "already
+// ran today" and silently cancels a 06:00 run still hours away. The most
+// recent slot at or before now is what the task would have been anchored
+// to had it been running all along - today's slot once its time has
+// passed (so the next fire is a full period away), otherwise yesterday's
+// (so today's still fires). An Hourly schedule has no slot, so it anchors
+// to now: its first fire is one full period after arming.
+func Anchor(s Schedule, now time.Time) time.Time {
+	if s.Unit != Daily {
+		return now
+	}
+	hh, mm, ok := parseHHMM(s.At)
+	if !ok {
+		hh, mm = 0, 0
+	}
+	slot := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
+	if now.Before(slot) {
+		slot = time.Date(now.Year(), now.Month(), now.Day()-1, hh, mm, 0, 0, now.Location())
+	}
+	return slot
+}
+
 func dueDaily(s Schedule, every int, lastRun, now time.Time) bool {
 	// Validate should already have rejected a malformed At at save time -
 	// this fallback only matters for a schedule persisted before
