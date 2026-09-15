@@ -1,0 +1,13 @@
+{{define "portal_layout"}}
+<!doctype html>
+<html lang="en">
+<head>
+{{template "head" .}}
+</head>
+<body>
+<main class="portal">
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>
+{{end}}

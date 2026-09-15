@@ -314,7 +314,7 @@ func TestOIDCAutoLoginCommitsLoginPageBeforeStartingAuthorization(t *testing.T) 
 	req := httptest.NewRequest(http.MethodGet, "/plan?view=ready", nil)
 	handler.ServeHTTP(rec, req)
 
-	wantLoginPage := "/login?return_to=%2Fplan%3Fview%3Dready&auto=1"
+	wantLoginPage := "/login?return_to=%2Fplan%3Fview%3Dready"
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != wantLoginPage {
 		t.Fatalf("GET /plan with OIDC auto-login = %d %q, want a redirect to %q", rec.Code, rec.Header().Get("Location"), wantLoginPage)
 	}
@@ -358,59 +358,146 @@ func TestOIDCAutoLoginCommitsLoginPageBeforeStartingAuthorization(t *testing.T) 
 	}
 }
 
-func TestOIDCPlainLoginPageDoesNotAutoStart(t *testing.T) {
+func TestOIDCAutoLoginStartsFromADirectLoginVisit(t *testing.T) {
 	srv := newAuthTestServer(t, true)
 	srv.mu.Lock()
 	srv.cfg.Auth.OIDC.AutoLogin = true
 	srv.mu.Unlock()
 	handler := srv.routes()
 
-	// /auth/logout redirects to plain /login. It must stay manual even when
-	// auto-login is configured, or signing out would immediately sign the user
-	// back in. Only middleware-generated login URLs carry auto=1.
+	// A bookmark, an installed app's start URL, or a hand-typed /login never
+	// passed through the middleware's redirect - auto-login still has to
+	// start from there.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/login?return_to=%2Fplan", nil)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET plain OIDC login page = %d, want 200", rec.Code)
+		t.Fatalf("GET /login = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="oidc-login"`) {
-		t.Fatal("plain OIDC login page did not render the OIDC link")
+	if !strings.Contains(body, `data-auto-login`) || !strings.Contains(body, `/static/oidc-autologin.js`) {
+		t.Fatal("GET /login with auto-login configured did not start OIDC")
 	}
-	if strings.Contains(body, `data-auto-login`) {
-		t.Fatal("plain OIDC login page must not automatically start OIDC")
-	}
-	if strings.Contains(body, `/static/oidc-autologin.js`) {
-		t.Fatal("plain OIDC login page must not load the auto-login script")
-	}
-	if !strings.Contains(body, `href="/auth/login?return_to=%2Fplan"`) {
-		t.Fatal("plain OIDC login page did not preserve return_to in its manual link")
+	if !strings.Contains(body, `href="/auth/login?return_to=%2F"`) {
+		t.Fatal("GET /login did not default return_to to /")
 	}
 }
 
-func TestOIDCAutoLoginQueryRequiresEnabledConfig(t *testing.T) {
+func TestOIDCSignedOutLoginPageDoesNotAutoStart(t *testing.T) {
+	srv := newAuthTestServer(t, true)
+	srv.mu.Lock()
+	srv.cfg.Auth.OIDC.AutoLogin = true
+	srv.mu.Unlock()
+	handler := srv.routes()
+
+	// Signing out must land on a login page that stays manual even with
+	// auto-login configured, or the provider's still-live session would sign
+	// the user straight back in.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+	handler.ServeHTTP(rec, req)
+	location := rec.Header().Get("Location")
+	if rec.Code != http.StatusFound || location != "/login?signed_out=1" {
+		t.Fatalf("GET /auth/logout = %d %q, want a redirect to /login?signed_out=1", rec.Code, location)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, location, nil)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", location, rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `href="/auth/login?return_to=%2F"`) {
+		t.Fatal("signed-out login page did not render the manual OIDC link")
+	}
+	if strings.Contains(body, `data-auto-login`) {
+		t.Fatal("signed-out login page must not automatically start OIDC")
+	}
+	if strings.Contains(body, `/static/oidc-autologin.js`) {
+		t.Fatal("signed-out login page must not load the auto-login script")
+	}
+	if !strings.Contains(body, "signed out") {
+		t.Fatal("signed-out login page did not say the user was signed out")
+	}
+}
+
+func TestOIDCLoginPageDoesNotAutoStartWhenAutoLoginDisabled(t *testing.T) {
 	srv := newAuthTestServer(t, true)
 	handler := srv.routes()
 
-	// The query flag is an instruction from the middleware, not a way for a
-	// caller to enable a feature the operator has disabled.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/login?auto=1&return_to=%2Fplan", nil)
-	handler.ServeHTTP(rec, req)
+	for _, target := range []string{"/login?return_to=%2Fplan", "/login?auto=1&return_to=%2Fplan"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET crafted auto-login URL = %d, want 200", rec.Code)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", target, rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, `href="/auth/login?return_to=%2Fplan"`) {
+			t.Fatalf("GET %s did not render the manual OIDC link", target)
+		}
+		if strings.Contains(body, `data-auto-login`) || strings.Contains(body, `/static/oidc-autologin.js`) {
+			t.Fatalf("GET %s started OIDC although auto-login is disabled", target)
+		}
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `id="oidc-login"`) {
-		t.Fatal("OIDC login page did not render the manual link")
+}
+
+func TestLoginPageShowsNoAppNavigation(t *testing.T) {
+	for _, oidcEnabled := range []bool{false, true} {
+		t.Setenv(passwordEnvVar, "pw")
+		srv := newAuthTestServer(t, oidcEnabled)
+		handler := srv.routes()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/login", nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /login (oidc=%v) = %d, want 200", oidcEnabled, rec.Code)
+		}
+		body := rec.Body.String()
+		for _, appOnly := range []string{"<nav", `href="/plan"`, `href="/history"`, `href="/settings"`} {
+			if strings.Contains(body, appOnly) {
+				t.Fatalf("GET /login (oidc=%v) rendered app navigation %q before sign-in", oidcEnabled, appOnly)
+			}
+		}
 	}
-	if strings.Contains(body, `data-auto-login`) {
-		t.Fatal("auto=1 must not start OIDC when auto-login is disabled")
-	}
-	if strings.Contains(body, `/static/oidc-autologin.js`) {
-		t.Fatal("auto=1 must not load the auto-login script when auto-login is disabled")
+}
+
+func TestUnauthenticatedHtmxRequestRedirectsWholePage(t *testing.T) {
+	for _, oidcEnabled := range []bool{false, true} {
+		t.Setenv(passwordEnvVar, "pw")
+		srv := newAuthTestServer(t, oidcEnabled)
+		handler := srv.routes()
+
+		// A status poll whose session expired must not follow a redirect
+		// inside its XHR and swap the login page into the plan page. It gets
+		// HX-Redirect to the login page instead, returning to the page that
+		// was polling - not to the partial.
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/plan/apply/status/partial", nil)
+		req.Header.Set("HX-Request", "true")
+		req.Header.Set("HX-Current-URL", "https://coldarr.example/plan?view=ready")
+		handler.ServeHTTP(rec, req)
+
+		want := "/login?return_to=%2Fplan%3Fview%3Dready"
+		if got := rec.Header().Get("HX-Redirect"); got != want {
+			t.Fatalf("htmx poll without session (oidc=%v): HX-Redirect = %q, want %q", oidcEnabled, got, want)
+		}
+		if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" {
+			t.Fatalf("htmx poll without session (oidc=%v) = %d Location %q, want a bare 401", oidcEnabled, rec.Code, rec.Header().Get("Location"))
+		}
+
+		// An htmx POST gets the same, and a missing HX-Current-URL falls back
+		// to the dashboard.
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/settings/notifications/test", nil)
+		req.Header.Set("HX-Request", "true")
+		handler.ServeHTTP(rec, req)
+		if got := rec.Header().Get("HX-Redirect"); got != "/login?return_to=%2F" {
+			t.Fatalf("htmx POST without session (oidc=%v): HX-Redirect = %q, want /login?return_to=%%2F", oidcEnabled, got)
+		}
 	}
 }

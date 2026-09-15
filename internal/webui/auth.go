@@ -66,6 +66,7 @@ type loginData struct {
 	AutoLogin    bool
 	PasswordAuth bool
 	ReturnTo     string
+	SignedOut    bool
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -88,22 +89,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		if r.Method != http.MethodGet {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
-			return
-		}
-
-		returnTo := cleanReturnTo(r.URL.RequestURI())
-		target := "/login?return_to=" + url.QueryEscape(returnTo)
-		if cfg.AutoLogin {
-			// Commit a same-origin Coldarr document before leaving for the OIDC
-			// provider. A redirect-only chain can leave the page that opened
-			// Coldarr as the browser's triggering principal, causing Firefox to
-			// apply Local Network Access checks to the private OIDC callback.
-			target += "&auto=1"
-		}
-		http.Redirect(w, r, target, http.StatusFound)
+		redirectToLogin(w, r)
 	})
 }
 
@@ -115,12 +101,34 @@ func (s *Server) requirePasswordSession(w http.ResponseWriter, r *http.Request, 
 		next.ServeHTTP(w, r)
 		return
 	}
+	redirectToLogin(w, r)
+}
+
+// redirectToLogin sends a request without a session to the login page. An
+// htmx request (a status poll, a "Test connection" button) would follow a
+// plain redirect inside its XHR and swap the whole login page into a corner
+// of the current one, so it gets HX-Redirect instead: htmx moves the browser
+// itself to the login page, returning afterwards to the page that made the
+// request rather than to the partial it asked for.
+func redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("HX-Request") == "true" {
+		returnTo := "/"
+		if u, err := url.Parse(r.Header.Get("HX-Current-URL")); err == nil {
+			returnTo = cleanReturnTo(u.RequestURI())
+		}
+		w.Header().Set("HX-Redirect", loginPath(returnTo))
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	returnTo := cleanReturnTo(r.URL.RequestURI())
-	http.Redirect(w, r, "/login?return_to="+url.QueryEscape(returnTo), http.StatusFound)
+	http.Redirect(w, r, loginPath(cleanReturnTo(r.URL.RequestURI())), http.StatusFound) //nolint:gosec // always /login; the request URI only rides along as an escaped, cleanReturnTo-restricted query value
+}
+
+func loginPath(returnTo string) string {
+	return "/login?return_to=" + url.QueryEscape(returnTo)
 }
 
 func authPublicPath(path string) bool {
@@ -143,21 +151,40 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 	returnTo := cleanReturnTo(r.URL.Query().Get("return_to"))
 
+	signedOut := r.URL.Query().Has("signed_out")
+
 	cfg := s.effectiveOIDCConfig()
 	if !cfg.Enabled {
-		s.render(w, "login", loginData{Title: "Sign in", PasswordAuth: true, ReturnTo: returnTo})
+		s.renderLogin(w, loginData{Title: "Sign in", PasswordAuth: true, ReturnTo: returnTo, SignedOut: signedOut})
 		return
 	}
 
 	data := loginData{
 		Title:     "Sign in",
 		LoginURL:  "/auth/login?return_to=" + url.QueryEscape(returnTo),
-		AutoLogin: cfg.AutoLogin && r.URL.Query().Get("auto") == "1",
+		SignedOut: signedOut,
 	}
 	if err := validateEffectiveOIDCConfig(cfg); err != nil {
 		data.Error = err.Error()
 	}
-	s.render(w, "login", data)
+	// Auto-login starts from this page however the browser got here - a
+	// protected page's redirect, a bookmark, an installed app's start URL -
+	// except straight after signing out, which would otherwise sign the user
+	// straight back in through the provider's still-live session.
+	//
+	// It deliberately goes through this rendered page, never a redirect
+	// chain: committing a same-origin Coldarr document before leaving for the
+	// provider keeps the page that opened Coldarr from being the browser's
+	// triggering principal, which made Firefox apply Local Network Access
+	// checks to a private OIDC callback.
+	data.AutoLogin = cfg.AutoLogin && data.Error == "" && !signedOut
+	s.renderLogin(w, data)
+}
+
+// renderLogin renders the login page in the portal layout: sign-in only,
+// with none of the app's navigation.
+func (s *Server) renderLogin(w http.ResponseWriter, data loginData) {
+	s.renderTemplate(w, "login", "portal_layout", data)
 }
 
 // handlePasswordLogin verifies a submitted password against s.password
@@ -175,7 +202,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	attempt := r.FormValue("password")
 
 	if s.password == "" || subtle.ConstantTimeCompare([]byte(attempt), []byte(s.password)) != 1 {
-		s.render(w, "login", loginData{
+		s.renderLogin(w, loginData{
 			Title:        "Sign in",
 			PasswordAuth: true,
 			ReturnTo:     returnTo,
@@ -315,7 +342,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   requestIsHTTPS(r, s.effectiveOIDCConfig()),
 	})
-	http.Redirect(w, r, "/login", http.StatusFound)
+	http.Redirect(w, r, "/login?signed_out=1", http.StatusFound)
 }
 
 func (s *Server) oidcOAuthConfig(ctx context.Context, r *http.Request, cfg effectiveOIDCConfig) (*oidc.Provider, oauth2.Config, error) {

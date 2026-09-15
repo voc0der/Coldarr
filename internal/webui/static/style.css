@@ -119,6 +119,35 @@ main {
   padding: 1.5rem;
 }
 
+/* Login page: a lone sign-in card, none of the app's navigation. */
+.portal {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1rem;
+}
+.portal-card {
+  width: 100%;
+  max-width: 22rem;
+  margin: 0;
+  padding: 1.75rem 1.5rem;
+  box-shadow: var(--shadow-md);
+}
+.portal-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+.portal-brand h1 { margin: 0; }
+.portal-icon { height: 3.5rem; width: 3.5rem; border-radius: 10px; }
+.portal-card > .muted { text-align: center; margin: 0 0 1rem; }
+.portal-card form.stacked { max-width: none; }
+.portal-card .btn-primary { justify-content: center; width: 100%; }
+
 h1 { font-size: 1.4rem; margin: 0 0 1rem; }
 h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
 
