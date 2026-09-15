@@ -459,6 +459,80 @@ func TestTick_RunScheduledPlan_RefusesWhenJellyfinUnavailable(t *testing.T) {
 	}
 }
 
+// TestTick_RunScheduledPlan_RefusesWhenStorageUnavailable covers a tier
+// path that fails its storage check: the scheduled run must not plan or
+// move anything, must say why, and must count as the run so a dead drive
+// produces one notification rather than one every minute.
+func TestTick_RunScheduledPlan_RefusesWhenStorageUnavailable(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	apprise := newFakeApprise(t)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, apprise.URL, false)
+	srv.cfg.Scheduler.RunPlan = scheduler.Schedule{Enabled: true, Unit: scheduler.Hourly, Every: 1}
+	if err := os.RemoveAll(coldDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+
+	now := time.Now()
+	srv.tick(now)
+	srv.tick(now.Add(time.Minute))
+
+	if got := len(radarr.calls()); got != 0 {
+		t.Errorf("radarr editor calls = %d, want 0 - nothing may move while a tier path is unavailable", got)
+	}
+	if got := radarr.cutoffHits(); got != 0 {
+		t.Errorf("quality-cutoff scans = %d, want 0 - the run must stop before doing any work", got)
+	}
+	notifications := apprise.notifications()
+	if len(notifications) != 1 {
+		t.Fatalf("notifications = %d, want exactly one refusal", len(notifications))
+	}
+	if !strings.Contains(notifications[0]["body"], "storage unavailable") || !strings.Contains(notifications[0]["body"], coldDir) {
+		t.Errorf("refusal notification body = %q, want the storage error naming %s", notifications[0]["body"], coldDir)
+	}
+	if got := srv.getLastRanPlan(); !got.Equal(now) {
+		t.Errorf("lastRanPlan = %v, want %v - a refusal counts as the run", got, now)
+	}
+}
+
+func TestStartApply_RefusesWhenStorageUnavailable(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+
+	eng, err := srv.newEngine()
+	if err != nil {
+		t.Fatalf("newEngine: %v", err)
+	}
+	now := time.Now()
+	inv, err := eng.BuildInventory(now)
+	if err != nil {
+		t.Fatalf("BuildInventory: %v", err)
+	}
+	plan, err := eng.BuildPlan(inv, now)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Entries) == 0 {
+		t.Fatal("test setup: expected a non-empty plan while storage is healthy")
+	}
+
+	// The drive disappears between building the plan and applying it.
+	if err := os.RemoveAll(coldDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if _, err := srv.startApply(eng, inv, plan, false); err == nil || !strings.Contains(err.Error(), "storage unavailable") {
+		t.Fatalf("startApply error = %v, want a storage-unavailable refusal", err)
+	}
+	if got := len(radarr.calls()); got != 0 {
+		t.Errorf("radarr editor calls = %d, want 0", got)
+	}
+
+	if data := srv.buildPlanData(); !strings.Contains(data.Error, "storage unavailable") {
+		t.Errorf("plan page error = %q, want a storage-unavailable refusal", data.Error)
+	}
+}
+
 func TestTick_RunScheduledPlan_SkipsWhenApplyAlreadyInFlight(t *testing.T) {
 	dir, hotDir, coldDir := testTierDirs(t)
 	radarr := newFakeRadarr(t, hotDir)

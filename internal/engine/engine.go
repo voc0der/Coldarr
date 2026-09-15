@@ -88,6 +88,29 @@ func cutoffCachePath(historyPath string) string {
 	return filepath.Join(filepath.Dir(historyPath), "coldarr-cutoffcache.json")
 }
 
+// CheckStorage re-checks every configured tier path (see
+// diskusage.CheckPath) and refuses if any fails. A missing or dead drive
+// doesn't only affect moves to or from it: its mountpoint directory is
+// still there, reporting the system disk's free space, and a plan built
+// around an absent drive is built on a false picture of the library.
+// So one unavailable path blocks every move until it's back - every apply
+// entry point checks this before building a plan, and the mover checks it
+// again before each move, since a drive can drop out mid-run.
+func (e *Engine) CheckStorage() error {
+	var problems []string
+	for _, tier := range e.Cfg.Tiers {
+		for _, path := range tier.Paths {
+			if err := diskusage.CheckPath(path, tier.RequireMount); err != nil {
+				problems = append(problems, fmt.Sprintf("%s: %v", tier.Name, err))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("storage unavailable, refusing to move anything until every tier path checks healthy - %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
 // ArrMovesInFlight reports whether Radarr or Sonarr is still executing (or
 // has queued) any move command - regardless of who requested it or
 // whether the requesting process is even alive anymore. Coldarr's own
@@ -363,6 +386,7 @@ func (e *Engine) Movers() *mover.Movers {
 		Radarr:              e.Radarr,
 		Sonarr:              e.Sonarr,
 		History:             e.History,
+		CheckStorage:        e.CheckStorage,
 		SettleCheckInterval: envDuration("COLDARR_SETTLE_CHECK_INTERVAL"),
 		SettleStableChecks:  envInt("COLDARR_SETTLE_STABLE_CHECKS"),
 		SettleMaxWait:       envDuration("COLDARR_SETTLE_MAX_WAIT"),

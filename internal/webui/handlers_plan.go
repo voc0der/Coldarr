@@ -62,6 +62,10 @@ func (s *Server) buildPlanData() planData {
 		data.Error = detail
 		return data
 	}
+	if err := eng.CheckStorage(); err != nil {
+		data.Error = err.Error()
+		return data
+	}
 
 	now := time.Now()
 	inv, err := eng.BuildInventory(now)
@@ -215,6 +219,9 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 		return nil, err
 	} else if busy {
 		return nil, fmt.Errorf("refusing to apply: %s", detail)
+	}
+	if err := eng.CheckStorage(); err != nil {
+		return nil, err
 	}
 
 	lock, err := mover.AcquireLock(filepath.Dir(s.cfgPath))

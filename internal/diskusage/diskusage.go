@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -74,28 +76,124 @@ func DeviceID(path string) (uint64, error) {
 	return stat.Dev, nil
 }
 
-// IsMountPoint reports whether path is a distinct mount point from its
-// parent directory, i.e. crossing from the parent into path changes
-// filesystem device. A path that fails this check but is expected to be a
-// mounted drive is almost certainly an unmounted drive's empty mountpoint
-// directory sitting on the root filesystem - writing to it would silently
-// fill the root disk instead of the intended drive.
-func IsMountPoint(path string) (bool, error) {
-	dev, err := DeviceID(path)
-	if err != nil {
-		return false, err
-	}
-	parentDev, err := DeviceID(filepath.Dir(path))
-	if err != nil {
-		return false, err
-	}
-	return dev != parentDev, nil
+// mountInfoPath is the kernel's list of this process's mounts - read from
+// inside Coldarr's own mount namespace, so in Docker it describes the
+// container's view of each path. A variable so tests can use a fixture.
+var mountInfoPath = "/proc/self/mountinfo"
+
+type mountEntry struct {
+	device string // "major:minor" of the filesystem behind the mount
+	point  string
 }
 
-// CheckPath verifies path exists and, if requireMount is true, that it is a
-// genuine mount point rather than a plain directory. It returns a
-// human-readable error describing exactly what's wrong so operators can fix
-// misconfigurations (or a missing drive) before Coldarr ever plans a move.
+func readMounts() ([]mountEntry, error) {
+	data, err := os.ReadFile(mountInfoPath)
+	if err != nil {
+		return nil, err
+	}
+	var mounts []mountEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		// Fields: mount ID, parent ID, major:minor, root, mount point, ...
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		mounts = append(mounts, mountEntry{device: fields[2], point: unescapeMountField(fields[4])})
+	}
+	if len(mounts) == 0 {
+		return nil, fmt.Errorf("%s lists no mounts", mountInfoPath)
+	}
+	return mounts, nil
+}
+
+// unescapeMountField undoes the kernel's octal escaping of spaces, tabs,
+// newlines and backslashes in mountinfo paths (e.g. "\040" for a space).
+func unescapeMountField(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// backingMount returns the mount path lives on: the longest mount point
+// containing it, and among equal ones the last listed, since a later mount
+// on the same point hides the earlier one.
+func backingMount(mounts []mountEntry, path string) (mountEntry, bool) {
+	var best mountEntry
+	found := false
+	for _, m := range mounts {
+		if m.point != "/" && path != m.point && !strings.HasPrefix(path, m.point+"/") {
+			continue
+		}
+		if !found || len(m.point) >= len(best.point) {
+			best, found = m, true
+		}
+	}
+	return best, found
+}
+
+// systemDisk returns the mount identifying the system disk. Inside a Docker
+// container "/" is the container's own overlay, so the device behind
+// Docker's per-container /etc/hostname bind mount - kept under Docker's data
+// directory on the host - stands in for the host's system disk. Outside a
+// container it is simply "/".
+func systemDisk(mounts []mountEntry) (mountEntry, bool) {
+	var root mountEntry
+	foundRoot := false
+	for _, m := range mounts {
+		switch m.point {
+		case "/etc/hostname":
+			return m, true
+		case "/":
+			root, foundRoot = m, true
+		}
+	}
+	return root, foundRoot
+}
+
+// checkOnOwnDrive refuses a path that isn't backed by a drive of its own -
+// the state a missing or dead drive leaves behind. Its mountpoint directory
+// still exists as a plain directory on the system disk, and in Docker the
+// bind mount of that directory still exists too, so neither "does the
+// directory exist" nor "is it a mount point" can tell the difference. Where
+// the path's filesystem actually comes from can: the system disk, not the
+// drive.
+func checkOnOwnDrive(path string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s: %w", path, err)
+	}
+	mounts, err := readMounts()
+	if err != nil {
+		return fmt.Errorf("reading the mount table to confirm %s is on a mounted drive: %w - refusing to use it", path, err)
+	}
+	backing, ok := backingMount(mounts, resolved)
+	system, sysOK := systemDisk(mounts)
+	if !ok || !sysOK {
+		return fmt.Errorf("could not find which filesystem %s is on in %s - refusing to use it", path, mountInfoPath)
+	}
+	if backing.point == "/" || backing.device == system.device {
+		return fmt.Errorf("path %s is required to be on its own mounted drive but is on the system disk - refusing to use it (the drive is probably unmounted, missing, or not passed through to this machine, and this is the empty directory left behind)", path)
+	}
+	return nil
+}
+
+// CheckPath verifies path exists and, if requireMount is true, that it is
+// backed by its own mounted drive rather than the system disk (see
+// checkOnOwnDrive). It returns a human-readable error describing exactly
+// what's wrong so operators can fix misconfigurations (or a missing drive)
+// before Coldarr ever plans a move.
 func CheckPath(path string, requireMount bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -109,14 +207,7 @@ func CheckPath(path string, requireMount bool) error {
 	}
 
 	if requireMount {
-		isMount, err := IsMountPoint(path)
-		if err != nil {
-			return fmt.Errorf("checking mount status of %s: %w", path, err)
-		}
-		if !isMount {
-			return fmt.Errorf("path %s is required to be a mount point but is not - refusing to use it (this usually means the drive is unmounted and you're looking at an empty directory on the root filesystem)", path)
-		}
+		return checkOnOwnDrive(path)
 	}
-
 	return nil
 }

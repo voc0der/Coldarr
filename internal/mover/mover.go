@@ -57,6 +57,11 @@ type Movers struct {
 	Sonarr  *arrapi.SonarrClient
 	History *history.Store
 
+	// CheckStorage, when set, runs immediately before each move and fails
+	// that move without contacting Radarr/Sonarr if it returns an error -
+	// a drive can drop out partway through a run that takes hours.
+	CheckStorage func() error
+
 	// Reporter, when set, is handed each item's new location as soon as
 	// that move is confirmed landed. Nil disables mid-run reporting
 	// entirely, which is not a failure: every move still ends up reported
@@ -391,6 +396,13 @@ func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
 // settle failure does neither: the accepted transfer may still be writing.
 func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (landed, destinationSafe bool) {
 	progress.setStatus(idx, StatusMoving, nil)
+
+	if m.CheckStorage != nil {
+		if err := m.CheckStorage(); err != nil {
+			progress.setStatus(idx, StatusFailed, err)
+			return false, true
+		}
+	}
 
 	if err := m.verifyRoom(entry); err != nil {
 		progress.setStatus(idx, StatusFailed, err)

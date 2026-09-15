@@ -194,13 +194,27 @@ so hand-added comments won't survive a GUI save.
 ### Mount safety
 
 Setting `require_mount: true` on a tier makes Coldarr verify that each of
-its paths is a genuine mount point (a distinct filesystem from its parent
-directory) before treating it as usable. This exists specifically to
-catch the case where a satellite drive is unplugged or fails to mount:
-without this check, Coldarr could otherwise "successfully" write into the
-empty directory left behind on the root filesystem. A path that fails
-this check is reported as unavailable and excluded from planning entirely
-- Coldarr never falls back to using it anyway.
+its paths is backed by its own mounted drive, not the system disk, before
+treating it as usable. This exists specifically to catch the case where a
+satellite drive is unplugged, fails to mount, or never reaches the machine
+at all (e.g. a VM's USB passthrough pointing at the wrong port): its
+mountpoint directory is still there, empty, on the system disk.
+
+Coldarr decides this from its own mount table (`/proc/self/mountinfo`), so
+it works inside Docker without extra privileges. There, a bind mount of
+that empty host directory still looks like a mount point - what gives it
+away is that it comes from the same disk as Docker's own per-container
+files (`/etc/hostname`). Outside a container, the path simply sits on `/`.
+If the mount table can't be read, the path fails the check. Leave
+`require_mount` off for a tier that genuinely lives on the system disk.
+
+Any tier path that fails its checks - missing, not a directory, or not on
+its own drive - blocks **all** moves, not just those touching that path:
+Plan, Apply, the CLI's `apply`, and the scheduled "Run the Plan" refuse
+until every path checks healthy again, and a running apply re-checks before
+each move in case a drive drops out partway through. A scheduled run that
+is refused sends a failure notification and waits for its next scheduled
+time.
 
 ### Shared volumes
 
