@@ -14,8 +14,9 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// pageNames lists every top-level page, each rendered by combining
-// layout.html with templates/<name>.html and the shared partials. Each
+// pageNames lists every top-level page, each rendered by combining a layout
+// (layout.html, or portal_layout.html for the nav-less login page) with
+// templates/<name>.html and the shared partials. Each
 // entry is parsed into its own *template.Template so that every page's
 // {{define "content"}} is isolated - html/template names are global
 // within one Template, so parsing all pages together would let the last
@@ -52,6 +53,7 @@ func parseTemplates() (map[string]*template.Template, error) {
 	for _, name := range pageNames {
 		t, err := template.New("root").Funcs(funcs).ParseFS(templateFS,
 			"templates/layout.html",
+			"templates/portal_layout.html",
 			"templates/"+name+".html",
 			"templates/partials/*.html",
 		)

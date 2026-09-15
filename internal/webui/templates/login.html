@@ -1,11 +1,14 @@
 {{define "content"}}
-<h1>Sign in</h1>
+<div class="card portal-card">
+  <div class="portal-brand">
+    <img src="/static/icon-512.png" alt="" class="portal-icon">
+    <h1>Coldarr</h1>
+  </div>
 
-{{if .PasswordAuth}}
-{{if .Error}}
-<div class="alert alert-error">{{.Error}}</div>
-{{end}}
-<div class="card">
+  {{if .SignedOut}}<div class="alert alert-ok">You've been signed out.</div>{{end}}
+  {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+  {{if .PasswordAuth}}
   <p class="muted">OIDC isn't configured, so Coldarr is protected by a password instead.</p>
   <form class="stacked" method="post" action="/login">
     <input type="hidden" name="return_to" value="{{.ReturnTo}}">
@@ -13,20 +16,12 @@
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autofocus required>
     </div>
-    <div class="btn-row">
-      <button type="submit" class="btn btn-primary">Sign in</button>
-    </div>
+    <button type="submit" class="btn btn-primary">Sign in</button>
   </form>
-</div>
-{{else}}
-{{if .Error}}
-<div class="alert alert-error">{{.Error}}</div>
-{{else}}
-<div class="card">
-  <p class="muted">Coldarr is protected by OIDC.</p>
+  {{else if not .Error}}
+  <p class="muted">{{if .AutoLogin}}Redirecting to your identity provider…{{else}}Sign in with your identity provider.{{end}}</p>
   <a id="oidc-login" class="btn btn-primary" href="{{.LoginURL}}"{{if .AutoLogin}} data-auto-login="true"{{end}}>{{template "icon-shield-check"}} Continue</a>
+  {{if .AutoLogin}}<script src="/static/oidc-autologin.js" defer></script>{{end}}
+  {{end}}
 </div>
-{{if .AutoLogin}}<script src="/static/oidc-autologin.js" defer></script>{{end}}
-{{end}}
-{{end}}
 {{end}}
