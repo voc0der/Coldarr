@@ -36,6 +36,9 @@ func newApplyCmd() *cobra.Command {
 			} else if busy {
 				return fmt.Errorf("refusing to plan or apply: %s", detail)
 			}
+			if err := e.CheckStorage(); err != nil {
+				return err
+			}
 
 			now := time.Now()
 			inv, err := e.BuildInventory(now)

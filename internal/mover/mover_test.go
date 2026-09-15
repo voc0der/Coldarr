@@ -328,6 +328,70 @@ func TestApply_LaterSameVolumeEntryFailsWithoutBlockingEarlierSuccess(t *testing
 	}
 }
 
+// TestApply_StorageLostMidRunStopsLaterMoves proves the storage check runs
+// before every move, not once per run: a drive that drops out after the
+// first move lands must stop the next one before Radarr is ever asked.
+func TestApply_StorageLostMidRunStopsLaterMoves(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+
+	statFunc := func(path string) (diskusage.Usage, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(callOrder) == 0 {
+			return diskusage.Usage{TotalBytes: 200, UsedBytes: 40, FreeBytes: 160}, nil
+		}
+		return diskusage.Usage{TotalBytes: 200, UsedBytes: 90, FreeBytes: 110}, nil
+	}
+	checkStorage := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(callOrder) == 0 {
+			return nil
+		}
+		return errors.New("storage unavailable")
+	}
+
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		CheckStorage:        checkStorage,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc:            statFunc,
+	}
+
+	plan := &planner.Plan{
+		Entries: []planner.MoveEntry{
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Item1", SizeBytes: 50}, ToTier: "cold", ToPath: "/cold"},
+			{Item: model.MediaItem{ArrApp: "radarr", ID: 2, Title: "Item2", SizeBytes: 50}, ToTier: "cold", ToPath: "/cold"},
+		},
+	}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	mu.Lock()
+	calls := append([]string(nil), callOrder...)
+	mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("radarr move calls = %v, want only item1's", calls)
+	}
+	snap := progress.Snapshot()
+	failed := snap.Failed()
+	if len(failed) != 1 || failed[0].Entry.Item.ID != 2 || !strings.Contains(failed[0].Err, "storage unavailable") {
+		t.Fatalf("expected item2 failed with the storage error, got %+v", snap.Entries)
+	}
+}
+
 // TestApply_SerializesSameVolumeButParallelAcrossVolumes is the core
 // safety property this package exists for: two items destined for
 // different tier paths that are really the same physical volume must

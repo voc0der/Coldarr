@@ -56,10 +56,10 @@ type Tier struct {
 	TargetUsedPercent float64 `yaml:"target_used_percent"`
 	MaxUsedPercent    float64 `yaml:"max_used_percent"`
 	// RequireMount, when true, makes Coldarr refuse to treat a path as
-	// usable storage unless it is a distinct mount point from its
-	// parent directory. This guards against a satellite drive being
-	// unmounted and Coldarr silently writing (or planning to write)
-	// into the empty directory left behind on the root filesystem.
+	// usable storage unless it is backed by its own mounted drive rather
+	// than the system disk (see diskusage.CheckPath). This guards against
+	// a satellite drive being unmounted or never reaching the machine and
+	// Coldarr planning moves into the empty directory left behind.
 	RequireMount bool `yaml:"require_mount"`
 }
 

@@ -256,6 +256,16 @@ func (s *Server) runScheduledPlan(now time.Time) {
 		return
 	}
 
+	// Unlike the guards above, a dead drive won't clear up on its own
+	// within a minute, so this counts as the run: refuse, notify once, and
+	// try again at the next scheduled time rather than every tick.
+	if err := eng.CheckStorage(); err != nil {
+		log.Printf("scheduler: run-plan: %v", err)
+		n.Summary("Scheduled apply refused", err.Error(), notify.LevelFailure)
+		s.recordPlanRan(now)
+		return
+	}
+
 	// Scan quality cutoffs first, so an actual unattended apply acts on
 	// current data even if the "Scan Quality Cutoffs" schedule itself is
 	// off. Best-effort: if another scan is already in flight, or this one

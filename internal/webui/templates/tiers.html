@@ -22,7 +22,7 @@
   <p class="hint">
     media: {{range .Tier.Media}}{{.}} {{end}} &middot;
     {{if eq (print .Tier.Role) "cold"}}target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}}{{else}}reclaim max {{pct .EffectiveHotMaxPercent}} {{if .UsesDefaultHotMax}}(default){{else}}(configured){{end}}{{end}} &middot;
-    {{if .Tier.RequireMount}}requires real mount point{{else}}no mount check{{end}}
+    {{if .Tier.RequireMount}}requires its own mounted drive{{else}}no mount check{{end}}
   </p>
   <table>
   <thead><tr><th>Path</th><th>Used %</th><th>Status</th><th>Shares volume with</th></tr></thead>
