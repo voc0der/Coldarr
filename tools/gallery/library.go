@@ -127,6 +127,9 @@ type library struct {
 
 	sim    simulation
 	drives []*drive
+	// rootFolders are Coldarr's tier paths: the only folders a move may
+	// target, as Radarr/Sonarr only move into root folders they know.
+	rootFolders []string
 }
 
 func newLibrary(fx *fixture, drives []*drive, now time.Time) (*library, error) {
@@ -214,6 +217,19 @@ func (l *library) driveOf(path string) *drive {
 	return best
 }
 
+// rootFolder returns the configured root folder path names, if it is one.
+// It returns the stored path, never the caller's string, so nothing from a
+// request ever reaches the filesystem.
+func (l *library) rootFolder(path string) (string, bool) {
+	path = filepath.Clean(path)
+	for _, r := range l.rootFolders {
+		if r == path {
+			return r, true
+		}
+	}
+	return "", false
+}
+
 func (l *library) items(app string) []*item {
 	if app == "radarr" {
 		return l.movies
@@ -286,7 +302,7 @@ func (l *library) startMove(app, name string, it *item, root string) {
 	l.mu.Unlock()
 
 	go func() {
-		err := l.relocate(it, filepath.Clean(root))
+		err := l.relocate(it, root)
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		if err != nil {
@@ -294,7 +310,7 @@ func (l *library) startMove(app, name string, it *item, root string) {
 			logf("%s: moving %q to %s failed: %v", app, it.title, root, err)
 			return
 		}
-		it.root = filepath.Clean(root)
+		it.root = root
 		cmd.Status = "completed"
 		logf("%s: moved %q to %s", app, it.title, root)
 	}()

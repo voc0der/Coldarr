@@ -161,8 +161,9 @@ func (l *library) arrHandler(k arrKind, version string) http.Handler {
 			return
 		}
 		ids := append(body.MovieIDs, body.SeriesIDs...)
-		if l.driveOf(body.RootFolderPath) == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "root folder " + body.RootFolderPath + " does not exist"})
+		root, ok := l.rootFolder(body.RootFolderPath)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"message": "root folder " + body.RootFolderPath + " is not a configured root folder"})
 			return
 		}
 		l.mu.Lock()
@@ -175,7 +176,7 @@ func (l *library) arrHandler(k arrKind, version string) http.Handler {
 		l.mu.Unlock()
 		for _, it := range targets {
 			if body.MoveFiles {
-				l.startMove(k.app, k.moveName, it, body.RootFolderPath)
+				l.startMove(k.app, k.moveName, it, root)
 			}
 		}
 		writeJSON(w, http.StatusAccepted, []any{})

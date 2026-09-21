@@ -102,6 +102,7 @@ func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrA
 			return err
 		}
 	}
+	lib.rootFolders = tierPaths
 
 	if err := lib.seed(fx.Orphans); err != nil {
 		return fmt.Errorf("seeding library: %w", err)
