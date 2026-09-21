@@ -203,6 +203,14 @@ func (c *client) ping() (version string, err error) {
 	return status.Version, nil
 }
 
+// LinkTarget is what a Links-column deep link needs for one item: its
+// titleSlug, for its page in Radarr/Sonarr, and its folder, which is what
+// Jellyfin items are matched to Radarr/Sonarr items by.
+type LinkTarget struct {
+	TitleSlug string
+	Path      string
+}
+
 type tagResource struct {
 	ID    int    `json:"id"`
 	Label string `json:"label"`

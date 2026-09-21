@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/vocoder/coldarr/internal/history"
+	"github.com/vocoder/coldarr/internal/model"
 )
 
 // historyPageSize bounds how many records a single History page (and so a
@@ -86,22 +87,37 @@ func (s *Server) buildHistoryData(page int) historyData {
 
 	linkSrc := s.buildLinkSources()
 	linkSnap := s.linkCache.Get()
-	radarrSlugByID := linkSnap.RadarrTitleSlugByID
-	sonarrSlugByID := linkSnap.SonarrTitleSlugByID
+
+	// An item moved since the links cache's last refresh is cached at the
+	// folder it left, whose Jellyfin item goes away once Jellyfin re-indexes -
+	// leave its Jellyfin link out until the next refresh rather than point
+	// there.
+	movedSinceRefresh := map[model.Key]bool{}
+	for _, rec := range all {
+		if rec.MovedAt.After(linkSnap.RefreshedAt) {
+			movedSinceRefresh[model.Key{ArrApp: rec.ArrApp, ID: rec.ItemID}] = true
+		}
+	}
 
 	for _, rec := range pageRecords {
-		var slug string
+		// A record holds only the tier roots the move went between, never
+		// the item's own folder, and Jellyfin items are matched by folder -
+		// so link to the item wherever the links cache last saw it.
+		var slug, path string
 		switch rec.ArrApp {
 		case "radarr":
-			slug = radarrSlugByID[rec.ItemID]
+			slug, path = linkSnap.RadarrTitleSlugByID[rec.ItemID], linkSnap.RadarrPathByID[rec.ItemID]
 		case "sonarr":
-			slug = sonarrSlugByID[rec.ItemID]
+			slug, path = linkSnap.SonarrTitleSlugByID[rec.ItemID], linkSnap.SonarrPathByID[rec.ItemID]
+		}
+		if movedSinceRefresh[model.Key{ArrApp: rec.ArrApp, ID: rec.ItemID}] {
+			path = ""
 		}
 
 		data.Rows = append(data.Rows, historyRowView{
 			MovedAt:  rec.MovedAt.Format("2006-01-02 15:04"),
 			Title:    rec.Title,
-			Links:    itemLinks(linkSrc, rec.ArrApp, slug, rec.ToPath),
+			Links:    itemLinks(linkSrc, rec.ArrApp, slug, path),
 			ArrApp:   rec.ArrApp,
 			FromTier: rec.FromTier,
 			FromPath: rec.FromPath,

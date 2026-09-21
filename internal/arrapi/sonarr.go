@@ -138,20 +138,21 @@ func (s *SonarrClient) FetchSeries() ([]model.MediaItem, error) {
 	return items, nil
 }
 
-// TitleSlugs returns every series' titleSlug keyed by Sonarr's internal
-// ID - used by the History page (which only records the ID) to build a
-// deep link into Sonarr's web UI without paying for FetchSeries' extra
+// LinkTargets returns every series' titleSlug and current folder keyed by
+// Sonarr's internal ID - used by the History page (which only records the
+// ID and the tier roots a move went between) to build deep links into
+// Sonarr and Jellyfin without paying for FetchSeries' extra
 // tag/quality-profile/queue round trips, which a link has no use for.
-func (s *SonarrClient) TitleSlugs() (map[int]string, error) {
+func (s *SonarrClient) LinkTargets() (map[int]LinkTarget, error) {
 	var series []sonarrSeries
 	if err := s.c.get("/api/v3/series", nil, &series); err != nil {
 		return nil, err
 	}
-	slugs := make(map[int]string, len(series))
+	targets := make(map[int]LinkTarget, len(series))
 	for _, sr := range series {
-		slugs[sr.ID] = sr.TitleSlug
+		targets[sr.ID] = LinkTarget{TitleSlug: sr.TitleSlug, Path: sr.Path}
 	}
-	return slugs, nil
+	return targets, nil
 }
 
 // GetSeriesSize returns the size and current folder Sonarr reports for

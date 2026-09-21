@@ -142,20 +142,21 @@ func (r *RadarrClient) FetchMovies() ([]model.MediaItem, error) {
 	return items, nil
 }
 
-// TitleSlugs returns every movie's titleSlug keyed by Radarr's internal
-// ID - used by the History page (which only records the ID) to build a
-// deep link into Radarr's web UI without paying for FetchMovies' extra
+// LinkTargets returns every movie's titleSlug and current folder keyed by
+// Radarr's internal ID - used by the History page (which only records the
+// ID and the tier roots a move went between) to build deep links into
+// Radarr and Jellyfin without paying for FetchMovies' extra
 // tag/quality-profile/queue round trips, which a link has no use for.
-func (r *RadarrClient) TitleSlugs() (map[int]string, error) {
+func (r *RadarrClient) LinkTargets() (map[int]LinkTarget, error) {
 	var movies []radarrMovie
 	if err := r.c.get("/api/v3/movie", nil, &movies); err != nil {
 		return nil, err
 	}
-	slugs := make(map[int]string, len(movies))
+	targets := make(map[int]LinkTarget, len(movies))
 	for _, m := range movies {
-		slugs[m.ID] = m.TitleSlug
+		targets[m.ID] = LinkTarget{TitleSlug: m.TitleSlug, Path: m.Path}
 	}
-	return slugs, nil
+	return targets, nil
 }
 
 // GetMovieSize returns the size and current folder Radarr reports for

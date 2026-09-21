@@ -89,18 +89,18 @@ func TestSonarrClient_CutoffUnmetSeriesIDs_Paginates(t *testing.T) {
 	}
 }
 
-func TestSonarrClient_TitleSlugs(t *testing.T) {
+func TestSonarrClient_LinkTargets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[{"id": 1, "titleSlug": "show-a"}]`))
+		_, _ = w.Write([]byte(`[{"id": 1, "titleSlug": "show-a", "path": "/cold/Show A"}]`))
 	}))
 	defer srv.Close()
 
-	slugs, err := NewSonarrClient(srv.URL, "key").TitleSlugs()
+	targets, err := NewSonarrClient(srv.URL, "key").LinkTargets()
 	if err != nil {
-		t.Fatalf("TitleSlugs: %v", err)
+		t.Fatalf("LinkTargets: %v", err)
 	}
-	if slugs[1] != "show-a" {
-		t.Fatalf("unexpected slugs: %+v", slugs)
+	if targets[1] != (LinkTarget{TitleSlug: "show-a", Path: "/cold/Show A"}) {
+		t.Fatalf("unexpected targets: %+v", targets)
 	}
 }
 

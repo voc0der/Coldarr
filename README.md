@@ -8,7 +8,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/github/license/voc0der/Coldarr" alt="License"></a>
   <a href="https://github.com/voc0der/Coldarr/releases/latest"><img src="https://img.shields.io/github/v/release/voc0der/Coldarr" alt="Latest release"></a>
   <a href="https://github.com/voc0der/Coldarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI" alt="CI status"></a>
-  <a href="CONTRIBUTING.md#coverage"><img src="https://img.shields.io/badge/coverage-63.0%25-yellow" alt="Test coverage"></a>
+  <a href="CONTRIBUTING.md#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
   <a href="https://hub.docker.com/r/voc0der/coldarr"><img src="https://img.shields.io/docker/pulls/voc0der/coldarr" alt="Docker pulls"></a>
 </p>
 
@@ -57,8 +57,8 @@ landed before the next one starts.
   <img src="assets/screenshots/applying-light.png" alt="Apply in progress: some moves done, some moving, the rest pending">
 </picture>
 
-**History** - every move Coldarr has made, with links back into Radarr and
-Sonarr.
+**History** - every move Coldarr has made, with links back into Radarr,
+Sonarr and Jellyfin.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/history-dark.png">
