@@ -7,9 +7,11 @@
 {{end}}
 
 {{if not .Run.Running}}
+{{if .Plan.Error}}
+{{/* A refused plan is only the refusal: there is nothing to preview or apply. */}}
+<div class="alert alert-error">{{.Plan.Error}}</div>
+{{else}}
 <p class="muted">This is a dry run - nothing moves until you click Apply.</p>
-
-{{if .Plan.Error}}<div class="alert alert-error">{{.Plan.Error}}</div>{{end}}
 
 {{if .Plan.Empty}}
 <div class="card empty-state">
@@ -56,6 +58,7 @@
 {{range .Plan.Warnings}}<li>{{.}}</li>{{end}}
 </ul>
 </div>
+{{end}}
 {{end}}
 {{end}}
 {{end}}
