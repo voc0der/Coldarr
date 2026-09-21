@@ -55,6 +55,32 @@ UI change means actually running the server and looking at it:
    `COLDARR_SETTLE_MAX_WAIT` (short durations, e.g. `1s`/`1`/`3s`) so a test
    run settles in seconds instead of waiting on real disk growth.
 
+`tools/gallery/run.sh --serve` does steps 1, 2 and 4 for you - see below.
+
+## Screenshots (gallery harness)
+
+`tools/gallery/` runs Coldarr, built from your checkout, against a fake
+world in one container: FUSE "drives" whose `statfs` reports whatever
+capacity and usage `fixture.yaml` asks for (a 16TB satellite at 89% costs a
+few KB of sparse files), and fake Radarr/Sonarr/Jellyfin serving the
+fixture's library. Moves really copy between those drives over a few
+seconds, so apply, settle, and landing confirmation all run for real. Each
+drive is its own mount, so `require_mount`, shared-volume detection, and
+the dead-drive check behave as they do in production. It's a separate Go
+module (go-fuse never touches Coldarr's own `go.mod`) and needs Docker
+with FUSE on the host, plus Playwright for capturing.
+
+```
+tools/gallery/run.sh                      # every scene, light + dark, into assets/screenshots/
+tools/gallery/run.sh --only plan history  # just these scenes
+tools/gallery/run.sh --serve              # leave it running at http://127.0.0.1:18478 (password: gallery)
+```
+
+Scenes run in order, since some change state (`applying` really applies
+the plan, and `dead-drive` unmounts a satellite). To change what the
+screenshots show, edit `fixture.yaml` (drives, library, orphans, history)
+and `tools/gallery/coldarr.yaml` (tiers, policy, schedules).
+
 ## CI/CD
 
 - `.github/workflows/ci.yml` - on every PR and push to `main`: `go build`,
