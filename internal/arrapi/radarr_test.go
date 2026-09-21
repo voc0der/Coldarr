@@ -122,18 +122,18 @@ func TestRadarrClient_CutoffUnmetMovieIDs_Paginates(t *testing.T) {
 	}
 }
 
-func TestRadarrClient_TitleSlugs(t *testing.T) {
+func TestRadarrClient_LinkTargets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`[{"id": 1, "titleSlug": "movie-a"}, {"id": 2, "titleSlug": "movie-b"}]`))
+		_, _ = w.Write([]byte(`[{"id": 1, "titleSlug": "movie-a", "path": "/cold/Movie A"}, {"id": 2, "titleSlug": "movie-b", "path": "/hot/Movie B"}]`))
 	}))
 	defer srv.Close()
 
-	slugs, err := NewRadarrClient(srv.URL, "key").TitleSlugs()
+	targets, err := NewRadarrClient(srv.URL, "key").LinkTargets()
 	if err != nil {
-		t.Fatalf("TitleSlugs: %v", err)
+		t.Fatalf("LinkTargets: %v", err)
 	}
-	if slugs[1] != "movie-a" || slugs[2] != "movie-b" {
-		t.Fatalf("unexpected slugs: %+v", slugs)
+	if targets[1] != (LinkTarget{TitleSlug: "movie-a", Path: "/cold/Movie A"}) || targets[2] != (LinkTarget{TitleSlug: "movie-b", Path: "/hot/Movie B"}) {
+		t.Fatalf("unexpected targets: %+v", targets)
 	}
 }
 

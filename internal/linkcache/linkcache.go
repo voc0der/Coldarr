@@ -1,9 +1,9 @@
-// Package linkcache persists the Radarr/Sonarr titleSlug and Jellyfin
-// item-ID/server-ID lookups the web GUI's Links column needs to build a
-// deep link into each app. This is pure reference data - it almost never
-// changes once an item exists - so it's refreshed on a schedule (see the
-// "Refresh Links cache" scheduled task) rather than live on every Plan/
-// History page view.
+// Package linkcache persists the Radarr/Sonarr titleSlug and item-folder
+// and Jellyfin item-ID/server-ID lookups the web GUI's Links column needs
+// to build a deep link into each app. This is reference data that rarely
+// changes - an item's folder only when it moves - so it's refreshed on a
+// schedule (see the "Refresh Links cache" scheduled task) rather than live
+// on every Plan/History page view.
 package linkcache
 
 import (
@@ -21,10 +21,17 @@ import (
 // Snapshot is a point-in-time copy of everything the Links column needs
 // to build hrefs, without hitting Radarr/Sonarr/Jellyfin live.
 type Snapshot struct {
-	RadarrTitleSlugByID map[int]string    `json:"radarr_title_slug_by_id"`
-	SonarrTitleSlugByID map[int]string    `json:"sonarr_title_slug_by_id"`
-	JellyfinPathToID    map[string]string `json:"jellyfin_path_to_id"`
-	JellyfinServerID    string            `json:"jellyfin_server_id"`
+	RadarrTitleSlugByID map[int]string `json:"radarr_title_slug_by_id"`
+	SonarrTitleSlugByID map[int]string `json:"sonarr_title_slug_by_id"`
+	// RadarrPathByID/SonarrPathByID are each item's current folder - what
+	// JellyfinPathToID is keyed by. History records only the tier roots a
+	// move went between, so this is how a History row finds its Jellyfin
+	// item, wherever the item lives now. Absent from a cache written before
+	// they existed, until its next refresh; the link is then just omitted.
+	RadarrPathByID   map[int]string    `json:"radarr_path_by_id"`
+	SonarrPathByID   map[int]string    `json:"sonarr_path_by_id"`
+	JellyfinPathToID map[string]string `json:"jellyfin_path_to_id"`
+	JellyfinServerID string            `json:"jellyfin_server_id"`
 	// RefreshedAt is the zero Time until Refresh has succeeded at least
 	// once - callers use this to tell "nothing known yet" (e.g. a fresh
 	// install before its first scheduled refresh) from "refreshed, but
@@ -80,19 +87,19 @@ func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient
 	next := Snapshot{RefreshedAt: time.Now()}
 
 	if radarr != nil {
-		slugs, err := radarr.TitleSlugs()
+		targets, err := radarr.LinkTargets()
 		if err != nil {
-			return fmt.Errorf("fetching radarr titleSlugs: %w", err)
+			return fmt.Errorf("fetching radarr link targets: %w", err)
 		}
-		next.RadarrTitleSlugByID = slugs
+		next.RadarrTitleSlugByID, next.RadarrPathByID = splitTargets(targets)
 	}
 
 	if sonarr != nil {
-		slugs, err := sonarr.TitleSlugs()
+		targets, err := sonarr.LinkTargets()
 		if err != nil {
-			return fmt.Errorf("fetching sonarr titleSlugs: %w", err)
+			return fmt.Errorf("fetching sonarr link targets: %w", err)
 		}
-		next.SonarrTitleSlugByID = slugs
+		next.SonarrTitleSlugByID, next.SonarrPathByID = splitTargets(targets)
 	}
 
 	if jf != nil {
@@ -113,6 +120,18 @@ func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient
 	defer s.mu.Unlock()
 	s.snap = next
 	return s.save()
+}
+
+// splitTargets stores slugs and folders as separate maps, so a cache file
+// from before folders were cached still decodes into this Snapshot.
+func splitTargets(targets map[int]arrapi.LinkTarget) (slugs, paths map[int]string) {
+	slugs = make(map[int]string, len(targets))
+	paths = make(map[int]string, len(targets))
+	for id, t := range targets {
+		slugs[id] = t.TitleSlug
+		paths[id] = t.Path
+	}
+	return slugs, paths
 }
 
 // save must be called with mu held.

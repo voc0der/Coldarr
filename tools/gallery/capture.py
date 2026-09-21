@@ -191,6 +191,13 @@ class Capturer:
         if self.apply_running():
             raise SystemExit("the apply did not finish within 3 minutes - see `docker logs " + self.container + "`")
 
+        # History leaves out Jellyfin links for items moved since the last
+        # links refresh; refresh now, as the schedule would have by the time
+        # anyone looks at History.
+        resp = page.request.post(self.base + "/settings/scheduler/refresh_links/run")
+        if not resp.ok or "alert alert-error" in resp.text():
+            raise SystemExit("refreshing the links cache after the apply failed")
+
     def apply_counts(self) -> dict[str, int]:
         html = self.pages["light"].request.get(self.base + "/plan/apply/status/partial").text()
         return {s: len(re.findall(rf"</svg> {s}</span>", html)) for s in ("done", "moving", "pending", "failed")}

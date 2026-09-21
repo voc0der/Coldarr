@@ -919,6 +919,9 @@ func TestTick_RunScheduledRefreshLinks_PopulatesCache(t *testing.T) {
 	if snap.SonarrTitleSlugByID[7] != "some-show" {
 		t.Errorf("SonarrTitleSlugByID[7] = %q, want %q", snap.SonarrTitleSlugByID[7], "some-show")
 	}
+	if snap.RadarrPathByID[1] != hotDir+"/Movie A" {
+		t.Errorf("RadarrPathByID[1] = %q, want %q", snap.RadarrPathByID[1], hotDir+"/Movie A")
+	}
 	if got := snap.JellyfinPathToID[filepath.Clean(hotDir+"/Movie A")]; got != "jf-1" {
 		t.Errorf("JellyfinPathToID[%q] = %q, want %q", hotDir+"/Movie A", got, "jf-1")
 	}
