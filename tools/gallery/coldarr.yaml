@@ -1,0 +1,79 @@
+# Coldarr config for the gallery - the same shape as coldarr.example.yaml,
+# pointed at the fake drives in fixture.yaml. The container copies this to
+# /config/coldarr.yaml fresh on every start.
+tiers:
+  - name: hot
+    role: hot
+    paths:
+      - /data/media/movies
+      - /data/media/tv
+    media_types: [movie, tv]
+    require_mount: false
+
+  - name: cold-movies
+    role: cold
+    paths:
+      - /mnt/sat1/movies
+      - /mnt/sat2/movies
+    media_types: [movie]
+    target_used_percent: 92
+    max_used_percent: 95
+    require_mount: true
+
+  - name: cold-tv
+    role: cold
+    paths:
+      - /mnt/sat3/tv
+    media_types: [tv]
+    target_used_percent: 92
+    max_used_percent: 95
+    require_mount: true
+
+policy:
+  cooldown_days: 30
+  min_move_size_gb: 1
+  hot_grace_days: 14
+  never_move_tags: [never-move]
+  protected_tags: [keep-hot]
+  cold_ok_tags: [cold-ok]
+  protect_continuing_series: true
+  low_priority_quality_profiles: [SD, HD-720p]
+  cold_score_threshold: 40
+
+history:
+  path: /config/coldarr-history.json
+
+notifications:
+  markdown: true
+
+# Enabled so the Scheduler page looks lived-in. The container sets
+# COLDARR_SCHEDULER_TICK_INTERVAL=24h, so none of them ever fires during a
+# capture.
+scheduler:
+  weekly_omit_days: [saturday]
+  run_plan:
+    enabled: true
+    unit: daily
+    every: 1
+    at: "03:30"
+  start_userdata_restore_after_move: true
+  rescan_cold:
+    enabled: true
+    unit: daily
+    every: 1
+    at: "05:00"
+  refresh_links:
+    enabled: true
+    unit: hourly
+    every: 6
+    at: "00:00"
+  scan_cutoffs:
+    enabled: true
+    unit: daily
+    every: 1
+    at: "02:00"
+  scan_orphans:
+    enabled: true
+    unit: daily
+    every: 7
+    at: "04:00"

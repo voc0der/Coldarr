@@ -1,5 +1,7 @@
 /coldarr
 coldarr.yaml
+# ...except the gallery harness's, which is a fixture, not a local config
+!tools/gallery/coldarr.yaml
 coldarr.yaml.bak
 coldarr-history.json
 connections.enc.json
@@ -9,3 +11,4 @@ docker-compose.yml
 .env
 *.tmp
 coverage.out
+__pycache__/

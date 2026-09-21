@@ -1,0 +1,123 @@
+# The gallery's fake world: the drives Coldarr's tiers sit on and the
+# library Radarr/Sonarr/Jellyfin report. Edit freely - every screenshot is
+# derived from this and tools/gallery/coldarr.yaml.
+#
+# Sizes: decimal units (GB, TB) for drives, since that's how drives are
+# sold (a "16TB" drive shows up in Coldarr as 14901.2 GB, like a real one).
+# Binary units (GiB) for media, since that's what Coldarr displays
+# ("58.4GiB" shows as "58.4 GB").
+#
+# Every title is invented, so the screenshots show no real films or shows.
+
+versions:
+  radarr: 6.0.4.10291
+  sonarr: 4.0.16.2944
+  jellyfin: 10.11.11
+
+# How long a fake move takes: size / move_throughput, clamped to
+# [min, max] seconds - long enough to screenshot an apply mid-run.
+simulation:
+  move_throughput: 6GiB
+  min_move_seconds: 3
+  max_move_seconds: 10
+
+# Each drive is its own FUSE mount. used_percent is what the drive reports
+# once the library below is on it; the media listed here counts toward it.
+drives:
+  - name: nas
+    mount: /data/media
+    size: 40TB
+    used_percent: 78.0
+  - name: sat1
+    mount: /mnt/sat1
+    size: 16TB
+    used_percent: 89.0
+  - name: sat2
+    mount: /mnt/sat2
+    size: 14TB
+    used_percent: 90.5
+  - name: sat3
+    mount: /mnt/sat3
+    size: 12TB
+    used_percent: 85.5
+
+# Per item: title, year, root (the Radarr/Sonarr root folder it's in),
+# size, added_days_ago; optionally profile (quality profile - SD and
+# HD-720p are low-priority in coldarr.yaml), monitored, tags, status,
+# favorite (Jellyfin), cutoff_unmet, downloading, and moved_days_ago
+# (seeds a history record for items already on cold).
+movies:
+  # Cold candidates on hot storage - these make up the plan.
+  - {title: Lanterns Over Kessler Bay, year: 1968, root: /data/media/movies, size: 36.8GiB, added_days_ago: 510, profile: Ultra-HD, tags: [cold-ok]}
+  - {title: The Flying Discs of Route 9, year: 1957, root: /data/media/movies, size: 12.2GiB, added_days_ago: 290, tags: [cold-ok]}
+  - {title: A Quiet Arrangement, year: 1963, root: /data/media/movies, size: 61.8GiB, added_days_ago: 610, profile: Ultra-HD}
+  - {title: The Glass Foundry, year: 1927, root: /data/media/movies, size: 58.4GiB, added_days_ago: 420, profile: Ultra-HD}
+  - {title: Engine No. 44, year: 1926, root: /data/media/movies, size: 41.2GiB, added_days_ago: 380, profile: Ultra-HD, monitored: false}
+  - {title: Deadline for Dolores, year: 1940, root: /data/media/movies, size: 29.5GiB, added_days_ago: 300, monitored: false}
+  - {title: Night Road to Barstow, year: 1945, root: /data/media/movies, size: 18.7GiB, added_days_ago: 400, monitored: false}
+  - {title: The Pale Pavilion, year: 1962, root: /data/media/movies, size: 24.3GiB, added_days_ago: 350, profile: HD-720p}
+  - {title: Tulsa After Dark, year: 1952, root: /data/media/movies, size: 21.6GiB, added_days_ago: 330, profile: HD-720p}
+
+  # Staying hot, each for a different reason.
+  - {title: The Foundling of Pell Street, year: 1921, root: /data/media/movies, size: 14.2GiB, added_days_ago: 5}
+  - {title: Up the Clock Tower!, year: 1923, root: /data/media/movies, size: 19.9GiB, added_days_ago: 200}
+  - {title: Beneath the Grand Stage, year: 1925, root: /data/media/movies, size: 33.4GiB, added_days_ago: 260, tags: [keep-hot]}
+  - {title: Count Varga's Shadow, year: 1922, root: /data/media/movies, size: 27.9GiB, added_days_ago: 480, favorite: true}
+  - {title: The Somnambulist's Ward, year: 1920, root: /data/media/movies, size: 52.3GiB, added_days_ago: 340, profile: Ultra-HD, cutoff_unmet: true}
+  - {title: Professor Luno's Rocket, year: 1902, root: /data/media/movies, size: 2.1GiB, added_days_ago: 700}
+  - {title: Hedgerow, year: 2008, root: /data/media/movies, size: 6.8GiB, added_days_ago: 90}
+  - {title: Ember and the Wyrm, year: 2010, root: /data/media/movies, size: 5.2GiB, added_days_ago: 45}
+  - {title: Chrome Orchard, year: 2012, root: /data/media/movies, size: 7.9GiB, added_days_ago: 20}
+  - {title: Thawline, year: 2019, root: /data/media/movies, size: 4.4GiB, added_days_ago: 10}
+  - {title: Loose Rivets!, year: 2023, root: /data/media/movies, size: 3.1GiB, added_days_ago: 2}
+  - {title: Toadstool Tuesday, year: 2021, root: /data/media/movies, size: 3.6GiB, added_days_ago: 120}
+  - {title: Everybody's Neighbor, year: 1941, root: /data/media/movies, size: 31.0GiB, added_days_ago: 410, downloading: true}
+  - {title: Waltz at Ashcombe Hall, year: 1951, root: /data/media/movies, size: 26.4GiB, added_days_ago: 540, tags: [never-move]}
+  - {title: Hollister Rides Again, year: 1963, root: /data/media/movies, size: 35.2GiB, added_days_ago: 150}
+  - {title: Six Minutes to Noon, year: 1954, root: /data/media/movies, size: 16.8GiB, added_days_ago: 250}
+  - {title: The Greenhouse on Delancey, year: 1960, root: /data/media/movies, size: 17.3GiB, added_days_ago: 40}
+  - {title: The Painter on Mercer Street, year: 1945, root: /data/media/movies, size: 28.8GiB, added_days_ago: 190}
+
+  # Already on cold, moved there by earlier runs.
+  - {title: The Widow's Stair, year: 1959, root: /mnt/sat1/movies, size: 32.6GiB, added_days_ago: 800, moved_days_ago: 150}
+  - {title: The Last Lamplighter, year: 1964, root: /mnt/sat1/movies, size: 27.4GiB, added_days_ago: 720, moved_days_ago: 140}
+  - {title: Poisoned at Pier 12, year: 1949, root: /mnt/sat1/movies, size: 22.9GiB, added_days_ago: 650, moved_days_ago: 96}
+  - {title: Thumb Out West, year: 1953, root: /mnt/sat1/movies, size: 19.8GiB, added_days_ago: 600, moved_days_ago: 61}
+  - {title: The Ashgrove Inheritance, year: 1963, root: /mnt/sat1/movies, size: 21.3GiB, added_days_ago: 560, moved_days_ago: 33}
+  - {title: Blues for Frankie Rook, year: 1955, root: /mnt/sat1/movies, size: 38.7GiB, added_days_ago: 530, moved_days_ago: 12}
+  - {title: Doctor Vane's Experiment, year: 1962, root: /mnt/sat2/movies, size: 18.4GiB, added_days_ago: 700, moved_days_ago: 120}
+  - {title: Contraband Riviera, year: 1953, root: /mnt/sat2/movies, size: 24.9GiB, added_days_ago: 640, moved_days_ago: 88}
+  - {title: Castle of the Drowned, year: 1963, root: /mnt/sat2/movies, size: 20.2GiB, added_days_ago: 610, moved_days_ago: 47}
+  - {title: Martian Homeroom, year: 1959, root: /mnt/sat2/movies, size: 17.6GiB, added_days_ago: 580, moved_days_ago: 26}
+  - {title: The Tin Invader, year: 1953, root: /mnt/sat2/movies, size: 12.9GiB, added_days_ago: 520, moved_days_ago: 5}
+  - {title: Machine Garden, year: 2006, root: /mnt/sat2/movies, size: 3.9GiB, added_days_ago: 480, moved_days_ago: 110}
+  - {title: Spin Cycle Nine, year: 2015, root: /mnt/sat2/movies, size: 4.7GiB, added_days_ago: 450, moved_days_ago: 110}
+  # Favorited in Jellyfin after it went cold - the plan pulls it back.
+  - {title: The Projectionist's Dream, year: 1924, root: /mnt/sat2/movies, size: 16.2GiB, added_days_ago: 900, moved_days_ago: 75, favorite: true}
+
+series:
+  # Ended - cold candidates.
+  - {title: "Rex Orion, Space Marshal", year: 1954, root: /data/media/tv, size: 86.4GiB, seasons: 1, added_days_ago: 400, last_aired_days_ago: 25400}
+  - {title: "Dusty Hale, Frontier Scout", year: 1954, root: /data/media/tv, size: 62.7GiB, seasons: 1, added_days_ago: 380, last_aired_days_ago: 25500}
+
+  # Staying hot.
+  - {title: Tidewater County, year: 2024, root: /data/media/tv, size: 212.5GiB, seasons: 3, status: continuing, added_days_ago: 600, last_aired_days_ago: 4}
+  - {title: Relay Station Kestrel, year: 2023, root: /data/media/tv, size: 164.0GiB, seasons: 2, status: continuing, added_days_ago: 420, last_aired_days_ago: 9}
+  - {title: Rocket Rangers of Io, year: 1950, root: /data/media/tv, size: 71.3GiB, seasons: 3, added_days_ago: 6, last_aired_days_ago: 26000}
+  - {title: "Sadie Colt, Sharpshooter", year: 1954, root: /data/media/tv, size: 95.8GiB, seasons: 3, added_days_ago: 500, last_aired_days_ago: 24500, tags: [keep-hot]}
+  - {title: Precinct Nine, year: 1951, root: /data/media/tv, size: 188.2GiB, seasons: 8, added_days_ago: 700, last_aired_days_ago: 24800, favorite: true}
+
+  # Already on cold.
+  - {title: Inspector Ashby Investigates, year: 1954, root: /mnt/sat3/tv, size: 58.9GiB, seasons: 1, added_days_ago: 820, last_aired_days_ago: 25200, moved_days_ago: 200}
+  - {title: The Santa Rita Kid, year: 1950, root: /mnt/sat3/tv, size: 241.6GiB, seasons: 6, added_days_ago: 900, last_aired_days_ago: 25000, moved_days_ago: 180}
+  - {title: Professor Zero's Time Machine, year: 1955, root: /mnt/sat3/tv, size: 21.4GiB, seasons: 2, added_days_ago: 760, last_aired_days_ago: 25100, moved_days_ago: 130}
+  - {title: "Jimmy Vance, Cadet of the Stars", year: 1950, root: /mnt/sat3/tv, size: 104.3GiB, seasons: 5, added_days_ago: 690, last_aired_days_ago: 25600, moved_days_ago: 70}
+  - {title: The Other Door, year: 1959, root: /mnt/sat3/tv, size: 132.7GiB, seasons: 3, added_days_ago: 610, last_aired_days_ago: 23800, moved_days_ago: 40}
+  - {title: The Masked Marshal, year: 1949, root: /mnt/sat3/tv, size: 276.1GiB, seasons: 5, added_days_ago: 580, last_aired_days_ago: 24000, moved_days_ago: 18}
+  - {title: Whitlock Ranch, year: 1959, root: /mnt/sat3/tv, size: 612.0GiB, seasons: 14, added_days_ago: 540, last_aired_days_ago: 19400, moved_days_ago: 9}
+
+# Folders no service tracks, for the Orphaned Storage page.
+orphans:
+  - {path: /mnt/sat2/movies/The Shrieking Portrait (1958), size: 14.6GiB} # deleted in Radarr, folder left behind
+  - {path: /data/media/movies/Two Hats for Harvey (1953), size: 9.8GiB}     # failed import
+  - {path: "/mnt/sat3/tv/Sadie Colt, Sharpshooter (1954)", size: 31.2GiB} # debris from an interrupted move

@@ -30,6 +30,67 @@ Settings > Scheduler).
   <img src="assets/hot-cold-example.svg" alt="Example layout: primary NAS at 76%, satellite drives packed to 99%">
 </p>
 
+## Screenshots
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.png">
+  <img src="assets/screenshots/dashboard-light.png" alt="Dashboard: library counts, Radarr/Sonarr/Jellyfin connection status, and every tier path's used and total space against its target and max">
+</picture>
+
+<details>
+<summary>More screenshots</summary>
+
+**Plan** - a dry run of what would move, why, and where, with each drive's
+usage before and after. Here a Jellyfin Favorite that had gone cold is
+coming back to hot storage.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/plan-dark.png">
+  <img src="assets/screenshots/plan-light.png" alt="Plan page: twelve moves with links, sizes, source and destination tiers, scores and reasons, then projected usage per path">
+</picture>
+
+**Applying** - one move at a time per destination drive, each confirmed
+landed before the next one starts.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/applying-dark.png">
+  <img src="assets/screenshots/applying-light.png" alt="Apply in progress: some moves done, some moving, the rest pending">
+</picture>
+
+**History** - every move Coldarr has made, with links back into Radarr and
+Sonarr.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/history-dark.png">
+  <img src="assets/screenshots/history-light.png" alt="History page: past moves with source and destination tier, path and size">
+</picture>
+
+**Storage tiers** - paths that turn out to be on the same disk are detected
+and treated as sharing its capacity.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/tiers-dark.png">
+  <img src="assets/screenshots/tiers-light.png" alt="Storage tiers settings: a hot tier whose two paths share a disk, and two cold tiers that require their own mounted drive">
+</picture>
+
+**Orphaned storage** - folders on a tier that no service tracks anymore,
+including leftovers from an interrupted move.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/orphans-dark.png">
+  <img src="assets/screenshots/orphans-light.png" alt="Orphaned storage page: tier writability, and three orphaned folders with their tier and size">
+</picture>
+
+**A drive goes missing** - Coldarr flags its path and refuses every move
+until it's back.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dead-drive-dark.png">
+  <img src="assets/screenshots/dead-drive-light.png" alt="Dashboard with one satellite path unavailable because it's on the system disk, not its own drive">
+</picture>
+
+</details>
+
 ## Quick start
 
 ```
