@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -188,5 +189,97 @@ func TestStartApply_StartsUserDataRestoreOnceAtVeryEnd(t *testing.T) {
 	mu.Unlock()
 	if got != "confirmed,task-resolved,task-started" {
 		t.Fatalf("Jellyfin events = %q, want confirmation then exactly one task resolution/start", got)
+	}
+}
+
+// planOffersApply reports whether a rendered /plan page shows a plan to
+// act on: the item count under the table, or the Apply form itself.
+func planOffersApply(body string) bool {
+	return strings.Contains(body, `action="/plan/apply"`) || strings.Contains(body, "item(s)")
+}
+
+// TestPlanPage_RefusalShowsNoPlan pins that a refused plan is only the
+// refusal. Every refusal left Plan.Empty false with no entries, so the page
+// fell through to the has-a-plan branch: an empty table, "0 item(s), total"
+// and an Apply button beneath the error saying nothing may move.
+func TestPlanPage_RefusalShowsNoPlan(t *testing.T) {
+	cases := []struct {
+		name    string
+		breakIt func(t *testing.T, radarr *fakeRadarr, coldDir string)
+		want    string // in the rendered refusal
+	}{
+		{
+			name: "healthy plan still offers apply",
+		},
+		{
+			name: "drive missing",
+			breakIt: func(t *testing.T, _ *fakeRadarr, coldDir string) {
+				if err := os.RemoveAll(coldDir); err != nil {
+					t.Fatalf("removing cold tier: %v", err)
+				}
+			},
+			want: "storage unavailable, refusing to move anything",
+		},
+		{
+			name: "moves still in flight",
+			breakIt: func(_ *testing.T, radarr *fakeRadarr, _ string) {
+				radarr.setActiveMoveCommands(1)
+			},
+			want: "Radarr is still executing 1 move command(s)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, hotDir, coldDir := testTierDirs(t)
+			radarr := newFakeRadarr(t, hotDir)
+			srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+			if tc.breakIt != nil {
+				tc.breakIt(t, radarr, coldDir)
+			}
+
+			rec := httptest.NewRecorder()
+			srv.handlePlanPage(rec, httptest.NewRequest(http.MethodGet, "/plan", nil))
+			body := rec.Body.String()
+
+			if tc.want == "" {
+				if !planOffersApply(body) || !strings.Contains(body, "Movie A") {
+					t.Fatalf("healthy plan should list Movie A and offer Apply, got:\n%s", body)
+				}
+				return
+			}
+			if !strings.Contains(body, tc.want) {
+				t.Fatalf("page should show the refusal %q, got:\n%s", tc.want, body)
+			}
+			if planOffersApply(body) {
+				t.Fatalf("refused plan still renders a plan table or Apply button:\n%s", body)
+			}
+			if strings.Contains(body, "nothing moves until you click Apply") {
+				t.Fatalf("refused plan still says it's a dry run awaiting Apply:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestApplyStart_RefusalShowsNoPlan covers the other way onto a refused
+// plan: an Apply that startApply turns down re-renders /plan with the
+// error (renderPlanError), which must not offer the same Apply again.
+func TestApplyStart_RefusalShowsNoPlan(t *testing.T) {
+	dir, hotDir, coldDir := testTierDirs(t)
+	radarr := newFakeRadarr(t, hotDir)
+	srv := newTestServer(t, dir, hotDir, coldDir, radarr.URL, "", false)
+	radarr.setActiveMoveCommands(1)
+
+	rec := httptest.NewRecorder()
+	srv.handleApplyStart(rec, httptest.NewRequest(http.MethodPost, "/plan/apply", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "refusing to apply") {
+		t.Fatalf("apply should have been refused, got %d:\n%s", rec.Code, body)
+	}
+	if planOffersApply(body) {
+		t.Fatalf("refused apply re-renders a plan table or Apply button:\n%s", body)
+	}
+	if len(radarr.calls()) != 0 {
+		t.Fatalf("refused apply still asked Radarr to move: %v", radarr.calls())
 	}
 }
