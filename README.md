@@ -89,10 +89,6 @@ until it's back.
   <img src="assets/screenshots/dead-drive-light.png" alt="Dashboard with one satellite path unavailable because it's on the system disk, not its own drive">
 </picture>
 
-The library shown is fictional - invented titles on fake drives. See
-[DEVELOPMENT.md](DEVELOPMENT.md#screenshots-gallery-harness) to regenerate
-these.
-
 </details>
 
 ## Quick start
@@ -121,8 +117,8 @@ tiers, notifications/scheduling, or the full Docker env var reference? See
 - [CLI.md](CLI.md) - building from source and the full CLI command reference
 - [CONFIGURATION.md](CONFIGURATION.md) - connections, tiers, Docker, scoring,
   and the web GUI reference
-- [DEVELOPMENT.md](DEVELOPMENT.md) - building, testing, the screenshot
-  harness, CI/CD, releasing, and the roadmap
+- [DEVELOPMENT.md](DEVELOPMENT.md) - building, testing, CI/CD, releasing,
+  and the roadmap
 - [CONTRIBUTING.md](CONTRIBUTING.md) - branch/commit/PR conventions
 - Licensed under [MIT](LICENSE.md)
 - Radarr/Sonarr/Jellyfin logos in the web GUI's Links column are vendored
