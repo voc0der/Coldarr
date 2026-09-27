@@ -64,6 +64,11 @@ var markdownEscaper = strings.NewReplacer(
 	`~`, `\~`,
 )
 
+// markdownBreak is the line break used inside Markdown bodies - Apprise
+// renders a bare newline in Markdown as a space on HTML-backed targets,
+// while an inline <br> survives as a real break.
+const markdownBreak = "<br>"
+
 // Bold wraps s in Markdown emphasis when Markdown is enabled (escaping any
 // emphasis-like characters s already contains), and returns s unchanged
 // otherwise. Meant for short label-like values (tier names, counts,
@@ -86,12 +91,12 @@ func (n *Notifier) Code(s string) string {
 	return "`" + s + "`"
 }
 
-// JoinLines joins lines with newlines under Markdown and "; " otherwise,
-// unchanged from before Markdown existed.
+// JoinLines joins lines with markdownBreak under Markdown and "; "
+// otherwise, unchanged from before Markdown existed.
 func (n *Notifier) JoinLines(lines []string) string {
 	sep := "; "
 	if n != nil && n.Markdown {
-		sep = "\n"
+		sep = markdownBreak
 	}
 	return strings.Join(lines, sep)
 }
@@ -141,13 +146,18 @@ func post(url, tag, title, body string, lvl Level, markdown bool) error {
 	p := payload{Title: title, Body: body, Type: string(lvl), Tag: tag}
 	if markdown {
 		p.Title = ""
-		p.Body = fmt.Sprintf("❄️`Coldarr` *%s*:\n%s", markdownEscaper.Replace(title), body)
+		p.Body = fmt.Sprintf("❄️`Coldarr` *%s*:%s%s", markdownEscaper.Replace(title), markdownBreak, body)
 		p.Format = "markdown"
 	}
-	data, err := json.Marshal(p)
-	if err != nil {
+	// SetEscapeHTML(false) keeps markdownBreak a literal "<br>" on the
+	// wire rather than json.Marshal's default "\u003cbr\u003e".
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(p); err != nil {
 		return fmt.Errorf("encoding notification: %w", err)
 	}
+	data := buf.Bytes()
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
