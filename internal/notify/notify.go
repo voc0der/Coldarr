@@ -151,15 +151,16 @@ func post(url, tag, title, body string, lvl Level, markdown bool) error {
 	}
 	// SetEscapeHTML(false) keeps markdownBreak a literal "<br>" on the
 	// wire rather than json.Marshal's default "\u003cbr\u003e".
-	var data bytes.Buffer
-	enc := json.NewEncoder(&data)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(p); err != nil {
 		return fmt.Errorf("encoding notification: %w", err)
 	}
+	data := buf.Bytes()
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Post(url, "application/json", &data)
+	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)
 	}
