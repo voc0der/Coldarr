@@ -2,8 +2,10 @@ package notify
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -131,7 +133,7 @@ func TestTest_Markdown(t *testing.T) {
 		if p.Title != "" {
 			t.Fatalf("payload.Title = %q, want empty for Markdown body header", p.Title)
 		}
-		wantBody := "❄️`Coldarr` *Coldarr test notification*:\nIf you can reach your Apprise endpoint, and **this** is bold and `this` is code (not literal asterisks/backticks), Markdown formatting is working."
+		wantBody := "❄️`Coldarr` *Coldarr test notification*:<br>If you can reach your Apprise endpoint, and **this** is bold and `this` is code (not literal asterisks/backticks), Markdown formatting is working."
 		if p.Body != wantBody {
 			t.Fatalf("payload.Body = %q, want %q", p.Body, wantBody)
 		}
@@ -199,9 +201,9 @@ func TestNotifier_Code_DoesNotEscapeWhenMarkdownOn(t *testing.T) {
 	}
 }
 
-func TestNotifier_JoinLines_UsesNewlineWhenMarkdownOn(t *testing.T) {
+func TestNotifier_JoinLines_UsesBreakWhenMarkdownOn(t *testing.T) {
 	n := &Notifier{Markdown: true}
-	if got, want := n.JoinLines([]string{"a", "b"}), "a\nb"; got != want {
+	if got, want := n.JoinLines([]string{"a", "b"}), "a<br>b"; got != want {
 		t.Fatalf("JoinLines() = %q, want %q", got, want)
 	}
 }
@@ -220,8 +222,36 @@ func TestNotifier_Summary_IncludesFormatWhenMarkdown(t *testing.T) {
 		if p.Title != "" {
 			t.Fatalf("payload.Title = %q, want empty for Markdown body header", p.Title)
 		}
-		if got, want := p.Body, "❄️`Coldarr` *Apply\\_finished\\**:\n**body**"; got != want {
+		if got, want := p.Body, "❄️`Coldarr` *Apply\\_finished\\**:<br>**body**"; got != want {
 			t.Fatalf("payload.Body = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("Summary() did not send a notification")
+	}
+}
+
+func TestNotifier_Summary_SendsLiteralBreakAsJSON(t *testing.T) {
+	raw := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		b, _ := io.ReadAll(r.Body)
+		raw <- string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	n := &Notifier{URL: srv.URL, Markdown: true}
+	n.Summary("title", n.JoinLines([]string{"a", "b"}), LevelInfo)
+
+	select {
+	case body := <-raw:
+		if !strings.Contains(body, `"format":"markdown"`) {
+			t.Fatalf("request body %s missing \"format\":\"markdown\"", body)
+		}
+		if !strings.Contains(body, "a<br>b") {
+			t.Fatalf("request body %s does not contain a literal <br>", body)
 		}
 	default:
 		t.Fatal("Summary() did not send a notification")
