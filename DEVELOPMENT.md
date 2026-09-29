@@ -89,10 +89,15 @@ and `tools/gallery/coldarr.yaml` (tiers, policy, schedules).
   `gosec`, `misspell`, `unconvert`, `unparam`), `govulncheck` against the
   module and its dependencies, and a docker build (not pushed) to catch
   Dockerfile breakage early.
-- `.github/dependabot.yml` - weekly grouped update PRs for Go modules,
-  GitHub Actions, and the Dockerfile's base images. Security alerts and
-  code scanning are configured separately under repo Settings > Security
-  (no workflow file needed for those).
+- `.github/workflows/renovate.yml` - runs Renovate (config in
+  `.github/renovate.json5`) hourly, after every push to `main`, and when CI
+  finishes on a `renovate/*` branch. It keeps Go modules, GitHub Actions,
+  and the Dockerfiles' base images up to date. Minor and patch updates share
+  one PR, which merges on its own once CI passes and the release is 3 days
+  old; majors wait for approval on the Dependency Dashboard issue. Security
+  alerts, Dependabot security fixes and code scanning are configured
+  separately under repo Settings > Security (no workflow file needed for
+  those).
 - `.github/workflows/release.yml` - on publishing a GitHub Release: builds
   a multi-arch (amd64/arm64) image and pushes it to both
   `ghcr.io/voc0der/coldarr` and `docker.io/voc0der/coldarr`, tagged with
