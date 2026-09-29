@@ -1,6 +1,15 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   extends: ['config:recommended', 'group:allNonMajor'],
+  // Vulnerabilities come from two sources: this repository's Dependabot alerts, and
+  // osv.dev, which also carries advisories that never reach GitHub's database. A fix
+  // flagged by both still arrives as one PR.
+  osvVulnerabilityAlerts: true,
+  // Go's indirect requirements are off by default, and a vulnerable one would otherwise be
+  // matched and then skipped. This re-enables exactly the vulnerable version for its fix.
+  vulnerabilityAlerts: {
+    enabled: true,
+  },
   // main has no branch protection, so GitHub's auto-merge is unavailable. Renovate merges
   // on its own next run, and only once every check on the PR has passed.
   platformAutomerge: false,
@@ -14,8 +23,8 @@
   packageRules: [
     {
       // Nobody reviews these before they merge, so a compromised publish gets a few days
-      // to be caught and pulled first. Security fixes don't wait: Renovate opens them from
-      // the repository's Dependabot alerts as soon as an alert appears.
+      // to be caught and pulled first. Security fixes don't wait: Renovate opens them as
+      // soon as a Dependabot alert or an osv.dev advisory appears.
       matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
       automerge: true,
       minimumReleaseAge: '3 days',
