@@ -95,9 +95,10 @@ and `tools/gallery/coldarr.yaml` (tiers, policy, schedules).
   and the Dockerfiles' base images up to date. Minor and patch updates share
   one PR, which merges on its own once CI passes and the release is 3 days
   old; majors wait for approval on the Dependency Dashboard issue. Security
-  alerts, Dependabot security fixes and code scanning are configured
-  separately under repo Settings > Security (no workflow file needed for
-  those).
+  fixes skip the wait: Renovate opens them from the repo's Dependabot alerts,
+  and Dependabot's own security-update PRs are off so each fix arrives once.
+  The alerts and code scanning are configured separately under repo
+  Settings > Security (no workflow file needed for those).
 - `.github/workflows/release.yml` - on publishing a GitHub Release: builds
   a multi-arch (amd64/arm64) image and pushes it to both
   `ghcr.io/voc0der/coldarr` and `docker.io/voc0der/coldarr`, tagged with
