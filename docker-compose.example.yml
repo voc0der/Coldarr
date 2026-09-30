@@ -2,10 +2,9 @@
 #
 # Coldarr's default command is `serve` - a persistent web GUI on port 8478 for
 # configuring connections/tiers, previewing plans, and applying them by
-# hand. It is NOT a scheduler: nothing moves automatically. If you'd
-# rather script it, override `command` to a one-shot CLI call instead
-# (see the commented block below) and drive it from the host's own
-# scheduler (cron/systemd timer):
+# hand. If you'd rather script it, override `command` to a one-shot CLI
+# call instead (see the commented block below) and drive it from the
+# host's own scheduler (cron/systemd timer):
 #   0 4 * * * docker compose run --rm coldarr apply --yes
 #
 # The GUI can view connection status and trigger real moves, so it's
