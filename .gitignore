@@ -12,3 +12,8 @@ docker-compose.yml
 *.tmp
 coverage.out
 __pycache__/
+
+# Zensical documentation builds and local Python environments
+/.venv-docs/
+/.cache/
+/site/
