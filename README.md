@@ -7,7 +7,9 @@
 [![Latest release badge](https://img.shields.io/github/v/release/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/releases/latest)
 [![CI status badge](https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI)](https://github.com/voc0der/Coldarr/actions/workflows/ci.yml)
 <a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
+[![GitHub issues badge](https://img.shields.io/github/issues/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/issues)
 [![Docker pulls badge](https://img.shields.io/docker/pulls/voc0der/coldarr)](https://hub.docker.com/r/voc0der/coldarr)
+[![Docker image size badge](https://img.shields.io/docker/image-size/voc0der/coldarr?sort=date)](https://hub.docker.com/r/voc0der/coldarr)
 
 Move older movies and shows off your main storage and onto overflow drives. Tell Coldarr which drives are which, and it works out what's safe to move and has Radarr and Sonarr do the moving, so their libraries always match what's on disk. New additions, active downloads, and Jellyfin favorites stay on your main storage. Preview each plan first, or put it on a schedule. See the [full feature list](https://voc0der.github.io/Coldarr/features/).
 
