@@ -42,8 +42,8 @@ docker compose up -d
 
 The [quick start](https://voc0der.github.io/Coldarr/getting-started/) walks through connecting Radarr, Sonarr, and Jellyfin, adding your drives, and your first plan. Docker environment variables: [reference](https://voc0der.github.io/Coldarr/configuration/docker/#environment-variables).
 
-#### Jellyfin plugin
-The optional [Restore User Data After Move](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move) plugin puts back the watch history a move leaves behind.
+> [!NOTE]
+> The optional [Restore User Data After Move](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move) Jellyfin plugin puts back the watch history a move leaves behind.
 
 #### Build manually
 See the [CLI guide](https://voc0der.github.io/Coldarr/usage/cli/).
