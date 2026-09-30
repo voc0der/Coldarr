@@ -1,86 +1,57 @@
-<p align="center">
-  <img src="docs/assets/icon-512.png" width="120" alt="Coldarr icon">
-</p>
+<h1>
+  <img src="./docs/assets/icon-512.png" alt="Coldarr logo" width="32" />
+  Coldarr
+</h1>
 
-<h1 align="center">Coldarr</h1>
+[![License badge](https://img.shields.io/github/license/voc0der/Coldarr)](LICENSE.md)
+[![Latest release badge](https://img.shields.io/github/v/release/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/releases/latest)
+[![CI status badge](https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI)](https://github.com/voc0der/Coldarr/actions/workflows/ci.yml)
+<a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
+[![Docker pulls badge](https://img.shields.io/docker/pulls/voc0der/coldarr)](https://hub.docker.com/r/voc0der/coldarr)
 
-<p align="center">
-  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/voc0der/Coldarr" alt="License"></a>
-  <a href="https://github.com/voc0der/Coldarr/releases/latest"><img src="https://img.shields.io/github/v/release/voc0der/Coldarr" alt="Latest release"></a>
-  <a href="https://github.com/voc0der/Coldarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI" alt="CI status"></a>
-  <a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
-  <a href="https://hub.docker.com/r/voc0der/coldarr"><img src="https://img.shields.io/docker/pulls/voc0der/coldarr" alt="Docker pulls"></a>
-</p>
+Move older movies and shows off your main storage and onto overflow drives. Tell Coldarr which drives are which, and it works out what's safe to move and has Radarr and Sonarr do the moving, so their libraries always match what's on disk. New additions, active downloads, and Jellyfin favorites stay on your main storage. Preview each plan first, or put it on a schedule. See the [full feature list](https://voc0der.github.io/Coldarr/features/).
 
-<p align="center">A policy-based storage-tiering balancer for Radarr/Sonarr libraries.</p>
+**[Documentation](https://voc0der.github.io/Coldarr/)** · [Quick start](https://voc0der.github.io/Coldarr/getting-started/) · [Configuration](https://voc0der.github.io/Coldarr/configuration/)
 
-Your hot storage is expensive, redundant, and always running out of
-space; your cold/satellite drives are cheap and built to absorb the
-overflow. Coldarr looks at your library (age, size, tags, quality
-profile, monitored state, Jellyfin Favorites) and your disk usage, decides
-what's safe to push to overflow storage, and asks Radarr/Sonarr to move it -
-so their databases stay the source of truth. Coldarr never touches files on
-disk directly, and nothing moves without a dry-run `report`/`plan` first.
-
-CLI and web GUI, same config either way - mix them (e.g. configure
-connections in the GUI, then automate with cron or the GUI's own
-Settings > Scheduler).
-
-<p align="center">
-  <img src="docs/assets/hot-cold-example.svg" alt="Example layout: primary NAS at 76%, satellite drives packed to 99%">
-</p>
-
-## Screenshots
+<hr>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/dashboard-dark.png">
-  <img src="docs/assets/screenshots/dashboard-light.png" alt="Dashboard: library counts, Radarr/Sonarr/Jellyfin connection status, and every tier path's used and total space against its target and max">
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/screenshots/dashboard-dark.png">
+  <img src="./docs/assets/screenshots/dashboard-light.png" width="1000" alt="Coldarr dashboard: library counts, connection status, and each drive's usage against its target">
 </picture>
+<br>
+<sub>More screenshots in the <a href="https://voc0der.github.io/Coldarr/screenshots/">gallery</a>.</sub>
 
-[Browse the screenshot gallery](https://voc0der.github.io/Coldarr/screenshots/).
+## Setup
 
-## Quick start
+### Docker
 
-```sh
-curl -o docker-compose.yml https://raw.githubusercontent.com/voc0der/Coldarr/main/docker-compose.example.yml
-# edit tier paths, ports in docker-compose.yml, then:
+1. Download the [example compose file](https://github.com/voc0der/Coldarr/blob/main/docker-compose.example.yml):
+
+```bash
+curl -L https://raw.githubusercontent.com/voc0der/Coldarr/main/docker-compose.example.yml -o docker-compose.yml
+```
+
+2. Set your media paths in it, then start it:
+
+```bash
 docker compose up -d
 ```
 
-Open `http://localhost:8478` and sign in with the password printed by
-`docker compose logs coldarr` (or set `COLDARR_PASSWORD` in the compose
-file). Add your Radarr/Sonarr/Jellyfin connections and tiers under Settings,
-then use the Plan page to preview a move and Apply it.
+3. Open `http://localhost:8478` and sign in with the password from `docker compose logs coldarr`.
 
-See the [step-by-step quick start](https://voc0der.github.io/Coldarr/getting-started/)
-for mount paths and first-run setup.
+The [quick start](https://voc0der.github.io/Coldarr/getting-started/) walks through connecting Radarr, Sonarr, and Jellyfin, adding your drives, and your first plan. Docker environment variables: [reference](https://voc0der.github.io/Coldarr/configuration/docker/#environment-variables).
 
-> [!NOTE]
-> Get the optional Restore User Data After Move plugin from its
-> [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
+#### Jellyfin plugin
+The optional [Restore User Data After Move](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move) plugin puts back the watch history a move leaves behind.
 
-Prefer the CLI, or building from source? See the
-[CLI guide](https://voc0der.github.io/Coldarr/usage/cli/). Tuning tiers,
-notifications/scheduling, or the full Docker env var reference? See the
-[configuration reference](https://voc0der.github.io/Coldarr/configuration/).
+#### Build manually
+See the [CLI guide](https://voc0der.github.io/Coldarr/usage/cli/).
 
-## Learn more
+## Contributing
 
-Everything is in the [documentation](https://voc0der.github.io/Coldarr/):
+Review the [contributing guide](https://voc0der.github.io/Coldarr/development/contributing/) for contributor guidelines; pull requests and issues for bugs or feature requests are welcome.
 
-- [Features](https://voc0der.github.io/Coldarr/features/) - what Coldarr does
-  and why, in plain English
-- [CLI](https://voc0der.github.io/Coldarr/usage/cli/) - building from source
-  and the full CLI command reference
-- [Configuration](https://voc0der.github.io/Coldarr/configuration/) -
-  connections, tiers, Docker, Jellyfin, and scoring
-- [Web interface](https://voc0der.github.io/Coldarr/usage/web-interface/) -
-  the dashboard, plans, history, and settings
-- [Development](https://voc0der.github.io/Coldarr/development/) - building,
-  testing, CI/CD, releasing, and the roadmap
-- [Contributing](https://voc0der.github.io/Coldarr/development/contributing/) -
-  branch/commit/PR conventions
-- Licensed under [MIT](LICENSE.md)
-- Radarr/Sonarr/Jellyfin logos in the web GUI's Links column are vendored
-  from [selfh.st/icons](https://github.com/selfhst/icons), licensed
-  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+## License
+
+[MIT](LICENSE.md). Radarr, Sonarr, and Jellyfin logos in the web interface come from [selfh.st/icons](https://github.com/selfhst/icons), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
