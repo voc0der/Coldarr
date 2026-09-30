@@ -13,7 +13,7 @@ Values inside the YAML file can also use `${VAR}` substitution.
 | Radarr, Sonarr, and Jellyfin URLs and API keys | [Connections](connections.md) |
 | Container mounts, password, OIDC, HTTPS, and environment variables | [Docker and environment](docker.md) |
 | Hot and cold storage, fill limits, and mount checks | [Storage tiers](tiers.md) |
-| Library paths, Favorites, and artwork after a move | [Jellyfin](jellyfin.md) |
+| Library paths, Favorites, and artwork and date added after a move | [Jellyfin](jellyfin.md) |
 | Tags, thresholds, and cold eligibility | [Scoring and Favorites](scoring.md) |
 | Run summaries and scheduled jobs | [Notifications and scheduling](../features.md#keeping-tabs-on-it-without-watching-it) |
 | A complete starting YAML file | [Example configuration](example.md) |

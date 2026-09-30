@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -530,5 +532,341 @@ func TestResolveBackoffCeiling_NeverBelowConfiguredInterval(t *testing.T) {
 				t.Errorf("resolveBackoffCeiling(%s) = %s, which polls faster than configured", tc.base, got)
 			}
 		})
+	}
+}
+
+// assertAddedDates compares snapshots entry by entry with time.Equal, since
+// the same instant can be two different time.Time values.
+func assertAddedDates(t *testing.T, got, want map[string]AddedDates) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("snapshot has %d folder(s), want %d: %v", len(got), len(want), got)
+	}
+	for folder, wantDates := range want {
+		gotDates, ok := got[folder]
+		if !ok {
+			t.Errorf("snapshot is missing %s: %v", folder, got)
+			continue
+		}
+		if len(gotDates) != len(wantDates) {
+			t.Errorf("%s has %d date(s), want %d: %v", folder, len(gotDates), len(wantDates), gotDates)
+		}
+		for rel, wantDate := range wantDates {
+			if gotDate, ok := gotDates[rel]; !ok || !gotDate.Equal(wantDate) {
+				t.Errorf("%s: %s = %v, want %v", folder, rel, gotDate, wantDate)
+			}
+		}
+	}
+}
+
+// TestClient_SnapshotAddedDates_RecordsMoviesAndEpisodes pins what a
+// snapshot is keyed by: the folder Radarr/Sonarr name, then each file's
+// path inside it, which is the part a move leaves alone. A series
+// contributes its episodes rather than itself, since Recently Added dates
+// episodes, and they are listed as an administrator, whom parental
+// controls don't hide episodes from.
+func TestClient_SnapshotAddedDates_RecordsMoviesAndEpisodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "kid"}, {"Id": "admin", "Policy": {"IsAdministrator": true}}]`))
+		case q.Get("ParentId") != "":
+			if r.URL.Path != "/Users/admin/Items" || q.Get("ParentId") != "series-1" || q.Get("IncludeItemTypes") != "Episode" {
+				t.Errorf("episodes listed via %s?%s, want the admin's episodes of series-1", r.URL.Path, r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"Items": [
+				{"Id": "ep-1", "Type": "Episode", "Path": "/hot/Show A/Season 01/Show A - S01E01.mkv", "DateCreated": "2020-01-02T03:04:05.0000000Z"},
+				{"Id": "ep-2", "Type": "Episode", "Path": "/hot/Show A/Season 01/Show A - S01E02.mkv", "DateCreated": "2020-01-09T03:04:05.1234567"},
+				{"Id": "ep-missing", "Type": "Episode", "DateCreated": "2020-01-16T00:00:00.0000000Z"}
+			]}`))
+		case r.URL.Path == "/Users/kid/Items" || r.URL.Path == "/Users/admin/Items":
+			if !strings.Contains(q.Get("Fields"), "DateCreated") {
+				t.Errorf("library listed without DateCreated: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"Items": [
+				{"Id": "movie-1", "Type": "Movie", "Path": "/hot/Movie A/Movie A.mkv", "DateCreated": "2021-03-14T12:00:00.0000000Z"},
+				{"Id": "series-1", "Type": "Series", "Path": "/hot/Show A", "DateCreated": "2019-05-01T00:00:00.0000000Z"}
+			]}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	snapshot, err := testClient(t, srv.URL).SnapshotAddedDates([]string{"/hot/Movie A/", "/hot/Show A", "/hot/Not In Jellyfin"})
+	if err != nil {
+		t.Fatalf("SnapshotAddedDates: %v", err)
+	}
+
+	assertAddedDates(t, snapshot, map[string]AddedDates{
+		"/hot/Movie A": {"Movie A.mkv": time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)},
+		"/hot/Show A": {
+			filepath.Join("Season 01", "Show A - S01E01.mkv"): time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC),
+			// No zone designator: read as the UTC Jellyfin stores.
+			filepath.Join("Season 01", "Show A - S01E02.mkv"): time.Date(2020, 1, 9, 3, 4, 5, 123456700, time.UTC),
+		},
+	})
+}
+
+// TestClient_ResolveAndRefresh_PutsBackDateAddedBeforeRefreshing covers the
+// write and its place in the sequence. It goes before the full refresh, so
+// that refresh re-derives anything a scan racing the write could have
+// reverted. And it sends the item back exactly as read, with only the date
+// changed and the optional collections dropped, so it can neither blank a
+// field Jellyfin always overwrites nor rewrite the cast or provider IDs.
+func TestClient_ResolveAndRefresh_PutsBackDateAddedBeforeRefreshing(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	var update map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "cold-movie-1", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv", "DateCreated": "2026-09-30T02:15:00.0000000Z"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/Users/u1/Items/cold-movie-1":
+			calls = append(calls, "read")
+			_, _ = w.Write([]byte(`{"Id": "cold-movie-1", "Name": "Movie A", "Overview": "A <film> & more",
+				"LockData": true, "CommunityRating": 7.4, "DateCreated": "2026-09-30T02:15:00.0000000Z",
+				"People": [{"Name": "Someone", "Type": "Actor"}], "Genres": ["Drama"], "Tags": ["kept"],
+				"ProviderIds": {"Tmdb": "603"}, "LockedFields": [], "Studios": [], "Taglines": [],
+				"ProductionLocations": [], "FieldColdarrNeverHeardOf": {"kept": 1}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-movie-1":
+			calls = append(calls, "update")
+			if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+				t.Errorf("decoding update: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-movie-1/Refresh":
+			calls = append(calls, "refresh")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{{
+		Title: "Movie A", OldPath: "/hot/Movie A", NewPath: "/cold/Movie A",
+		AddedDates: AddedDates{"Movie A.mkv": time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)},
+	}})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"read", "update", "refresh"}; !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	if got := string(update["DateCreated"]); got != `"2021-03-14T12:00:00.0000000Z"` {
+		t.Errorf("DateCreated sent = %s, want the snapshot's date in Jellyfin's UTC form", got)
+	}
+	for _, field := range itemUpdateOptionalFields {
+		if _, ok := update[field]; ok {
+			t.Errorf("update carries %s, which Jellyfin would rewrite", field)
+		}
+	}
+	for field, want := range map[string]string{
+		"Name":                     `"Movie A"`,
+		"LockData":                 `true`,
+		"CommunityRating":          `7.4`,
+		"FieldColdarrNeverHeardOf": `{"kept":1}`,
+	} {
+		if got := string(update[field]); got != want {
+			t.Errorf("update %s = %s, want %s as read", field, got, want)
+		}
+	}
+	var overview string
+	if err := json.Unmarshal(update["Overview"], &overview); err != nil || overview != "A <film> & more" {
+		t.Errorf("update Overview = %q (%v), want it as read", overview, err)
+	}
+}
+
+// TestClient_ResolveAndRefresh_LeavesDatesTheMoveDidNotChange covers the
+// dates that are not the move's doing. A move within one filesystem keeps a
+// file's creation time, and a date older than the snapshot was set by
+// something else. Neither is written, so a move that disturbed nothing
+// costs no item update at all.
+func TestClient_ResolveAndRefresh_LeavesDatesTheMoveDidNotChange(t *testing.T) {
+	var mu sync.Mutex
+	var refreshed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [
+				{"Id": "same", "Type": "Movie", "Path": "/cold/Same/Same.mkv", "DateCreated": "2021-03-14T12:00:00.5000000Z"},
+				{"Id": "older", "Type": "Movie", "Path": "/cold/Older/Older.mkv", "DateCreated": "2019-01-01T00:00:00.0000000Z"}
+			]}`))
+		case strings.HasSuffix(r.URL.Path, "/Refresh"):
+			refreshed = append(refreshed, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("no date should be read or written, got %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	snapshot := time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
+		{Title: "Same", NewPath: "/cold/Same", AddedDates: AddedDates{"Same.mkv": snapshot}},
+		{Title: "Older", NewPath: "/cold/Older", AddedDates: AddedDates{"Older.mkv": snapshot}},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	slices.Sort(refreshed)
+	if want := []string{"/Items/older/Refresh", "/Items/same/Refresh"}; !slices.Equal(refreshed, want) {
+		t.Errorf("refreshed = %v, want %v", refreshed, want)
+	}
+}
+
+// seriesServer fakes a series moved to /cold/Show A whose episodes Jellyfin
+// lists in stages: listing n gets episodesAt(n). Series updates are an
+// error - updating a series rewrites every episode's rating.
+func seriesServer(t *testing.T, episodesAt func(listing int) string, calls *[]string, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	listings := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items" && r.URL.Query().Get("ParentId") == "cold-series-1":
+			listings++
+			_, _ = w.Write([]byte(`{"Items": [` + episodesAt(listings) + `]}`))
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "cold-series-1", "Type": "Series", "Path": "/cold/Show A", "DateCreated": "2026-09-30T02:15:00.0000000Z"}]}`))
+		case r.Method == http.MethodGet && movedEpisodeItems[r.URL.Path] != "":
+			_, _ = w.Write([]byte(movedEpisodeItems[r.URL.Path]))
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-series-1/Refresh":
+			*calls = append(*calls, "refresh")
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-series-1":
+			t.Error("the series itself was updated, which rewrites the rating of every episode under it")
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/Items/"):
+			*calls = append(*calls, "update "+strings.TrimPrefix(r.URL.Path, "/Items/"))
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// movedEpisodeItems is what reading each moved episode returns, by path.
+var movedEpisodeItems = map[string]string{
+	"/Users/u1/Items/ep-1": `{"Id": "ep-1", "Name": "Episode 1", "DateCreated": "2026-09-30T02:15:00.0000000Z"}`,
+	"/Users/u1/Items/ep-2": `{"Id": "ep-2", "Name": "Episode 2", "DateCreated": "2026-09-30T02:15:00.0000000Z"}`,
+}
+
+const (
+	movedEpisode1 = `{"Id": "ep-1", "Type": "Episode", "Path": "/cold/Show A/Season 01/Show A - S01E01.mkv", "DateCreated": "2026-09-30T02:15:00.0000000Z"}`
+	movedEpisode2 = `{"Id": "ep-2", "Type": "Episode", "Path": "/cold/Show A/Season 01/Show A - S01E02.mkv", "DateCreated": "2026-09-30T02:15:00.0000000Z"}`
+)
+
+func showAAddedDates() AddedDates {
+	return AddedDates{
+		filepath.Join("Season 01", "Show A - S01E01.mkv"): time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+		filepath.Join("Season 01", "Show A - S01E02.mkv"): time.Date(2020, 1, 9, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+// TestClient_ResolveAndRefresh_WaitsForEveryEpisodeBeforePuttingBack covers
+// a series listed before its episodes. Jellyfin lists a new series as soon
+// as its scan creates it, and only reaches the episodes later in the same
+// scan; putting back what was there and refreshing straight away would
+// leave the rest dated by the move.
+func TestClient_ResolveAndRefresh_WaitsForEveryEpisodeBeforePuttingBack(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	srv := seriesServer(t, func(listing int) string {
+		if listing < 3 {
+			return movedEpisode1
+		}
+		return movedEpisode1 + "," + movedEpisode2
+	}, &calls, &mu)
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
+		{Title: "Show A", NewPath: "/cold/Show A", AddedDates: showAAddedDates()},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 3 || calls[2] != "refresh" {
+		t.Fatalf("calls = %v, want both episode updates and then the series refresh", calls)
+	}
+	updates := slices.Sorted(slices.Values(calls[:2]))
+	if want := []string{"update ep-1", "update ep-2"}; !slices.Equal(updates, want) {
+		t.Errorf("updates = %v, want %v", updates, want)
+	}
+}
+
+// TestClient_ResolveAndRefresh_PutsBackWhatArrivedByTheDeadline covers an
+// episode that never reappears, renamed or deleted mid-run. It must cost
+// neither the rest of the series its dates nor the series its artwork
+// refresh, and the series is not reported as unrefreshed.
+func TestClient_ResolveAndRefresh_PutsBackWhatArrivedByTheDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	srv := seriesServer(t, func(int) string { return movedEpisode1 }, &calls, &mu)
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{
+		{Title: "Show A", NewPath: "/cold/Show A", AddedDates: showAAddedDates()},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"update ep-1", "refresh"}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestJellyfinTime_ReadsWithAndWithoutZone(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Time
+	}{
+		{`"2021-03-14T12:00:00.0000000Z"`, time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)},
+		{`"2021-03-14T12:00:00.1234567"`, time.Date(2021, 3, 14, 12, 0, 0, 123456700, time.UTC)},
+		{`"2021-03-14T14:00:00+02:00"`, time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)},
+		{`null`, time.Time{}},
+	}
+	for _, tc := range cases {
+		var got jellyfinTime
+		if err := json.Unmarshal([]byte(tc.in), &got); err != nil {
+			t.Errorf("decoding %s: %v", tc.in, err)
+			continue
+		}
+		if !got.Equal(tc.want) {
+			t.Errorf("decoding %s = %v, want %v", tc.in, got.Time, tc.want)
+		}
+	}
+
+	var bad jellyfinTime
+	if err := json.Unmarshal([]byte(`"last Tuesday"`), &bad); err == nil {
+		t.Error("expected an error for a date Jellyfin would never send")
 	}
 }

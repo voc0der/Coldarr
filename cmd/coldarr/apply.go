@@ -79,8 +79,13 @@ func newApplyCmd() *cobra.Command {
 			}
 			defer func() { _ = lock.Release() }()
 
+			followUp, err := e.StartJellyfinFollowUp(plan)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: reading Jellyfin's date added for the planned items: %v\n", err)
+			}
+
 			fmt.Println("\nApplying - one move at a time per destination volume, so this can take a while for large plans:")
-			progress := e.Movers().Apply(plan, inv.VolumeOf())
+			progress := e.Movers(followUp).Apply(plan, inv.VolumeOf())
 			printProgressUntilDone(progress)
 
 			snap := progress.Snapshot()
@@ -96,8 +101,8 @@ func newApplyCmd() *cobra.Command {
 			}
 
 			if len(moved) > 0 && e.JellyfinClient() != nil {
-				fmt.Println("Updating Jellyfin - re-resolving each moved item and refreshing its artwork...")
-				if err := e.NotifyJellyfinMoved(moved); err != nil {
+				fmt.Println("Finishing Jellyfin's refresh of the moved items...")
+				if err := e.NotifyJellyfinMoved(moved, followUp); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: jellyfin update: %v\n", err)
 				}
 			}
