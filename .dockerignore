@@ -6,3 +6,9 @@ coldarr-history.json
 .github
 docker-compose*.yml
 .env
+docs/
+site/
+.cache/
+.venv-docs/
+zensical.toml
+requirements-docs.txt

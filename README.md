@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon-512.png" width="120" alt="Coldarr icon">
+  <img src="docs/assets/icon-512.png" width="120" alt="Coldarr icon">
 </p>
 
 <h1 align="center">Coldarr</h1>
@@ -8,7 +8,7 @@
   <a href="LICENSE.md"><img src="https://img.shields.io/github/license/voc0der/Coldarr" alt="License"></a>
   <a href="https://github.com/voc0der/Coldarr/releases/latest"><img src="https://img.shields.io/github/v/release/voc0der/Coldarr" alt="Latest release"></a>
   <a href="https://github.com/voc0der/Coldarr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI" alt="CI status"></a>
-  <a href="CONTRIBUTING.md#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
+  <a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-64.8%25-yellow" alt="Test coverage"></a>
   <a href="https://hub.docker.com/r/voc0der/coldarr"><img src="https://img.shields.io/docker/pulls/voc0der/coldarr" alt="Docker pulls"></a>
 </p>
 
@@ -27,99 +27,59 @@ connections in the GUI, then automate with cron or the GUI's own
 Settings > Scheduler).
 
 <p align="center">
-  <img src="assets/hot-cold-example.svg" alt="Example layout: primary NAS at 76%, satellite drives packed to 99%">
+  <img src="docs/assets/hot-cold-example.svg" alt="Example layout: primary NAS at 76%, satellite drives packed to 99%">
 </p>
 
 ## Screenshots
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dashboard-dark.png">
-  <img src="assets/screenshots/dashboard-light.png" alt="Dashboard: library counts, Radarr/Sonarr/Jellyfin connection status, and every tier path's used and total space against its target and max">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/dashboard-dark.png">
+  <img src="docs/assets/screenshots/dashboard-light.png" alt="Dashboard: library counts, Radarr/Sonarr/Jellyfin connection status, and every tier path's used and total space against its target and max">
 </picture>
 
-<details>
-<summary>More screenshots</summary>
-
-**Plan** - a dry run of what would move, why, and where, with each drive's
-usage before and after. Here a Jellyfin Favorite that had gone cold is
-coming back to hot storage.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/plan-dark.png">
-  <img src="assets/screenshots/plan-light.png" alt="Plan page: twelve moves with links, sizes, source and destination tiers, scores and reasons, then projected usage per path">
-</picture>
-
-**Applying** - one move at a time per destination drive, each confirmed
-landed before the next one starts.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/applying-dark.png">
-  <img src="assets/screenshots/applying-light.png" alt="Apply in progress: some moves done, some moving, the rest pending">
-</picture>
-
-**History** - every move Coldarr has made, with links back into Radarr,
-Sonarr and Jellyfin.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/history-dark.png">
-  <img src="assets/screenshots/history-light.png" alt="History page: past moves with source and destination tier, path and size">
-</picture>
-
-**Storage tiers** - paths that turn out to be on the same disk are detected
-and treated as sharing its capacity.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/tiers-dark.png">
-  <img src="assets/screenshots/tiers-light.png" alt="Storage tiers settings: a hot tier whose two paths share a disk, and two cold tiers that require their own mounted drive">
-</picture>
-
-**Orphaned storage** - folders on a tier that no service tracks anymore,
-including leftovers from an interrupted move.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/orphans-dark.png">
-  <img src="assets/screenshots/orphans-light.png" alt="Orphaned storage page: tier writability, and three orphaned folders with their tier and size">
-</picture>
-
-**A drive goes missing** - Coldarr flags its path and refuses every move
-until it's back.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/dead-drive-dark.png">
-  <img src="assets/screenshots/dead-drive-light.png" alt="Dashboard with one satellite path unavailable because it's on the system disk, not its own drive">
-</picture>
-
-</details>
+[Browse the screenshot gallery](https://voc0der.github.io/Coldarr/screenshots/).
 
 ## Quick start
 
-```
+```sh
 curl -o docker-compose.yml https://raw.githubusercontent.com/voc0der/Coldarr/main/docker-compose.example.yml
 # edit tier paths, ports in docker-compose.yml, then:
 docker compose up -d
 ```
 
-Open `http://localhost:8478`, add your Radarr/Sonarr/Jellyfin connections
-and tiers under Settings, then use the Plan page to preview a move and
-Apply it.
+Open `http://localhost:8478` and sign in with the password printed by
+`docker compose logs coldarr` (or set `COLDARR_PASSWORD` in the compose
+file). Add your Radarr/Sonarr/Jellyfin connections and tiers under Settings,
+then use the Plan page to preview a move and Apply it.
+
+See the [step-by-step quick start](https://voc0der.github.io/Coldarr/getting-started/)
+for mount paths and first-run setup.
 
 > [!NOTE]
 > Get the optional Restore User Data After Move plugin from its
 > [GitHub repository](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move).
 
-Prefer the CLI, or building from source? See [CLI.md](CLI.md). Tuning
-tiers, notifications/scheduling, or the full Docker env var reference? See
-[CONFIGURATION.md](CONFIGURATION.md).
+Prefer the CLI, or building from source? See the
+[CLI guide](https://voc0der.github.io/Coldarr/usage/cli/). Tuning tiers,
+notifications/scheduling, or the full Docker env var reference? See the
+[configuration reference](https://voc0der.github.io/Coldarr/configuration/).
 
 ## Learn more
 
-- [FEATURES.md](FEATURES.md) - what Coldarr does and why, in plain English
-- [CLI.md](CLI.md) - building from source and the full CLI command reference
-- [CONFIGURATION.md](CONFIGURATION.md) - connections, tiers, Docker, scoring,
-  and the web GUI reference
-- [DEVELOPMENT.md](DEVELOPMENT.md) - building, testing, CI/CD, releasing,
-  and the roadmap
-- [CONTRIBUTING.md](CONTRIBUTING.md) - branch/commit/PR conventions
+Everything is in the [documentation](https://voc0der.github.io/Coldarr/):
+
+- [Features](https://voc0der.github.io/Coldarr/features/) - what Coldarr does
+  and why, in plain English
+- [CLI](https://voc0der.github.io/Coldarr/usage/cli/) - building from source
+  and the full CLI command reference
+- [Configuration](https://voc0der.github.io/Coldarr/configuration/) -
+  connections, tiers, Docker, Jellyfin, and scoring
+- [Web interface](https://voc0der.github.io/Coldarr/usage/web-interface/) -
+  the dashboard, plans, history, and settings
+- [Development](https://voc0der.github.io/Coldarr/development/) - building,
+  testing, CI/CD, releasing, and the roadmap
+- [Contributing](https://voc0der.github.io/Coldarr/development/contributing/) -
+  branch/commit/PR conventions
 - Licensed under [MIT](LICENSE.md)
 - Radarr/Sonarr/Jellyfin logos in the web GUI's Links column are vendored
   from [selfh.st/icons](https://github.com/selfhst/icons), licensed

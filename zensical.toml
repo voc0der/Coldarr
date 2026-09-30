@@ -1,0 +1,114 @@
+[project]
+site_name = "Coldarr"
+site_description = "Storage tiering for Radarr and Sonarr libraries: setup, configuration, and development."
+site_url = "https://voc0der.github.io/Coldarr/"
+repo_url = "https://github.com/voc0der/Coldarr"
+repo_name = "voc0der/Coldarr"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Get started" = [
+    { "Quick start" = "getting-started.md" },
+    { "Features" = "features.md" },
+    { "Screenshots" = "screenshots.md" },
+  ] },
+  { "Using Coldarr" = [
+    { "How a run works" = "usage/how-it-works.md" },
+    { "Web interface" = "usage/web-interface.md" },
+    { "CLI" = "usage/cli.md" },
+  ] },
+  { "Configuration" = [
+    { "Overview" = "configuration/index.md" },
+    { "Connections" = "configuration/connections.md" },
+    { "Docker and environment" = "configuration/docker.md" },
+    { "Storage tiers" = "configuration/tiers.md" },
+    { "Jellyfin" = "configuration/jellyfin.md" },
+    { "Scoring and Favorites" = "configuration/scoring.md" },
+    { "Example configuration" = "configuration/example.md" },
+  ] },
+  { "Development" = [
+    { "Development guide" = "development/index.md" },
+    { "Contributing" = "development/contributing.md" },
+    { "Working on the documentation" = "development/documentation.md" },
+    { "License and credits" = "license.md" },
+  ] },
+]
+
+[project.theme]
+variant = "modern"
+language = "en"
+logo = "assets/icon-512.png"
+favicon = "assets/icon-512.png"
+# System fonts only - the site makes no requests to Google Fonts.
+font = false
+features = [
+  "content.action.edit",
+  "content.code.copy",
+  "content.tabs.link",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+# Follows the system setting until a reader picks light or dark.
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+primary = "blue"
+accent = "cyan"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "blue"
+accent = "cyan"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "blue"
+accent = "cyan"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+# Setting any extension replaces Zensical's default set, so every extension the
+# pages rely on is listed here. `toc` and `tables` are always enabled.
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+def_list = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+# Paths are relative to the repository root, so pages can include the example
+# config, the compose file, and the license without keeping copies in docs/.
+pymdownx.snippets.base_path = ["."]
+pymdownx.snippets.check_paths = true
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+unresolved_references = true

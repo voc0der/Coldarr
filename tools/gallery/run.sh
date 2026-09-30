@@ -2,7 +2,7 @@
 # Builds the gallery container from this checkout, starts it, and either
 # captures every screenshot scene (default) or leaves it running to browse.
 #
-#   tools/gallery/run.sh                      # capture into assets/screenshots/
+#   tools/gallery/run.sh                      # capture into docs/assets/screenshots/
 #   tools/gallery/run.sh --out /tmp/shots     # capture somewhere else
 #   tools/gallery/run.sh --only plan history  # capture just these scenes
 #   tools/gallery/run.sh --serve              # leave it running, print the URL
@@ -15,7 +15,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 name=coldarr-gallery
 port=${GALLERY_PORT:-18478}
-out=$repo/assets/screenshots
+out=$repo/docs/assets/screenshots
 serve=false
 only=()
 
