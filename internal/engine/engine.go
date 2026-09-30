@@ -7,6 +7,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -380,8 +381,9 @@ func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error)
 // defaults, unless overridden via COLDARR_SETTLE_CHECK_INTERVAL /
 // COLDARR_SETTLE_STABLE_CHECKS / COLDARR_SETTLE_MAX_WAIT (Go duration
 // strings like "5s", "6h") - useful for storage that settles much faster
-// or slower than the defaults assume.
-func (e *Engine) Movers() *mover.Movers {
+// or slower than the defaults assume. followUp, from StartJellyfinFollowUp,
+// is handed each move as it lands; nil when Jellyfin isn't configured.
+func (e *Engine) Movers(followUp *JellyfinFollowUp) *mover.Movers {
 	m := &mover.Movers{
 		Radarr:              e.Radarr,
 		Sonarr:              e.Sonarr,
@@ -391,12 +393,11 @@ func (e *Engine) Movers() *mover.Movers {
 		SettleStableChecks:  envInt("COLDARR_SETTLE_STABLE_CHECKS"),
 		SettleMaxWait:       envDuration("COLDARR_SETTLE_MAX_WAIT"),
 	}
-	// Assigned through an explicit nil check rather than straight from
-	// JellyfinClient(): a typed nil *jellyfin.Client stored in the
-	// interface field would leave it non-nil and panic on first use.
-	// One client for the whole run, since it's called per landed move.
-	if jf := e.JellyfinClient(); jf != nil {
-		m.Reporter = jellyfinMoveReporter{jf: jf}
+	// Assigned through an explicit nil check: a typed nil
+	// *JellyfinFollowUp stored in the interface field would leave it
+	// non-nil and panic on first use.
+	if followUp != nil {
+		m.Reporter = followUp
 	}
 	return m
 }
@@ -445,25 +446,108 @@ func (e *Engine) JellyfinClient() *jellyfin.Client {
 	return c
 }
 
-// jellyfinMoveReporter adapts the Jellyfin client to mover.MoveReporter,
-// so the mover can hand Jellyfin each item's new location as it lands
-// without the mover package knowing Jellyfin exists.
-type jellyfinMoveReporter struct{ jf *jellyfin.Client }
+// JellyfinFollowUp is one apply run's Jellyfin work, done item by item as
+// each move lands rather than once the run is over. It holds the date
+// added of everything the plan moves, taken before the first move, and is
+// the mover's MoveReporter: when a move is confirmed landed, it reports the
+// paths to Jellyfin, then in the background waits for Jellyfin to index the
+// item at its new path, puts the item's dates back and refreshes it, while
+// the next move runs. If Coldarr stops part way through a run, only items
+// still waiting on Jellyfin miss that.
+type JellyfinFollowUp struct {
+	jf    *jellyfin.Client
+	added map[string]jellyfin.AddedDates
 
-func (r jellyfinMoveReporter) ReportMoved(oldPath, newPath string) error {
-	return r.jf.ReportMoved([]jellyfin.MovedItem{{OldPath: oldPath, NewPath: newPath}})
+	wg sync.WaitGroup
+	mu sync.Mutex
+	// outcome is each finished follow-up's result, by landed path.
+	outcome map[string]error
 }
 
-// NotifyJellyfinMoved finishes the Jellyfin side of a completed apply run,
-// so moved items keep their artwork. A no-op when Jellyfin isn't
+// StartJellyfinFollowUp records the date Jellyfin shows as added for every
+// movie and episode the plan is about to move, and returns the follow-up
+// to hand to Movers and NotifyJellyfinMoved. Nil when Jellyfin isn't
 // configured.
 //
-// This is only half the exchange. The mover already reported each item's
-// paths to Jellyfin as that item landed (see mover.Movers.Reporter), which
-// is what gives Jellyfin's debounce-then-rescan a chance to run against
-// the rest of the run rather than after it. What's left here is the part
-// that genuinely cannot happen until an item is indexed at its new path:
-// re-resolving its ID and refreshing it.
+// Call it before Apply. Jellyfin deletes each old item, and the old date
+// with it, as soon as it rescans the folder that item's move vacated.
+//
+// An error means some dates couldn't be read, and those items will show
+// up under Recently Added again. That's no reason to hold the run back, so
+// the follow-up comes back with whatever was read and callers log the
+// error.
+func (e *Engine) StartJellyfinFollowUp(plan *planner.Plan) (*JellyfinFollowUp, error) {
+	jf := e.JellyfinClient()
+	if jf == nil {
+		return nil, nil
+	}
+	followUp := &JellyfinFollowUp{jf: jf, outcome: map[string]error{}}
+	if plan == nil || len(plan.Entries) == 0 {
+		return followUp, nil
+	}
+
+	folders := make([]string, 0, len(plan.Entries))
+	for _, entry := range plan.Entries {
+		folders = append(folders, entry.Item.Path)
+	}
+	added, err := jf.SnapshotAddedDates(folders)
+	followUp.added = added
+	return followUp, err
+}
+
+// ReportMoved implements mover.MoveReporter. A failed report is returned,
+// which leaves the item for NotifyJellyfinMoved to report and follow up
+// after the run; a successful one starts the item's follow-up.
+func (f *JellyfinFollowUp) ReportMoved(oldPath, newPath string) error {
+	item := jellyfin.MovedItem{
+		Title:      filepath.Base(newPath),
+		OldPath:    oldPath,
+		NewPath:    newPath,
+		AddedDates: f.datesFor(oldPath),
+	}
+	if err := f.jf.ReportMoved([]jellyfin.MovedItem{item}); err != nil {
+		return err
+	}
+
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		err := f.jf.ResolveAndRefresh([]jellyfin.MovedItem{item})
+		f.mu.Lock()
+		f.outcome[filepath.Clean(newPath)] = err
+		f.mu.Unlock()
+	}()
+	return nil
+}
+
+// wait blocks until every follow-up started so far has finished, and
+// returns their results by landed path.
+func (f *JellyfinFollowUp) wait() map[string]error {
+	if f == nil {
+		return nil
+	}
+	f.wg.Wait()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.outcome)
+}
+
+// datesFor returns the dates recorded for the folder an item moved from.
+func (f *JellyfinFollowUp) datesFor(oldPath string) jellyfin.AddedDates {
+	if f == nil {
+		return nil
+	}
+	return f.added[filepath.Clean(oldPath)]
+}
+
+// NotifyJellyfinMoved finishes the Jellyfin side of a completed apply run.
+// A no-op when Jellyfin isn't configured.
+//
+// Most of it is already done: followUp has been putting back each moved
+// item's date added and refreshing its artwork as each move landed. This
+// waits for the last of those, then does the same in one batch for any
+// moved item that never got a follow-up - its report to Jellyfin failed,
+// or no follow-up was passed.
 //
 // Per-item targeting is the point: a whole-library scan runs in Jellyfin's
 // "Default" refresh mode, which only fills in artwork it thinks is
@@ -471,15 +555,18 @@ func (r jellyfinMoveReporter) ReportMoved(oldPath, newPath string) error {
 // tier an item just left (see jellyfin.FullRefreshOptions). The scan
 // survives only as the fallback for items whose new path couldn't be
 // resolved - better than nothing, but it is not the fix.
-func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
+func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress, followUp *JellyfinFollowUp) error {
 	jf := e.JellyfinClient()
 	if jf == nil {
 		return nil
 	}
 
+	followedUp := followUp.wait()
+
 	items := make([]jellyfin.MovedItem, 0, len(moved))
 	var unreported []jellyfin.MovedItem
 	var unresolved []string
+	var failed []error
 	for _, m := range moved {
 		// A confirmed move always records where it landed; anything else
 		// can't be targeted by path and only the library scan can help.
@@ -487,10 +574,17 @@ func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
 			unresolved = append(unresolved, m.Entry.Item.Title)
 			continue
 		}
+		if err, ok := followedUp[filepath.Clean(m.LandedPath)]; ok {
+			if err != nil {
+				failed = append(failed, err)
+			}
+			continue
+		}
 		item := jellyfin.MovedItem{
-			Title:   m.Entry.Item.Title,
-			OldPath: m.Entry.Item.Path,
-			NewPath: m.LandedPath,
+			Title:      m.Entry.Item.Title,
+			OldPath:    m.Entry.Item.Path,
+			NewPath:    m.LandedPath,
+			AddedDates: followUp.datesFor(m.Entry.Item.Path),
 		}
 		items = append(items, item)
 		if !m.Reported {
@@ -511,7 +605,7 @@ func (e *Engine) NotifyJellyfinMoved(moved []mover.EntryProgress) error {
 		_ = jf.ReportMoved(unreported)
 	}
 
-	notifyErr := jf.ResolveAndRefresh(items)
+	notifyErr := errors.Join(append(failed, jf.ResolveAndRefresh(items))...)
 	if notifyErr == nil && len(unresolved) == 0 {
 		return nil
 	}

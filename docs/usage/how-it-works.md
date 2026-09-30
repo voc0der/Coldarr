@@ -57,13 +57,17 @@ is logged to the history file with its real completion time.
 
 Each move is reported to Jellyfin the moment it lands - naming the vacated
 and new paths - so Jellyfin's rescan of those folders runs against the rest
-of the run instead of starting from cold once the last move finishes. Then,
-after the whole run, Coldarr refreshes each moved item individually: it
-waits for Jellyfin to surface the item at its new path and forces a full
-metadata and image refresh on it. A moved item gets a brand-new Jellyfin
+of the run instead of starting from cold once the last move finishes. Each
+moved item is then refreshed individually, in the background while the next
+move runs: Coldarr waits for Jellyfin to surface the item at its new path and
+forces a full metadata and image refresh on it. A moved item gets a brand-new Jellyfin
 item ID (Jellyfin derives IDs from the file path), and a plain library
 scan only fills in artwork it considers *missing* - so without this an
-item can land in the new tier with no poster at all. A whole-library
+item can land in the new tier with no poster at all. Just before that
+refresh, Coldarr puts back the date added each movie and episode had
+before the move, which it notes as the run starts - Jellyfin dates a moved
+file as newly added, so otherwise the title shows up under Recently Added
+again. A whole-library
 scan is still used as a fallback if an item can't be found at its new
 path. See [Jellyfin](../configuration/jellyfin.md).
 

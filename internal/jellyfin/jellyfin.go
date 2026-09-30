@@ -1,5 +1,6 @@
 // Package jellyfin re-points Jellyfin at media Coldarr has moved between
-// tiers (see ReportMoved and ResolveAndRefresh), reads Favorite status
+// tiers, keeping each item's artwork and date added (see ReportMoved,
+// SnapshotAddedDates and ResolveAndRefresh), reads Favorite status
 // (matched back to Radarr/Sonarr items by path) so favorited items are
 // kept on hot storage, and confirms connectivity. Jellyfin is a consumer
 // of the library, never the mover.
@@ -367,7 +368,10 @@ func (c *Client) Ping() (version, serverName string, err error) {
 }
 
 type userResource struct {
-	ID string `json:"Id"`
+	ID     string `json:"Id"`
+	Policy struct {
+		IsAdministrator bool `json:"IsAdministrator"`
+	} `json:"Policy"`
 }
 
 type libraryItem struct {
@@ -377,7 +381,45 @@ type libraryItem struct {
 	// here, since those are the only kinds requested. Needed because the
 	// two kinds report Path differently (see itemFolderPath).
 	Type string `json:"Type"`
+	// DateCreated is the item's date added, the one Recently Added sorts
+	// on. Zero unless the request asked for the DateCreated field.
+	DateCreated jellyfinTime `json:"DateCreated"`
+
+	// userID is a user this item was listed for. Reading one item, or the
+	// episodes under a series, has to be done as a user who can see it.
+	userID string
 }
+
+// jellyfinTime is a DateTime as Jellyfin writes it into JSON. Jellyfin
+// stores UTC, but a value read back from its database can carry no
+// DateTimeKind, and then goes out with no zone designator at all - so a
+// bare timestamp is read as UTC rather than rejected.
+type jellyfinTime struct{ time.Time }
+
+func (t *jellyfinTime) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("decoding Jellyfin date: %w", err)
+	}
+	if s == "" {
+		t.Time = time.Time{}
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999"} {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			t.Time = parsed.UTC()
+			return nil
+		}
+	}
+	return fmt.Errorf("decoding Jellyfin date %q: not an ISO 8601 timestamp", s)
+}
+
+// jellyfinTimeLayout is how Jellyfin itself writes a UTC DateTime: seven
+// fractional digits, a .NET tick, and a Z. Always send UTC. Jellyfin labels
+// a date it is sent as UTC without converting it, and one sent with an
+// offset has by then been shifted to server-local time, so it would be
+// stored off by the server's offset.
+const jellyfinTimeLayout = "2006-01-02T15:04:05.0000000Z"
 
 // itemFolderPath returns the folder Radarr/Sonarr would know this item by.
 // Jellyfin reports Path differently per item kind: a Series' Path is
@@ -404,6 +446,11 @@ type itemsResponse struct {
 // Per-user lookups are independent, so they run concurrently rather than
 // adding one round trip of network latency per user to every plan/
 // dashboard page load.
+//
+// Each item records the user it was kept from (see libraryItem.userID).
+// Administrators come first, so whenever one can see an item, later
+// per-user reads of it run as that administrator - the account least
+// likely to have episodes hidden from it by parental controls.
 func (c *Client) perUserItems(q url.Values) ([]libraryItem, error) {
 	body, err := c.get("/Users", nil)
 	if err != nil {
@@ -414,6 +461,9 @@ func (c *Client) perUserItems(q url.Values) ([]libraryItem, error) {
 	if err := json.Unmarshal(body, &users); err != nil {
 		return nil, fmt.Errorf("listing users: decoding response: %w", err)
 	}
+	sort.SliceStable(users, func(i, j int) bool {
+		return users[i].Policy.IsAdministrator && !users[j].Policy.IsAdministrator
+	})
 
 	perUser := make([][]libraryItem, len(users))
 	errs := make([]error, len(users))
@@ -451,6 +501,7 @@ func (c *Client) perUserItems(q url.Values) ([]libraryItem, error) {
 				continue
 			}
 			seen[item.ID] = true
+			item.userID = users[i].ID
 			items = append(items, item)
 		}
 	}
@@ -490,24 +541,242 @@ func (c *Client) FavoritePaths() (map[string]bool, error) {
 // ID - used to build a deep link from a Radarr/Sonarr item into its
 // Jellyfin entry, when the two can be matched by path.
 func (c *Client) LibraryItemIDs() (map[string]string, error) {
+	byFolder, err := c.itemsByFolder("Path")
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make(map[string]string, len(byFolder))
+	for folder, item := range byFolder {
+		ids[folder] = item.ID
+	}
+	return ids, nil
+}
+
+// itemsByFolder returns every movie/series Jellyfin knows about, keyed by
+// folder path (see itemFolderPath), carrying the given comma-separated
+// Fields.
+func (c *Client) itemsByFolder(fields string) (map[string]libraryItem, error) {
 	q := url.Values{}
 	q.Set("Recursive", "true")
 	q.Set("IncludeItemTypes", "Movie,Series")
-	q.Set("Fields", "Path")
+	q.Set("Fields", fields)
 
 	items, err := c.perUserItems(q)
 	if err != nil {
 		return nil, err
 	}
 
-	ids := map[string]string{}
+	byFolder := map[string]libraryItem{}
 	for _, item := range items {
 		if item.Path == "" || item.ID == "" {
 			continue
 		}
-		ids[itemFolderPath(item)] = item.ID
+		byFolder[itemFolderPath(item)] = item
 	}
-	return ids, nil
+	return byFolder, nil
+}
+
+// AddedDates is when Jellyfin says each movie or episode in one folder was
+// added - its DateCreated, which Recently Added and the "Date Added" sort
+// run on - keyed by the file's path relative to that folder, the part of
+// its path a move leaves alone.
+type AddedDates map[string]time.Time
+
+// addedDateSlack is how far apart two dates can be and still be the same
+// date added, so a date the move left alone is never rewritten over a
+// difference in how precisely it was stored.
+const addedDateSlack = time.Second
+
+// SnapshotAddedDates records AddedDates for each of the given folders, as
+// Radarr/Sonarr name them, keyed by the cleaned folder path. Folders
+// Jellyfin doesn't know are left out.
+//
+// This has to run before anything moves. A move writes each file anew on
+// another disk, and Jellyfin dates a new file by its creation time, or by
+// the scan that found it - either way, by the move. Once Jellyfin rescans
+// the folder a move vacated, it deletes the old item, and with it the only
+// record of the date the item had. ResolveAndRefresh puts these back.
+//
+// A series whose episodes can't be listed only loses its own dates, so the
+// error comes back alongside everything that could be read.
+func (c *Client) SnapshotAddedDates(folders []string) (map[string]AddedDates, error) {
+	byFolder, err := c.itemsByFolder("Path,DateCreated")
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := map[string]AddedDates{}
+	var errs []error
+	for _, folder := range folders {
+		folder = filepath.Clean(folder)
+		root, ok := byFolder[folder]
+		if !ok {
+			continue
+		}
+		leaves, err := c.leafItems(root)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		dates := AddedDates{}
+		for rel, leaf := range leaves {
+			if !leaf.DateCreated.IsZero() {
+				dates[rel] = leaf.DateCreated.Time
+			}
+		}
+		if len(dates) > 0 {
+			snapshot[folder] = dates
+		}
+	}
+	return snapshot, errors.Join(errs...)
+}
+
+// leafItems returns the items under root that each have a date added of
+// their own - the movie itself, or every episode of a series - keyed by
+// path relative to root's folder (see AddedDates). Series and seasons are
+// deliberately not among them: see setDateCreated.
+func (c *Client) leafItems(root libraryItem) (map[string]libraryItem, error) {
+	leaves := []libraryItem{root}
+	if root.Type == "Series" {
+		q := url.Values{}
+		q.Set("ParentId", root.ID)
+		q.Set("Recursive", "true")
+		q.Set("IncludeItemTypes", "Episode")
+		q.Set("Fields", "Path,DateCreated")
+
+		body, err := c.get("/Users/"+url.PathEscape(root.userID)+"/Items", q)
+		if err != nil {
+			return nil, fmt.Errorf("listing episodes of %s: %w", root.Path, err)
+		}
+		var resp itemsResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("listing episodes of %s: decoding response: %w", root.Path, err)
+		}
+		leaves = resp.Items
+	}
+
+	base := itemFolderPath(root)
+	byRel := make(map[string]libraryItem, len(leaves))
+	for _, leaf := range leaves {
+		// No Path is a missing episode Jellyfin lists from metadata alone.
+		if leaf.ID == "" || leaf.Path == "" {
+			continue
+		}
+		rel, err := filepath.Rel(base, filepath.Clean(leaf.Path))
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		leaf.userID = root.userID
+		byRel[rel] = leaf
+	}
+	return byRel, nil
+}
+
+// putBackAddedDates writes item.AddedDates back onto the movie or episodes
+// now under root, wherever the move made the date later, and reports
+// whether root is ready to be refreshed.
+//
+// It runs before root's refresh, never after. Jellyfin's item update
+// rewrites the whole item from what was read a moment earlier (see
+// setDateCreated), and a scan that is still refreshing the new item can
+// land in between. The full refresh that follows re-derives every field
+// such a race could have put back, and never touches the date added, so
+// the worst a race costs is the date. Done after the refresh, it could
+// cost the refresh's own metadata and artwork instead.
+//
+// Until final, it writes nothing and returns false while a series is
+// still missing any episode the snapshot had: Jellyfin lists a new series
+// as soon as its scan creates it, before the same scan gets to its
+// episodes. At final it puts back what is there. A movie is listed with
+// its file, so there is never anything to wait for.
+func (c *Client) putBackAddedDates(item MovedItem, root libraryItem, final bool) bool {
+	leaves, err := c.leafItems(root)
+	if err != nil {
+		if !final {
+			c.logf("jellyfin: %v; looking again", err)
+			return false
+		}
+		c.logf("jellyfin: %q keeps the date added the move gave it: %v", item.Title, err)
+		return true
+	}
+
+	missing := 0
+	for rel := range item.AddedDates {
+		if _, ok := leaves[rel]; !ok {
+			missing++
+		}
+	}
+	if missing > 0 && !final && root.Type == "Series" {
+		c.logf("jellyfin: %q is at %s, but %d of its episodes are not listed yet", item.Title, itemFolderPath(root), missing)
+		return false
+	}
+	if missing > 0 {
+		c.logf("jellyfin: %d item(s) of %q never appeared under %s; they keep the date added the move gave them", missing, item.Title, itemFolderPath(root))
+	}
+
+	restored := 0
+	for rel, added := range item.AddedDates {
+		leaf, ok := leaves[rel]
+		// Only ever a move's date is undone. A date the move left alone, or
+		// one already older than the snapshot, is not Coldarr's to change.
+		if !ok || !leaf.DateCreated.After(added.Add(addedDateSlack)) {
+			continue
+		}
+		if err := c.setDateCreated(leaf.ID, leaf.userID, added); err != nil {
+			c.logf("jellyfin: could not put back the date added on %s: %v", filepath.Join(itemFolderPath(root), rel), err)
+			continue
+		}
+		restored++
+	}
+	if restored > 0 {
+		c.logf("jellyfin: put back the date added on %d item(s) of %q", restored, item.Title)
+	}
+	return true
+}
+
+// itemUpdateOptionalFields are the fields Jellyfin's item update only
+// writes when the request carries them. Left out, they're left alone,
+// which is right for the cast, genres, tags, studios and provider IDs of
+// an item that's only having its date put back.
+var itemUpdateOptionalFields = []string{
+	"People", "Genres", "Taglines", "Studios", "Tags",
+	"ProductionLocations", "LockedFields", "ProviderIds",
+	"AlbumArtists", "ArtistItems",
+}
+
+// setDateCreated sets one movie's or episode's date added. Jellyfin's item
+// update has no partial form: every scalar field in the request replaces
+// the item's, so the item is read whole, as the user it was listed for,
+// and sent back with only the date changed.
+//
+// Never point this at a series or a season. Updating either rewrites the
+// official and custom rating of every episode under it to its own, and
+// re-saves each one.
+func (c *Client) setDateCreated(itemID, userID string, added time.Time) error {
+	body, err := c.get("/Users/"+url.PathEscape(userID)+"/Items/"+url.PathEscape(itemID), nil)
+	if err != nil {
+		return fmt.Errorf("reading item %s: %w", itemID, err)
+	}
+
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(body, &item); err != nil {
+		return fmt.Errorf("reading item %s: decoding response: %w", itemID, err)
+	}
+	for _, field := range itemUpdateOptionalFields {
+		delete(item, field)
+	}
+	stamp, err := json.Marshal(added.UTC().Format(jellyfinTimeLayout))
+	if err != nil {
+		return fmt.Errorf("encoding date added: %w", err)
+	}
+	item["DateCreated"] = stamp
+
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return fmt.Errorf("encoding item %s: %w", itemID, err)
+	}
+	return c.post("/Items/"+url.PathEscape(itemID), nil, payload)
 }
 
 // MovedItem is one item's relocation, in the folder paths Jellyfin
@@ -519,6 +788,10 @@ type MovedItem struct {
 	Title   string
 	OldPath string
 	NewPath string
+	// AddedDates is what SnapshotAddedDates recorded for OldPath before the
+	// move, put back on the items under NewPath by ResolveAndRefresh. Nil
+	// leaves every date as the move set it.
+	AddedDates AddedDates
 }
 
 // ReportMoved tells Jellyfin which folders items have just vacated and
@@ -586,9 +859,11 @@ func resolveBackoffCeiling(base time.Duration) time.Duration {
 
 // ResolveAndRefresh waits for each moved item to reappear at its new path
 // and then refreshes it, which is the reason a moved item keeps its
-// artwork. It does not report any paths itself - see ReportMoved, which
-// the caller is expected to have already done, ideally per item as each
-// move landed.
+// artwork. An item carrying AddedDates first gets those dates put back
+// (see putBackAddedDates), which is the reason it doesn't turn up under
+// Recently Added again. It does not report any paths itself - see
+// ReportMoved, which the caller is expected to have already done, ideally
+// per item as each move landed.
 //
 // Re-resolving is not optional, and cannot be collapsed into a library
 // scan. Jellyfin hashes an item's path into its ID, so the move
@@ -599,7 +874,9 @@ func resolveBackoffCeiling(base time.Duration) time.Duration {
 //
 // Returns an error naming every item it could not refresh, so the caller
 // can fall back to a whole-library scan. Items that did get refreshed stay
-// refreshed - a partial failure is never rolled back.
+// refreshed - a partial failure is never rolled back. A date that could
+// not be put back is logged rather than returned: the item still has its
+// artwork, and a library scan would not bring the date back either.
 func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 	pending := map[string]MovedItem{}
 	for _, it := range items {
@@ -634,15 +911,22 @@ func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 		// One library snapshot per round, matched against every
 		// outstanding item - resolving them one at a time would re-list
 		// the entire library, for every user, once per item per round.
-		ids, err := c.LibraryItemIDs()
+		byFolder, err := c.itemsByFolder("Path,DateCreated")
 		if err != nil {
 			c.logf("jellyfin: listing items to resolve moved paths failed: %v", err)
 		} else {
+			// The last round runs once the budget is spent, which is when
+			// a series still short of episodes stops waiting for them.
+			final := !time.Now().Before(deadline)
 			for path, item := range pending {
-				id, ok := ids[path]
+				root, ok := byFolder[path]
 				if !ok {
 					continue
 				}
+				if len(item.AddedDates) > 0 && !c.putBackAddedDates(item, root, final) {
+					continue
+				}
+				id := root.ID
 				c.logf("jellyfin: resolved %q at %s to item %s, refreshing", item.Title, path, id)
 				if err := c.RefreshItem(id, FullRefreshOptions()); err != nil {
 					if errors.Is(err, ErrItemNotFound) {

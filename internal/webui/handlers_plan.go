@@ -229,7 +229,12 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 		return nil, err
 	}
 
-	progress := eng.Movers().Apply(plan, inv.VolumeOf())
+	followUp, err := eng.StartJellyfinFollowUp(plan)
+	if err != nil {
+		log.Printf("webui: reading Jellyfin's date added for the planned items failed, so some moved items will show as newly added: %v", err)
+	}
+
+	progress := eng.Movers(followUp).Apply(plan, inv.VolumeOf())
 
 	run := &applyRun{progress: progress, lock: lock}
 	run.active.Store(true)
@@ -248,7 +253,7 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 		progress.Wait()
 
 		if moved := progress.Snapshot().Moved(); len(moved) > 0 {
-			if err := eng.NotifyJellyfinMoved(moved); err != nil {
+			if err := eng.NotifyJellyfinMoved(moved, followUp); err != nil {
 				log.Printf("webui: jellyfin update after apply failed: %v", err)
 				return
 			}

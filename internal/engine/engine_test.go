@@ -484,7 +484,7 @@ func TestNotifyJellyfinMoved_ReportsOnlyWhatTheRunCouldNot(t *testing.T) {
 			LandedPath: "/cold/tv/Unreported",
 			Reported:   false,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NotifyJellyfinMoved: %v", err)
 	}
@@ -504,5 +504,104 @@ func TestNotifyJellyfinMoved_ReportsOnlyWhatTheRunCouldNot(t *testing.T) {
 	slices.Sort(refreshed)
 	if !slices.Equal(refreshed, wantRefreshed) {
 		t.Errorf("refreshed = %v, want %v", refreshed, wantRefreshed)
+	}
+}
+
+func TestStartJellyfinFollowUp_NilWithoutJellyfin(t *testing.T) {
+	plan := &planner.Plan{Entries: []planner.MoveEntry{{Item: model.MediaItem{Title: "Movie A", Path: "/hot/movies/Movie A"}}}}
+	followUp, err := (&Engine{}).StartJellyfinFollowUp(plan)
+	if err != nil || followUp != nil {
+		t.Fatalf("StartJellyfinFollowUp() = (%v, %v), want (nil, nil) with Jellyfin unconfigured", followUp, err)
+	}
+}
+
+// TestJellyfinFollowUp_PutsBackDateAsTheMoveLands pins when the date goes
+// back: on the mover's landing signal for that item, not at the end of the
+// run, so a run that stops part way through has only lost the items still
+// waiting on Jellyfin. The end of the run then waits for that follow-up
+// and does not repeat it.
+func TestJellyfinFollowUp_PutsBackDateAsTheMoveLands(t *testing.T) {
+	t.Setenv("COLDARR_JELLYFIN_RESOLVE_TIMEOUT", "5s")
+	t.Setenv("COLDARR_JELLYFIN_RESOLVE_INTERVAL", "10ms")
+
+	var mu sync.Mutex
+	landed := false
+	refreshes := 0
+	var sent string
+	jf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Library/Media/Updated":
+			landed = true
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items" && !landed:
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "id-old", "Type": "Movie", "Path": "/hot/movies/Moved (2021)/Moved (2021).mkv", "DateCreated": "2021-03-14T12:00:00.0000000Z"}]}`))
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "id-new", "Type": "Movie", "Path": "/cold/movies/Moved (2021)/Moved (2021).mkv", "DateCreated": "2026-09-30T02:15:00.0000000Z"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/Users/u1/Items/id-new":
+			_, _ = w.Write([]byte(`{"Id": "id-new", "Name": "Moved", "DateCreated": "2026-09-30T02:15:00.0000000Z"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/id-new":
+			var body struct {
+				DateCreated string `json:"DateCreated"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			sent = body.DateCreated
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/id-new/Refresh":
+			refreshes++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer jf.Close()
+
+	e := &Engine{
+		jellyfinConn: secrets.Connection{URL: jf.URL, APIKey: "key", Enabled: true},
+		jellyfinOK:   true,
+	}
+	entry := planner.MoveEntry{Item: model.MediaItem{Title: "Moved", Path: "/hot/movies/Moved (2021)"}}
+	followUp, err := e.StartJellyfinFollowUp(&planner.Plan{Entries: []planner.MoveEntry{entry}})
+	if err != nil {
+		t.Fatalf("StartJellyfinFollowUp: %v", err)
+	}
+
+	// The mover's landing signal, with the rest of the run still to go.
+	if err := followUp.ReportMoved("/hot/movies/Moved (2021)", "/cold/movies/Moved (2021)"); err != nil {
+		t.Fatalf("ReportMoved: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		done := refreshes == 1
+		mu.Unlock()
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the landed item was never followed up before the end of the run")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	if sent != "2021-03-14T12:00:00.0000000Z" {
+		t.Errorf("date added sent = %q, want the one recorded before the move", sent)
+	}
+	mu.Unlock()
+
+	err = e.NotifyJellyfinMoved([]mover.EntryProgress{{
+		Entry: entry, LandedPath: "/cold/movies/Moved (2021)", Reported: true,
+	}}, followUp)
+	if err != nil {
+		t.Fatalf("NotifyJellyfinMoved: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if refreshes != 1 {
+		t.Errorf("refreshes = %d, want 1: the end of the run must not repeat a landed item's follow-up", refreshes)
 	}
 }
