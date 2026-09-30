@@ -46,7 +46,7 @@ The [quick start](https://voc0der.github.io/Coldarr/getting-started/) walks thro
 > The optional [Restore User Data After Move](https://github.com/voc0der/jellyfin-plugin-restore-userdata-after-move) Jellyfin plugin puts back the watch history a move leaves behind.
 
 #### Build manually
-See the [CLI guide](https://voc0der.github.io/Coldarr/usage/cli/).
+See [Building from source](https://voc0der.github.io/Coldarr/usage/cli/#building-from-source).
 
 ## Contributing
 
