@@ -152,6 +152,7 @@ build and publish the Docker image. To ship a new version:
     markdown - `## Highlights` or `## Fix` sections, a bold lead-in per
     change, and *why* it matters, not just what changed. Look at past
     releases (`gh release view vX.Y.Z`) for the tone to match.
+
 4. The image build/push happens automatically from there - no manual
    Docker steps.
 
