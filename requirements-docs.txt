@@ -1,2 +1,2 @@
 # Keep local previews and the GitHub Actions build on the same release.
-zensical==0.0.67
+zensical==0.0.68
