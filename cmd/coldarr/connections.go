@@ -77,7 +77,11 @@ func newConnectionsSetCmd() *cobra.Command {
 				return err
 			}
 
-			if err := store.Set(app, secrets.Connection{URL: url, APIKey: apiKey, Enabled: !disabled}); err != nil {
+			// Saved over what's already stored rather than replacing it,
+			// so the External URL - set only in the web GUI - survives.
+			conn, _ := store.Get(app)
+			conn.URL, conn.APIKey, conn.Enabled = url, apiKey, !disabled
+			if err := store.Set(app, conn); err != nil {
 				return err
 			}
 			fmt.Printf("saved %s connection\n", app)

@@ -217,3 +217,26 @@ func TestConnectionHandlers_ReportStoreFailures(t *testing.T) {
 		}
 	}
 }
+
+// TestConnectionSave_KeepsTheExternalURL: the External URL has its own
+// form, so saving a connection's URL or key must leave it alone. Every
+// connection save used to wipe it.
+func TestConnectionSave_KeepsTheExternalURL(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	serveForm(srv.handleConnectionExternalURLSave, "/settings/connections/radarr/external-url",
+		url.Values{"external_url": {"https://radarr.example.com"}}, "app", "radarr")
+
+	for _, form := range []url.Values{
+		{"url": {"http://radarr:7878"}, "api_key": {"key-1"}}, // first save, key typed
+		{"url": {"http://radarr.lan:7878"}},                   // later save, key kept
+	} {
+		body := serveForm(srv.handleConnectionSave, "/settings/connections/radarr", form, "app", "radarr").Body.String()
+		got, _ := srv.connStore.Get("radarr")
+		if got != (secrets.Connection{URL: form.Get("url"), APIKey: "key-1", Enabled: true, ExternalURL: "https://radarr.example.com"}) {
+			t.Fatalf("stored radarr after saving %v = %+v, want the External URL kept", form, got)
+		}
+		if !strings.Contains(body, `id="ext-radarr" name="external_url" placeholder="https://radarr.mydomain.com" value="https://radarr.example.com"`) {
+			t.Errorf("the page after saving %v should still show the External URL:\n%s", form, body)
+		}
+	}
+}
