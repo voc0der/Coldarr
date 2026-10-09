@@ -844,6 +844,43 @@ func TestClient_ResolveAndRefresh_PutsBackWhatArrivedByTheDeadline(t *testing.T)
 	}
 }
 
+// TestClient_ResolveAndRefresh_RoundOverrunningTheDeadlineIsNotTheLast
+// pins the last round to the deadline itself. A series' episode listing
+// runs after the round has decided whether it's the last, so one slow
+// enough to carry that round past the deadline used to end the wait right
+// there - with no last round, the series kept the move's dates, missed its
+// refresh, and was reported as never appearing at all.
+func TestClient_ResolveAndRefresh_RoundOverrunningTheDeadlineIsNotTheLast(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	episodeListings := 0
+	srv := seriesServer(t, func(int) string {
+		// seriesServer holds mu while it calls this.
+		episodeListings++
+		if episodeListings == 1 {
+			time.Sleep(100 * time.Millisecond) // well past the 50ms budget
+		}
+		return movedEpisode1
+	}, &calls, &mu)
+	defer srv.Close()
+
+	c := testClient(t, srv.URL)
+	c.ResolvePollInterval = time.Hour
+	c.ResolveTimeout = 50 * time.Millisecond
+	err := c.ResolveAndRefresh([]MovedItem{
+		{Title: "Show A", NewPath: "/cold/Show A", AddedDates: showAAddedDates()},
+	})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"update ep-1", "refresh"}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %v, want %v - the round after the overrun is the last, putting back what arrived", calls, want)
+	}
+}
+
 func TestJellyfinTime_ReadsWithAndWithoutZone(t *testing.T) {
 	cases := []struct {
 		in   string
