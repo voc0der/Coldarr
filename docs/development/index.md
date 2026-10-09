@@ -30,10 +30,12 @@ Coverage is not part of that list and is not computed by CI - the README
 badge is static, refreshed locally with `scripts/coverage.sh` when a change
 moves the number. See [Contributing](contributing.md#coverage).
 
-Unit tests cover every `internal/` package. `cmd/coldarr` (cobra command
-wiring) and most of `internal/webui` are the exception - `internal/webui`
-is a set of Go `html/template` pages with no JS framework, so verifying a
-UI change means actually running the server and looking at it:
+Every package has tests, including `cmd/coldarr` (run through its real
+command line) and the `internal/webui` handlers (driven with `httptest`
+against fake Radarr/Sonarr/Jellyfin servers and a fake OIDC provider). What
+tests can't tell you is how a page looks - `internal/webui` is a set of Go
+`html/template` pages with no JS framework, so verifying a UI change still
+means actually running the server and looking at it:
 
 1. Build a throwaway `coldarr.yaml` pointing tiers at temp directories, and
    (if the change needs library data) seed a `history.json` and/or stand up

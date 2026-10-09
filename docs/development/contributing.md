@@ -59,11 +59,8 @@ scripts/coverage.sh --check
 It exits non-zero and prints both the current and the correct badge URL if
 they differ.
 
-The number is whole-module statement coverage from each package's own tests,
-which is why it sits well below the per-package numbers you see scroll past:
-`cmd/coldarr` has no tests at all and `internal/webui` is mostly templates
-(see the testing notes in the [development guide](index.md#testing) for why
-those two are exercised by hand instead). Don't switch the script to
-`-coverpkg=./...` to make the badge look better - that counts code merely
-executed by an unrelated package's test as covered, and reports ~4 points
-higher for no extra testing.
+The number is whole-module statement coverage from each package's own tests:
+code counts as covered only when a test in its own package runs it. Don't
+switch the script to `-coverpkg=./...` to make the badge look better - that
+counts code merely executed by an unrelated package's test as covered,
+without anything testing it.
