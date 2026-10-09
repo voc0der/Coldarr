@@ -144,7 +144,11 @@ func (s *Server) handleConnectionSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.connStore.Set(app, secrets.Connection{URL: url, APIKey: apiKey, Enabled: enabled}); err != nil {
+	// Saved over what's already stored rather than replacing it, so the
+	// External URL - which has its own form - survives a connection save.
+	conn, _ := s.connStore.Get(app)
+	conn.URL, conn.APIKey, conn.Enabled = url, apiKey, enabled
+	if err := s.connStore.Set(app, conn); err != nil {
 		s.render(w, "connections", connectionsData{Title: "Connections", Error: err.Error(), Rows: s.connRows()})
 		return
 	}

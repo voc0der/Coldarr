@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 // TestConnectionsCommands walks a connection through its whole life from
@@ -99,5 +101,31 @@ func TestMaskKey(t *testing.T) {
 		if got := maskKey(key); got != want {
 			t.Errorf("maskKey(%q) = %q, want %q", key, got, want)
 		}
+	}
+}
+
+// TestConnectionsSet_KeepsTheExternalURL: only the web GUI sets a
+// connection's External URL, so `connections set` must leave it alone
+// rather than replace the whole stored connection.
+func TestConnectionsSet_KeepsTheExternalURL(t *testing.T) {
+	dir := t.TempDir()
+	store, err := secrets.LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("radarr", secrets.Connection{URL: "http://old:7878", APIKey: "old", Enabled: true, ExternalURL: "https://radarr.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runColdarr(t, "--config", filepath.Join(dir, "coldarr.yaml"), "connections", "set", "radarr", "--url", "http://radarr:7878", "--api-key", "new"); err != nil {
+		t.Fatalf("connections set: %v", err)
+	}
+
+	reloaded, err := secrets.LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reloaded.Get("radarr"); got != (secrets.Connection{URL: "http://radarr:7878", APIKey: "new", Enabled: true, ExternalURL: "https://radarr.example.com"}) {
+		t.Fatalf("stored radarr = %+v, want the new URL and key with the External URL kept", got)
 	}
 }
