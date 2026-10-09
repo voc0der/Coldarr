@@ -33,3 +33,23 @@ func TestMediaItem_Key(t *testing.T) {
 		t.Error("items from different Arr apps with the same numeric ID must not produce equal keys")
 	}
 }
+
+// TestTier_EffectiveMaxUsedPercent: an unset hot ceiling means the
+// built-in reclaim default, never "no ceiling", while a cold tier's max is
+// always exactly what was configured.
+func TestTier_EffectiveMaxUsedPercent(t *testing.T) {
+	cases := []struct {
+		tier Tier
+		want float64
+	}{
+		{Tier{Role: RoleHot}, DefaultHotMaxUsedPercent},
+		{Tier{Role: RoleHot, MaxUsedPercent: 92.5}, 92.5},
+		{Tier{Role: RoleCold, MaxUsedPercent: 95}, 95},
+		{Tier{Role: RoleCold}, 0},
+	}
+	for _, c := range cases {
+		if got := c.tier.EffectiveMaxUsedPercent(); got != c.want {
+			t.Errorf("%s tier with max %v: EffectiveMaxUsedPercent() = %v, want %v", c.tier.Role, c.tier.MaxUsedPercent, got, c.want)
+		}
+	}
+}

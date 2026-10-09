@@ -162,3 +162,63 @@ func TestProjectedUsage_OnlyShowsChangedPaths(t *testing.T) {
 		t.Errorf("expected the unchanged path /cold2 to be omitted:\n%s", out)
 	}
 }
+
+// TestSummary_TopNAndNothingToMove: the candidate list stops at topN,
+// best score first, and says so plainly when nothing on hot storage is a
+// cold candidate.
+func TestSummary_TopNAndNothingToMove(t *testing.T) {
+	inv := testInventory()
+	inv.Items = append(inv.Items,
+		planner.ItemEval{Item: model.MediaItem{Title: "Best Candidate", RootFolderPath: "/hot"}, Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 90}},
+		planner.ItemEval{Item: model.MediaItem{Title: "Untracked Folder Item", RootFolderPath: "/elsewhere"}, Eval: scoring.Evaluation{Decision: scoring.Cold, Score: 99}},
+	)
+
+	var buf bytes.Buffer
+	Summary(&buf, inv, 1)
+	out := buf.String()
+	if !strings.Contains(out, "Best Candidate") {
+		t.Errorf("expected the top-scoring candidate listed:\n%s", out)
+	}
+	if strings.Contains(out, "Cold Candidate") {
+		t.Errorf("topN=1 should list only the best candidate:\n%s", out)
+	}
+	if strings.Contains(out, "Untracked Folder Item") {
+		t.Errorf("an item outside every tier is counted but can't be listed as on hot storage:\n%s", out)
+	}
+
+	inv = testInventory()
+	inv.Items = inv.Items[1:]
+	buf.Reset()
+	Summary(&buf, inv, 5)
+	if !strings.Contains(buf.String(), "(none)") {
+		t.Errorf("expected an explicit (none) with no cold candidates on hot storage:\n%s", buf.String())
+	}
+}
+
+func TestPlan_ShowsWarningsAndBlankReason(t *testing.T) {
+	var buf bytes.Buffer
+	Plan(&buf, &planner.Plan{
+		Entries:  []planner.MoveEntry{{Item: model.MediaItem{Title: "No Reason Given", SizeBytes: 1 << 30}, FromTier: "hot", ToTier: "cold"}},
+		Warnings: []string{"cold2 is unavailable"},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "No Reason Given") || !strings.Contains(out, "Warnings:") || !strings.Contains(out, "cold2 is unavailable") {
+		t.Errorf("expected the entry and its warning:\n%s", out)
+	}
+}
+
+func TestProjectedUsage_SkipsUnavailablePaths(t *testing.T) {
+	tiers := []model.Tier{{Name: "cold", Paths: []string{"/gone", "/cold1"}}}
+	before := map[string]diskusage.Usage{"/cold1": {UsedPercent: 50}}
+	after := map[string]diskusage.Usage{"/cold1": {UsedPercent: 60}, "/gone": {UsedPercent: 10}}
+
+	var buf bytes.Buffer
+	ProjectedUsage(&buf, before, after, tiers)
+	out := buf.String()
+	if strings.Contains(out, "/gone") {
+		t.Errorf("a path with no usable 'before' reading must not be projected:\n%s", out)
+	}
+	if !strings.Contains(out, "/cold1") || !strings.Contains(out, "60.0%") {
+		t.Errorf("expected /cold1's projected change:\n%s", out)
+	}
+}
