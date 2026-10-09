@@ -178,6 +178,12 @@ func decrypt(key []byte, blob encryptedBlob) (Connection, error) {
 		return Connection{}, err
 	}
 
+	// GCM panics on a nonce of any other size, and a damaged or hand-edited
+	// store is exactly where one turns up.
+	if len(blob.Nonce) != gcm.NonceSize() {
+		return Connection{}, fmt.Errorf("decrypting: stored nonce is %d bytes, want %d", len(blob.Nonce), gcm.NonceSize())
+	}
+
 	plaintext, err := gcm.Open(nil, blob.Nonce, blob.Ciphertext, nil)
 	if err != nil {
 		return Connection{}, fmt.Errorf("decrypting: %w", err)
