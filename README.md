@@ -6,7 +6,7 @@
 [![License badge](https://img.shields.io/github/license/voc0der/Coldarr)](LICENSE.md)
 [![Latest release badge](https://img.shields.io/github/v/release/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/releases/latest)
 [![CI status badge](https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI)](https://github.com/voc0der/Coldarr/actions/workflows/ci.yml)
-<a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-65.6%25-yellow" alt="Test coverage"></a>
+<a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-97.3%25-brightgreen" alt="Test coverage"></a>
 [![GitHub issues badge](https://img.shields.io/github/issues/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/issues)
 [![Docker pulls badge](https://img.shields.io/docker/pulls/voc0der/coldarr)](https://hub.docker.com/r/voc0der/coldarr)
 [![Docker image size badge](https://img.shields.io/docker/image-size/voc0der/coldarr?sort=date)](https://hub.docker.com/r/voc0der/coldarr)
