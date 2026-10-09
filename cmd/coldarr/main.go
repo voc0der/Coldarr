@@ -27,6 +27,15 @@ func main() {
 	// that made a request, not a bare "Coldarr".
 	jellyfin.Version = version
 
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the coldarr command line, binding --config to
+// configPath.
+func newRootCmd() *cobra.Command {
 	defaultConfig := "coldarr.yaml"
 	if v := os.Getenv("COLDARR_CONFIG"); v != "" {
 		defaultConfig = v
@@ -49,11 +58,7 @@ func main() {
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newConnectionsCmd())
-
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 func newVersionCmd() *cobra.Command {
