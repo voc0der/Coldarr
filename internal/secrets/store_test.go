@@ -326,3 +326,30 @@ func TestSet_ReportsAFailedSave(t *testing.T) {
 		t.Fatalf("Delete error = %v, want a failed rename into place", err)
 	}
 }
+
+// TestLoadOrCreate_MalformedNonceIsAnError: an entry whose nonce isn't the
+// size AES-GCM uses - truncated, over-long, or missing after a hand edit -
+// must fail the load like any other damaged entry. Handed to GCM as-is, it
+// panicked and took Coldarr down at startup instead.
+func TestLoadOrCreate_MalformedNonceIsAnError(t *testing.T) {
+	for name, entry := range map[string]string{
+		"truncated nonce": `{"nonce": "AAAA", "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA=="}`,
+		"over-long nonce": `{"nonce": "AAAAAAAAAAAAAAAAAAAAAAAA", "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA=="}`,
+		"missing nonce":   `{"ciphertext": "AAAAAAAAAAAAAAAAAAAAAA=="}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if _, err := LoadOrCreate(dir); err != nil { // generates the key
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "connections.enc.json"), []byte(`{"radarr": `+entry+`}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadOrCreate(dir)
+			if err == nil || !strings.Contains(err.Error(), `decrypting stored connection for "radarr"`) || !strings.Contains(err.Error(), "nonce") {
+				t.Fatalf("LoadOrCreate = %v, want a decryption error about the nonce", err)
+			}
+		})
+	}
+}
