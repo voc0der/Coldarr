@@ -908,6 +908,13 @@ func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 	deadline := time.Now().Add(timeout)
 	wait := interval
 	for {
+		// The last round is the first to start once the budget is spent,
+		// and it's where a series still short of episodes stops waiting
+		// for them. That's decided as a round starts, because its listings
+		// take time: a round that runs past the deadline was never the
+		// last, so the last one starts straight after it.
+		final := !time.Now().Before(deadline)
+
 		// One library snapshot per round, matched against every
 		// outstanding item - resolving them one at a time would re-list
 		// the entire library, for every user, once per item per round.
@@ -915,9 +922,6 @@ func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 		if err != nil {
 			c.logf("jellyfin: listing items to resolve moved paths failed: %v", err)
 		} else {
-			// The last round runs once the budget is spent, which is when
-			// a series still short of episodes stops waiting for them.
-			final := !time.Now().Before(deadline)
 			for path, item := range pending {
 				root, ok := byFolder[path]
 				if !ok {
@@ -940,7 +944,7 @@ func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 			}
 		}
 
-		if len(pending) == 0 {
+		if len(pending) == 0 || final {
 			break
 		}
 
@@ -949,13 +953,10 @@ func (c *Client) ResolveAndRefresh(items []MovedItem) error {
 		// still fits inside the budget is always worth taking, so the last
 		// one lands right at it. Clamping `sleep` and not `wait` keeps that
 		// from also shortening the interval every round after it.
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
+		if sleep := min(wait, time.Until(deadline)); sleep > 0 {
+			c.logf("jellyfin: %d item(s) not yet visible at their new path, re-checking in %s", len(pending), sleep.Round(time.Second))
+			time.Sleep(sleep)
 		}
-		sleep := min(wait, remaining)
-		c.logf("jellyfin: %d item(s) not yet visible at their new path, re-checking in %s", len(pending), sleep.Round(time.Second))
-		time.Sleep(sleep)
 		wait = min(2*wait, maxInterval)
 	}
 
