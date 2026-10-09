@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -26,6 +27,9 @@ func TestCleanReturnTo(t *testing.T) {
 		{raw: "/\\evil.example/plan", want: "/"},
 		{raw: "/auth/login", want: "/"},
 		{raw: "/login", want: "/"},
+		{raw: "/auth/callback?code=x", want: "/"},
+		{raw: "/history%zz", want: "/"},
+		{raw: "plan", want: "/"},
 	}
 
 	for _, tt := range tests {
@@ -499,5 +503,141 @@ func TestUnauthenticatedHtmxRequestRedirectsWholePage(t *testing.T) {
 		if got := rec.Header().Get("HX-Redirect"); got != "/login?return_to=%2F" {
 			t.Fatalf("htmx POST without session (oidc=%v): HX-Redirect = %q, want /login?return_to=%%2F", oidcEnabled, got)
 		}
+	}
+}
+
+// passwordSession signs in through the password form and returns the
+// session cookie it was given.
+func passwordSession(t *testing.T, handler http.Handler) *http.Cookie {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("password=pw&return_to=/"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(rec, req)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == authSessionCookie {
+			return c
+		}
+	}
+	t.Fatalf("POST /login gave no session cookie: %d %q", rec.Code, rec.Body.String())
+	return nil
+}
+
+// TestLogout_EndsTheSessionServerSide: logging out deletes the session
+// itself, not just the browser's cookie, so a copy of the cookie stops
+// working too.
+func TestLogout_EndsTheSessionServerSide(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	srv := newAuthTestServer(t, false)
+	handler := srv.routes()
+	cookie := passwordSession(t, handler)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login?signed_out=1" {
+		t.Fatalf("GET /auth/logout = %d %q, want a redirect to the signed-out login page", rec.Code, rec.Header().Get("Location"))
+	}
+	cleared := rec.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Name != authSessionCookie || cleared[0].MaxAge >= 0 {
+		t.Fatalf("logout cookies = %+v, want the session cookie expired", cleared)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/plan", nil)
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+		t.Fatalf("GET /plan with the logged-out cookie = %d %q, want a redirect to /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestExpiredSessionIsDroppedAndSentToLogin(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	srv := newAuthTestServer(t, false)
+	srv.authSessions["stale"] = authSession{UserName: "admin", Expires: time.Now().Add(-time.Minute)}
+	handler := srv.routes()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/history", nil)
+	req.Header.Set("Cookie", authSessionCookie+"=stale")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login?return_to=%2Fhistory" {
+		t.Fatalf("GET /history with an expired session = %d %q, want a redirect to /login", rec.Code, rec.Header().Get("Location"))
+	}
+	srv.authMu.Lock()
+	defer srv.authMu.Unlock()
+	if _, ok := srv.authSessions["stale"]; ok {
+		t.Fatal("an expired session should be deleted when it's next presented")
+	}
+}
+
+func TestLoginPage_AlreadySignedInGoesStraightThrough(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	handler := newAuthTestServer(t, false).routes()
+	cookie := passwordSession(t, handler)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/login?return_to=%2Fhistory", nil)
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/history" {
+		t.Fatalf("GET /login while signed in = %d %q, want a redirect to /history", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// TestUnauthenticatedFormPostIsRefusedNotRedirected: a plain (non-htmx)
+// POST without a session can't be replayed after a login redirect, so it's
+// refused outright rather than bounced to a login page that would drop it.
+func TestUnauthenticatedFormPostIsRefusedNotRedirected(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	handler := newAuthTestServer(t, false).routes()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/plan/apply", nil))
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" {
+		t.Fatalf("POST /plan/apply without a session = %d %q, want a bare 401", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// Static assets and the health check stay public.
+	for _, target := range []string{"/static/style.css", "/healthz"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s without a session = %d, want 200", target, rec.Code)
+		}
+	}
+}
+
+// TestAuthState_ExpiredEntriesAreRefusedAndSwept: a login state past its
+// TTL can't finish a login, and expired sessions and login states are swept
+// whenever a new one is stored, so abandoned logins don't pile up.
+func TestAuthState_ExpiredEntriesAreRefusedAndSwept(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	srv := newAuthTestServer(t, false)
+	past := time.Now().Add(-time.Minute)
+	srv.oidcStates["abandoned"] = oidcLoginState{Expires: past}
+	srv.oidcStates["too-slow"] = oidcLoginState{Expires: past}
+	srv.authSessions["old"] = authSession{Expires: past}
+
+	if _, ok := srv.consumeOIDCState("too-slow"); ok {
+		t.Error("an expired login state must not complete a login")
+	}
+	if _, ok := srv.consumeOIDCState(""); ok {
+		t.Error("a callback without a state must not complete a login")
+	}
+
+	srv.storeOIDCState("fresh", oidcLoginState{Expires: time.Now().Add(oidcStateTTL)})
+	srv.authMu.Lock()
+	defer srv.authMu.Unlock()
+	if _, ok := srv.oidcStates["abandoned"]; ok {
+		t.Error("an abandoned login state should be swept")
+	}
+	if _, ok := srv.authSessions["old"]; ok {
+		t.Error("an expired session should be swept")
+	}
+	if _, ok := srv.oidcStates["fresh"]; !ok {
+		t.Error("the new login state should be stored")
 	}
 }
