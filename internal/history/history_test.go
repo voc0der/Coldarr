@@ -1,6 +1,9 @@
 package history
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,5 +120,92 @@ func TestInCooldown(t *testing.T) {
 	}
 	if s.InCooldown(key, 1*24*time.Hour, now) {
 		t.Error("expected item moved 5 days ago to be out of cooldown under a 1-day policy")
+	}
+}
+
+// TestLoad_EmptyFileStartsEmpty: a zero-byte history file - what a crash
+// between creating the file and first writing it leaves behind - loads as
+// no history rather than failing every command that reads the ledger.
+func TestLoad_EmptyFileStartsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.All()) != 0 {
+		t.Fatalf("expected no records from an empty file, got %d", len(s.All()))
+	}
+}
+
+// TestLoad_UnreadableHistoryIsAnError: unlike a missing or empty file, a
+// history that exists but can't be read must stop the caller. Reading it
+// as empty would silently drop every cooldown, letting the planner move
+// recently moved items straight back.
+func TestLoad_UnreadableHistoryIsAnError(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(path string) error
+		wantErr string
+	}{
+		{name: "corrupt", setup: func(path string) error { return os.WriteFile(path, []byte("[{"), 0o600) }, wantErr: "parsing history"},
+		{name: "a directory", setup: func(path string) error { return os.Mkdir(path, 0o750) }, wantErr: "reading history"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "history.json")
+			if err := tt.setup(path); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestAppend_ReportsAFailedSave: the mover records each move as it lands,
+// and a ledger write that fails has to come back to it rather than vanish.
+func TestAppend_ReportsAFailedSave(t *testing.T) {
+	tests := []struct {
+		name string
+		// breakSave runs after a successful Load, so the failure is the
+		// save's own, not one Load would already have reported.
+		breakSave func(path string) error
+		wantErr   string
+	}{
+		{
+			name:      "directory cannot be created",
+			breakSave: func(path string) error { return os.WriteFile(filepath.Dir(path), nil, 0o600) },
+			wantErr:   "creating history directory",
+		},
+		{
+			name:      "temp file cannot be written",
+			breakSave: func(path string) error { return os.MkdirAll(path+".tmp", 0o750) },
+			wantErr:   "writing history",
+		},
+		{
+			name:      "file replaced by a directory",
+			breakSave: func(path string) error { return os.MkdirAll(path, 0o750) },
+			wantErr:   "saving history",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state", "history.json")
+			s, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := tt.breakSave(path); err != nil {
+				t.Fatalf("breakSave: %v", err)
+			}
+			err = s.Append(Record{ArrApp: "radarr", ItemID: 1, Title: "Movie A", MovedAt: time.Now()})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Append error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }

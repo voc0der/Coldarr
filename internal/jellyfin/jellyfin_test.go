@@ -870,3 +870,357 @@ func TestJellyfinTime_ReadsWithAndWithoutZone(t *testing.T) {
 		t.Error("expected an error for a date Jellyfin would never send")
 	}
 }
+
+func TestClient_StartScheduledTask_Failures(t *testing.T) {
+	tests := []struct {
+		name        string
+		key         string
+		tasks       string // GET /ScheduledTasks body; "" answers 500
+		startStatus int
+		wantErr     string
+	}{
+		{name: "blank key", key: "  ", wantErr: "scheduled task key is required"},
+		{name: "listing fails", key: UserDataRestoreTaskKey, wantErr: "listing scheduled tasks"},
+		{name: "malformed listing", key: UserDataRestoreTaskKey, tasks: `{"Id": "not a list"}`, wantErr: "decoding response"},
+		{name: "task without a runtime ID", key: UserDataRestoreTaskKey, tasks: `[{"Key": "UserDataRestore", "State": "Idle"}]`, wantErr: "has no runtime ID"},
+		{name: "start refused", key: UserDataRestoreTaskKey, tasks: `[{"Id": "rid", "Key": "UserDataRestore", "State": "Idle"}]`, startStatus: http.StatusForbidden, wantErr: "unexpected status 403"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				switch {
+				case r.URL.Path == "/ScheduledTasks" && tt.tasks != "":
+					_, _ = w.Write([]byte(tt.tasks))
+				case r.URL.Path == "/ScheduledTasks/Running/rid":
+					w.WriteHeader(tt.startStatus)
+				default:
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+
+			err := testClient(t, srv.URL).StartScheduledTask(tt.key)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("StartScheduledTask error = %v, want one containing %q", err, tt.wantErr)
+			}
+			if tt.name == "blank key" && requests != 0 {
+				t.Errorf("a blank key made %d request(s), want none", requests)
+			}
+		})
+	}
+}
+
+// TestClient_WritesWithNothingToSayAreSkipped: a refresh with no item ID
+// or a report with no paths would at best be a no-op request, and an empty
+// item ID would refresh the wrong endpoint entirely - none are sent.
+func TestClient_WritesWithNothingToSayAreSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+
+	if err := c.RefreshItem("", FullRefreshOptions()); err == nil || !strings.Contains(err.Error(), "empty item ID") {
+		t.Errorf("RefreshItem(\"\") = %v, want an empty-ID error", err)
+	}
+	if err := c.ReportMediaUpdated([]string{"", ""}, "Created"); err != nil {
+		t.Errorf("ReportMediaUpdated(no paths) = %v, want nil", err)
+	}
+	if err := c.ReportMoved([]MovedItem{{Title: "Never landed", OldPath: "/hot/A"}}); err != nil {
+		t.Errorf("ReportMoved(nothing landed) = %v, want nil", err)
+	}
+	if err := c.ResolveAndRefresh([]MovedItem{{Title: "Never landed", OldPath: "/hot/A"}}); err != nil {
+		t.Errorf("ResolveAndRefresh(nothing landed) = %v, want nil", err)
+	}
+}
+
+func TestClient_ReportMoved_BothHalvesFailing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ReportMoved([]MovedItem{{Title: "Movie A", OldPath: "/hot/Movie A", NewPath: "/cold/Movie A"}})
+	if err == nil || !strings.Contains(err.Error(), "reporting vacated paths") || !strings.Contains(err.Error(), "reporting new paths") {
+		t.Fatalf("ReportMoved error = %v, want both halves' failures", err)
+	}
+}
+
+// TestClient_FavoritePaths_ListingFailuresAreErrors: favorites are what
+// keep an item on hot storage, and the engine refuses to plan when it can't
+// read them - so every way the listing can break has to come back as an
+// error, never as "nobody has favorites".
+func TestClient_FavoritePaths_ListingFailuresAreErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		users   string // "" answers 500
+		items   map[string]string
+		wantErr string
+	}{
+		{name: "users unavailable", wantErr: "listing users"},
+		{name: "users malformed", users: `{"Id": "u1"}`, wantErr: "listing users: decoding response"},
+		{name: "one user's items unavailable", users: `[{"Id": "u1"}, {"Id": "u2"}]`, items: map[string]string{"u1": `{"Items": []}`}, wantErr: "listing items for user u2"},
+		{name: "items malformed", users: `[{"Id": "u1"}]`, items: map[string]string{"u1": `{"Items": {}}`}, wantErr: "listing items for user u1: decoding response"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/Users" && tt.users != "" {
+					_, _ = w.Write([]byte(tt.users))
+					return
+				}
+				user := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/Users/"), "/Items")
+				if body, ok := tt.items[user]; ok {
+					_, _ = w.Write([]byte(body))
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			paths, err := testClient(t, srv.URL).FavoritePaths()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("FavoritePaths() = (%v, %v), want an error containing %q", paths, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestClient_ResolveAndRefresh_EpisodeListingFailureStillRefreshes: a
+// series whose episodes can't be listed keeps waiting while there's time -
+// the listing may have caught Jellyfin mid-scan - and at the deadline still
+// gets its artwork refreshed, only its dates staying as the move set them.
+func TestClient_ResolveAndRefresh_EpisodeListingFailureStillRefreshes(t *testing.T) {
+	var mu sync.Mutex
+	episodeListings, refreshes := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items" && r.URL.Query().Get("ParentId") != "":
+			episodeListings++
+			http.Error(w, "scan in progress", http.StatusInternalServerError)
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "cold-series-1", "Type": "Series", "Path": "/cold/Show A"}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-series-1/Refresh":
+			refreshes++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("no date should be written, got %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// One look, then a single wait that runs to the deadline, then the
+	// final look: the poll interval outlasts the whole budget, so the
+	// deadline always falls during the wait, never mid-listing.
+	c := testClient(t, srv.URL)
+	c.ResolvePollInterval = time.Hour
+	c.ResolveTimeout = 300 * time.Millisecond
+	err := c.ResolveAndRefresh([]MovedItem{{Title: "Show A", NewPath: "/cold/Show A", AddedDates: showAAddedDates()}})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if refreshes != 1 {
+		t.Errorf("refreshes = %d, want the series refreshed once at the deadline", refreshes)
+	}
+	if episodeListings != 2 {
+		t.Errorf("episode listings = %d, want one look before the deadline and one at it", episodeListings)
+	}
+}
+
+// TestClient_ResolveAndRefresh_FailedDateWriteDoesNotBlockTheRefresh: a
+// date that can't be put back is logged, not fatal - the item still gets
+// the artwork refresh the whole follow-up exists for.
+func TestClient_ResolveAndRefresh_FailedDateWriteDoesNotBlockTheRefresh(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case r.URL.Path == "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "cold-movie-1", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv", "DateCreated": "2026-09-30T02:15:00.0000000Z"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/Users/u1/Items/cold-movie-1":
+			calls = append(calls, "read")
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case r.Method == http.MethodPost && r.URL.Path == "/Items/cold-movie-1/Refresh":
+			calls = append(calls, "refresh")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{{
+		Title: "Movie A", NewPath: "/cold/Movie A",
+		AddedDates: AddedDates{"Movie A.mkv": time.Date(2021, 3, 14, 12, 0, 0, 0, time.UTC)},
+	}})
+	if err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"read", "refresh"}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %v, want %v", calls, want)
+	}
+}
+
+// TestClient_ResolveAndRefresh_RecoversFromStaleLookups: a failed library
+// listing is one bad look, and an item that resolves but 404s on refresh
+// was listed from a stale index. Neither gives up on the item - both leave
+// it pending for the next round.
+func TestClient_ResolveAndRefresh_RecoversFromStaleLookups(t *testing.T) {
+	var mu sync.Mutex
+	listings := 0
+	var refreshed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case "/Users/u1/Items":
+			listings++
+			switch listings {
+			case 1:
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+			case 2:
+				_, _ = w.Write([]byte(`{"Items": [{"Id": "stale-id", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv"}]}`))
+			default:
+				_, _ = w.Write([]byte(`{"Items": [{"Id": "fresh-id", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv"}]}`))
+			}
+		case "/Items/stale-id/Refresh":
+			refreshed = append(refreshed, "stale-id")
+			http.NotFound(w, r)
+		case "/Items/fresh-id/Refresh":
+			refreshed = append(refreshed, "fresh-id")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{{Title: "Movie A", NewPath: "/cold/Movie A"}}); err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"stale-id", "fresh-id"}; !slices.Equal(refreshed, want) {
+		t.Errorf("refreshed = %v, want %v", refreshed, want)
+	}
+}
+
+// TestClient_ResolveAndRefresh_RefreshFailureIsReported: a refresh
+// Jellyfin rejects for any reason but "no such item" is reported against
+// that item, so the caller can fall back to a library scan.
+func TestClient_ResolveAndRefresh_RefreshFailureIsReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "id-a", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv"}]}`))
+		default:
+			http.Error(w, "refresh queue full", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	err := testClient(t, srv.URL).ResolveAndRefresh([]MovedItem{{Title: "Movie A", NewPath: "/cold/Movie A"}})
+	if err == nil || !strings.Contains(err.Error(), "could not refresh 1 item(s)") || !strings.Contains(err.Error(), "Movie A") {
+		t.Fatalf("ResolveAndRefresh error = %v, want the failed refresh reported against Movie A", err)
+	}
+}
+
+// TestClient_ResolveAndRefresh_ZeroPollSettingsFallBackToDefaults: a
+// client built without poll settings still resolves an item that is
+// already there rather than treating a zero timeout as "out of time".
+func TestClient_ResolveAndRefresh_ZeroPollSettingsFallBackToDefaults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Users":
+			_, _ = w.Write([]byte(`[{"Id": "u1"}]`))
+		case "/Users/u1/Items":
+			_, _ = w.Write([]byte(`{"Items": [{"Id": "id-a", "Type": "Movie", "Path": "/cold/Movie A/Movie A.mkv"}]}`))
+		case "/Items/id-a/Refresh":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "key")
+	c.Logf = t.Logf
+	c.ResolvePollInterval, c.ResolveTimeout = 0, 0
+	if err := c.ResolveAndRefresh([]MovedItem{{Title: "Movie A", NewPath: "/cold/Movie A"}}); err != nil {
+		t.Fatalf("ResolveAndRefresh: %v", err)
+	}
+}
+
+func TestClient_SystemInfoFailures(t *testing.T) {
+	for name, respond := range map[string]http.HandlerFunc{
+		"unavailable": func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", http.StatusBadGateway) },
+		"malformed":   func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"Id": `)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(respond)
+			defer srv.Close()
+			c := testClient(t, srv.URL)
+			if id, err := c.ServerID(); err == nil {
+				t.Errorf("ServerID() = %q, want an error", id)
+			}
+			if version, _, err := c.Ping(); err == nil {
+				t.Errorf("Ping() version = %q, want an error", version)
+			}
+		})
+	}
+}
+
+func TestClient_TransportErrors(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	unreachable := srv.URL
+	srv.Close()
+
+	var logged []string
+	c := testClient(t, unreachable)
+	c.Logf = func(format string, args ...any) { logged = append(logged, format) }
+	if _, _, err := c.Ping(); err == nil || !strings.Contains(err.Error(), "GET /System/Info") {
+		t.Errorf("Ping error = %v, want the failed GET named", err)
+	}
+	if err := c.RefreshLibrary(); err == nil || !strings.Contains(err.Error(), "POST /Library/Refresh") {
+		t.Errorf("RefreshLibrary error = %v, want the failed POST named", err)
+	}
+	if len(logged) == 0 {
+		t.Error("a failed write must be logged - its outcome is otherwise invisible")
+	}
+
+	malformed := testClient(t, "http://jellyfin host:8096")
+	if _, _, err := malformed.Ping(); err == nil || !strings.Contains(err.Error(), "building request") {
+		t.Errorf("Ping error = %v, want a request-building error", err)
+	}
+	if err := malformed.RefreshLibrary(); err == nil || !strings.Contains(err.Error(), "building request") {
+		t.Errorf("RefreshLibrary error = %v, want a request-building error", err)
+	}
+}
+
+func TestJellyfinTime_RejectsNonStrings(t *testing.T) {
+	var got jellyfinTime
+	if err := json.Unmarshal([]byte(`1615723200`), &got); err == nil || !strings.Contains(err.Error(), "decoding Jellyfin date") {
+		t.Fatalf("decoding a number = %v, want a decoding error", err)
+	}
+}

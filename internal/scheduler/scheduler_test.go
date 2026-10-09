@@ -277,3 +277,46 @@ func TestDue_DST(t *testing.T) {
 		t.Fatalf("Due() = false across a DST transition, want true (calendar day advanced despite the 23-hour day)")
 	}
 }
+
+// TestParseOmitDays covers the Scheduler page's checkbox values: valid
+// days come back in the order submitted, and anything a hand-crafted form
+// post could send that isn't a weekday - or names one twice - is rejected.
+func TestParseOmitDays(t *testing.T) {
+	days, err := ParseOmitDays([]string{"saturday", "sunday"})
+	if err != nil {
+		t.Fatalf("ParseOmitDays: %v", err)
+	}
+	if len(days) != 2 || days[0] != Saturday || days[1] != Sunday {
+		t.Fatalf("ParseOmitDays = %v, want [saturday sunday]", days)
+	}
+
+	if days, err := ParseOmitDays(nil); err != nil || len(days) != 0 {
+		t.Fatalf("ParseOmitDays(nil) = (%v, %v), want no blackout days", days, err)
+	}
+	for _, bad := range [][]string{{"Saturday"}, {"funday"}, {"monday", "monday"}} {
+		if days, err := ParseOmitDays(bad); err == nil {
+			t.Errorf("ParseOmitDays(%q) = %v, want an error", bad, days)
+		}
+	}
+}
+
+// TestDueAndArm_ToleratePreValidationSchedules: a schedule saved before
+// validation existed, or edited by hand, can carry Every 0 or a malformed
+// At. Rather than never firing, such a schedule runs as every 1 at
+// midnight.
+func TestDueAndArm_ToleratePreValidationSchedules(t *testing.T) {
+	now := time.Date(2026, 9, 13, 14, 0, 0, 0, time.UTC)
+
+	hourly := Schedule{Enabled: true, Unit: Hourly, Every: 0}
+	if !Due(hourly, now.Add(-time.Hour), now) {
+		t.Error("an hourly schedule with every=0 should run as every 1 hour")
+	}
+	if Due(hourly, now.Add(-30*time.Minute), now) {
+		t.Error("an hourly schedule with every=0 must still wait out its hour")
+	}
+
+	malformed := Schedule{Enabled: true, Unit: Daily, Every: 1, At: "noonish"}
+	if got, want := Arm(malformed, time.Time{}, now), time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("Arm with a malformed At = %v, want today's midnight slot %v", got, want)
+	}
+}

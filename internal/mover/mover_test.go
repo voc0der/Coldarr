@@ -1406,3 +1406,316 @@ func TestApply_ReporterFailureLeavesTheMoveUnreported(t *testing.T) {
 		t.Error("Reported = true after the report failed, which would make the end-of-run pass skip the one item that still needs reporting")
 	}
 }
+
+// fakeSonarrMoveServer is fakeRadarrMoveServer's Sonarr counterpart for a
+// single series: it records each series/editor request and, once a move
+// has been requested, reports the series in its new folder.
+func fakeSonarrMoveServer(t *testing.T, mu *sync.Mutex, requests *[]map[string]any) *httptest.Server {
+	t.Helper()
+	var movedTo string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v3/series/editor":
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			mu.Lock()
+			*requests = append(*requests, req)
+			movedTo, _ = req["rootFolderPath"].(string)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/series/7":
+			mu.Lock()
+			path := movedTo + "/Show A"
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 7, "path": path, "statistics": map[string]any{"sizeOnDisk": 10}})
+		default:
+			t.Errorf("unexpected sonarr %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestApply_MovesSeriesThroughSonarr runs a series through the same path
+// a movie takes - move request, rescan-confirmed landing, history - against
+// Sonarr's own endpoints.
+func TestApply_MovesSeriesThroughSonarr(t *testing.T) {
+	var mu sync.Mutex
+	var requests []map[string]any
+	srv := fakeSonarrMoveServer(t, &mu, &requests)
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+	m := &Movers{
+		Sonarr:              arrapi.NewSonarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  1,
+		statFunc: func(path string) (diskusage.Usage, error) {
+			return diskusage.Usage{TotalBytes: 100, UsedBytes: 50, FreeBytes: 50}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{{
+		Item:     model.MediaItem{ArrApp: "sonarr", ID: 7, Title: "Show A", Path: "/hot/tv/Show A", SizeBytes: 10},
+		FromTier: "hot", FromPath: "/hot/tv", ToTier: "cold", ToPath: "/cold/tv",
+	}}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	snap := progress.Snapshot()
+	if moved := snap.Moved(); len(moved) != 1 || moved[0].LandedPath != "/cold/tv/Show A" {
+		t.Fatalf("moved = %+v, want Show A landed at /cold/tv/Show A", snap.Entries)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 1 || requests[0]["rootFolderPath"] != "/cold/tv" || requests[0]["moveFiles"] != true {
+		t.Fatalf("series/editor requests = %v, want one move of series 7 to /cold/tv", requests)
+	}
+	if ids, _ := requests[0]["seriesIds"].([]any); len(ids) != 1 || ids[0] != float64(7) {
+		t.Fatalf("seriesIds = %v, want [7]", requests[0]["seriesIds"])
+	}
+	if recs := hist.All(); len(recs) != 1 || recs[0].ArrApp != "sonarr" || recs[0].ItemID != 7 || recs[0].ToTier != "cold" {
+		t.Fatalf("history = %+v, want the series' move recorded", recs)
+	}
+}
+
+func TestApply_UnknownArrAppFailsWithoutAMove(t *testing.T) {
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+	m := &Movers{History: hist, statFunc: func(string) (diskusage.Usage, error) {
+		return diskusage.Usage{TotalBytes: 100, FreeBytes: 100}, nil
+	}}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{{Item: model.MediaItem{ArrApp: "lidarr", ID: 1, Title: "Album", SizeBytes: 10}, ToPath: "/cold"}}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	if e := progress.Snapshot().Entries[0]; e.Status != StatusFailed || !strings.Contains(e.Err, `unknown arr app "lidarr"`) {
+		t.Fatalf("entry = %+v, want it failed as an unknown app", e)
+	}
+}
+
+// TestApply_UnobservableDestinationIsNeverWrittenBlind: if free space at
+// the destination can't be read just before the move, the move is refused
+// rather than sent on the plan's possibly stale numbers.
+func TestApply_UnobservableDestinationIsNeverWrittenBlind(t *testing.T) {
+	var mu sync.Mutex
+	var callOrder []string
+	srv := fakeRadarrMoveServer(t, &mu, &callOrder)
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+	m := &Movers{
+		Radarr:  arrapi.NewRadarrClient(srv.URL, "key"),
+		History: hist,
+		statFunc: func(string) (diskusage.Usage, error) {
+			return diskusage.Usage{}, errors.New("input/output error")
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Movie A", SizeBytes: 10}, ToPath: "/cold"}}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	if e := progress.Snapshot().Entries[0]; e.Status != StatusFailed || !strings.Contains(e.Err, "checking free space at /cold") {
+		t.Fatalf("entry = %+v, want it refused for unreadable free space", e)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(callOrder) != 0 {
+		t.Fatalf("move requests = %v, want none sent", callOrder)
+	}
+}
+
+// TestApply_SettleTimeoutNamesTheLastConfirmationFailure: when a landing
+// can never be confirmed, the failure an operator reads says why the last
+// confirmation attempt failed, not just that time ran out.
+func TestApply_SettleTimeoutNamesTheLastConfirmationFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		app     string
+		respond func(w http.ResponseWriter, r *http.Request) bool
+		wantErr string
+	}{
+		{
+			name: "radarr rescan fails",
+			app:  "radarr",
+			respond: func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/api/v3/command" {
+					http.Error(w, "busy", http.StatusServiceUnavailable)
+					return true
+				}
+				return false
+			},
+			wantErr: "rescanning movie",
+		},
+		{
+			name: "sonarr rescan fails",
+			app:  "sonarr",
+			respond: func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/api/v3/command" {
+					http.Error(w, "busy", http.StatusServiceUnavailable)
+					return true
+				}
+				return false
+			},
+			wantErr: "rescanning series",
+		},
+		{
+			name: "item lookup fails",
+			app:  "radarr",
+			respond: func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/api/v3/movie/1" {
+					http.Error(w, "boom", http.StatusInternalServerError)
+					return true
+				}
+				return false
+			},
+			wantErr: "reading item from Radarr after rescan",
+		},
+		{
+			name: "item deleted mid-move",
+			app:  "radarr",
+			respond: func(w http.ResponseWriter, r *http.Request) bool {
+				if r.URL.Path == "/api/v3/movie/1" {
+					http.NotFound(w, r)
+					return true
+				}
+				return false
+			},
+			wantErr: "Radarr no longer reports the item",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.respond(w, r) {
+					return
+				}
+				switch {
+				case r.Method == http.MethodPut:
+					w.WriteHeader(http.StatusOK)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+				case r.URL.Path == "/api/v3/command/1":
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			hist, err := history.Load(t.TempDir() + "/history.json")
+			if err != nil {
+				t.Fatalf("history.Load: %v", err)
+			}
+			m := &Movers{
+				Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+				Sonarr:              arrapi.NewSonarrClient(srv.URL, "key"),
+				History:             hist,
+				SettleCheckInterval: time.Millisecond,
+				SettleStableChecks:  1,
+				SettleMaxWait:       50 * time.Millisecond,
+				statFunc: func(string) (diskusage.Usage, error) {
+					return diskusage.Usage{TotalBytes: 100, UsedBytes: 10, FreeBytes: 90}, nil
+				},
+			}
+			plan := &planner.Plan{Entries: []planner.MoveEntry{{Item: model.MediaItem{ArrApp: tt.app, ID: 1, Title: "Item", SizeBytes: 10}, ToPath: "/cold"}}}
+
+			progress := m.Apply(plan, nil)
+			progress.Wait()
+
+			e := progress.Snapshot().Entries[0]
+			if e.Status != StatusFailed || !strings.Contains(e.Err, "last confirmation failed") || !strings.Contains(e.Err, tt.wantErr) {
+				t.Fatalf("entry = %+v, want a settle timeout naming %q", e, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestSettle_GrowthThatNeverConfirmsKeepsChecking: disk usage that grew
+// and then held still is only a hint. While Radarr still disagrees, the
+// stability count starts over rather than retrying on every tick, and the
+// move lands once Radarr catches up.
+func TestSettle_GrowthThatNeverConfirmsKeepsChecking(t *testing.T) {
+	var mu sync.Mutex
+	confirmations := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/command":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.URL.Path == "/api/v3/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "status": "completed"})
+		case r.URL.Path == "/api/v3/movie/1":
+			mu.Lock()
+			confirmations++
+			path := "/hot/Movie A" // Radarr hasn't caught up yet
+			if confirmations >= 3 {
+				path = "/cold/Movie A"
+			}
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "sizeOnDisk": 100, "path": path})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	hist, err := history.Load(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatalf("history.Load: %v", err)
+	}
+
+	// The first two readings are the pre-move check and the baseline; then
+	// usage grows by the item's size, wobbles once, and holds.
+	readings := []uint64{1000, 1000, 1050, 1100, 1100}
+	stats := 0
+	m := &Movers{
+		Radarr:              arrapi.NewRadarrClient(srv.URL, "key"),
+		History:             hist,
+		SettleCheckInterval: time.Millisecond,
+		SettleStableChecks:  2,
+		SettleMaxWait:       5 * time.Second,
+		statFunc: func(string) (diskusage.Usage, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			used := readings[min(stats, len(readings)-1)]
+			stats++
+			return diskusage.Usage{TotalBytes: 10_000, UsedBytes: used, FreeBytes: 10_000 - used}, nil
+		},
+	}
+	plan := &planner.Plan{Entries: []planner.MoveEntry{{Item: model.MediaItem{ArrApp: "radarr", ID: 1, Title: "Movie A", SizeBytes: 100}, ToPath: "/cold"}}}
+
+	progress := m.Apply(plan, nil)
+	progress.Wait()
+
+	if e := progress.Snapshot().Entries[0]; e.Status != StatusDone || e.LandedPath != "/cold/Movie A" {
+		t.Fatalf("entry = %+v, want it landed once Radarr agreed", e)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if confirmations != 3 {
+		t.Errorf("confirmations = %d, want 3 (two disagreements, then the landing)", confirmations)
+	}
+	// Two stable readings per attempt, after the growth settles at 1100:
+	// a confirmation that disagrees must wait out a fresh stable run
+	// before the next one, never retry on every reading.
+	if minStats := len(readings) + 2*2; stats < minStats {
+		t.Errorf("disk readings = %d, want at least %d - a disagreeing confirmation must reset the stability count", stats, minStats)
+	}
+}

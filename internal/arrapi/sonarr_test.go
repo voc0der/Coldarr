@@ -1,6 +1,7 @@
 package arrapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -131,5 +132,101 @@ func TestSonarrClient_GetSeriesSize_NotFound(t *testing.T) {
 	}
 	if found {
 		t.Fatal("expected found = false for a deleted series")
+	}
+}
+
+func TestSonarrClient_Ping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/system/status" || r.Header.Get("X-Api-Key") != "key" {
+			t.Errorf("unexpected request %s with key %q", r.URL.Path, r.Header.Get("X-Api-Key"))
+		}
+		_, _ = w.Write([]byte(`{"version": "4.0.1"}`))
+	}))
+	defer srv.Close()
+
+	version, err := NewSonarrClient(srv.URL, "key").Ping()
+	if err != nil || version != "4.0.1" {
+		t.Fatalf("Ping() = (%q, %v), want 4.0.1", version, err)
+	}
+}
+
+func TestSonarrClient_GetSeriesSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/series/7":
+			_, _ = w.Write([]byte(`{"id": 7, "path": "/cold/Show A", "statistics": {"sizeOnDisk": 1234}}`))
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	c := NewSonarrClient(srv.URL, "key")
+
+	size, path, found, err := c.GetSeriesSize(7)
+	if err != nil || !found || size != 1234 || path != "/cold/Show A" {
+		t.Fatalf("GetSeriesSize(7) = (%d, %q, %v, %v), want (1234, /cold/Show A, true, nil)", size, path, found, err)
+	}
+
+	// Anything but a 404 is a real failure, not "the series is gone".
+	if _, _, found, err := c.GetSeriesSize(8); err == nil || found {
+		t.Fatalf("GetSeriesSize on a 500 = (found %v, err %v), want an error", found, err)
+	}
+}
+
+func TestSonarrClient_MoveSeries(t *testing.T) {
+	var got struct {
+		SeriesIDs      []int  `json:"seriesIds"`
+		RootFolderPath string `json:"rootFolderPath"`
+		MoveFiles      bool   `json:"moveFiles"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v3/series/editor" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	if err := NewSonarrClient(srv.URL, "key").MoveSeries([]int{3, 4}, "/cold/tv"); err != nil {
+		t.Fatalf("MoveSeries: %v", err)
+	}
+	if len(got.SeriesIDs) != 2 || got.RootFolderPath != "/cold/tv" || !got.MoveFiles {
+		t.Fatalf("request body = %+v, want both series moved to /cold/tv with moveFiles", got)
+	}
+}
+
+func TestSonarrClient_ActiveMoveCommands(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id": 1, "name": "MoveSeries", "status": "started"}, {"id": 2, "name": "RefreshSeries", "status": "started"}, {"id": 3, "name": "MoveSeries", "status": "completed"}]`))
+	}))
+	defer srv.Close()
+
+	n, err := NewSonarrClient(srv.URL, "key").ActiveMoveCommands()
+	if err != nil || n != 1 {
+		t.Fatalf("ActiveMoveCommands() = (%d, %v), want 1", n, err)
+	}
+}
+
+func TestArrLookups_FailuresAreErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	radarr, sonarr := NewRadarrClient(srv.URL, "key"), NewSonarrClient(srv.URL, "key")
+
+	checks := map[string]func() error{
+		"radarr LinkTargets":          func() error { _, err := radarr.LinkTargets(); return err },
+		"radarr CutoffUnmetMovieIDs":  func() error { _, err := radarr.CutoffUnmetMovieIDs(); return err },
+		"radarr GetMovieSize":         func() error { _, _, _, err := radarr.GetMovieSize(1); return err },
+		"sonarr LinkTargets":          func() error { _, err := sonarr.LinkTargets(); return err },
+		"sonarr CutoffUnmetSeriesIDs": func() error { _, err := sonarr.CutoffUnmetSeriesIDs(); return err },
+		"sonarr BusySeriesIDs":        func() error { _, err := sonarr.BusySeriesIDs(); return err },
+	}
+	for name, check := range checks {
+		if err := check(); err == nil {
+			t.Errorf("%s: expected an error from a failing server", name)
+		}
 	}
 }

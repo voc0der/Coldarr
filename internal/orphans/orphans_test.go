@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/vocoder/coldarr/internal/arrapi"
@@ -349,4 +350,175 @@ func fakeJellyfinServer(t *testing.T, paths []string) *httptest.Server {
 			t.Errorf("unexpected jellyfin path %s", r.URL.Path)
 		}
 	}))
+}
+
+// TestRefresh_UnreachableServiceFailsTheScan: if any configured service
+// can't say what it tracks, everything it tracks would look orphaned - so
+// the scan fails and keeps the last good result instead of reporting that.
+func TestRefresh_UnreachableServiceFailsTheScan(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failing.Close()
+
+	tierDir := t.TempDir()
+	mustMkdir(t, filepath.Join(tierDir, "Show A"))
+	tiers := []model.Tier{{Name: "cold", Role: model.RoleCold, Paths: []string{tierDir}, Media: []model.MediaType{model.TV}}}
+
+	tests := []struct {
+		name    string
+		sonarr  *arrapi.SonarrClient
+		jf      *jellyfin.Client
+		wantErr string
+	}{
+		{name: "sonarr", sonarr: arrapi.NewSonarrClient(failing.URL, "key"), wantErr: "fetching sonarr series"},
+		{name: "jellyfin", jf: jellyfin.NewClient(failing.URL, "key"), wantErr: "fetching jellyfin library item paths"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := Load(t.TempDir() + "/orphans.json")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			err = s.Refresh(nil, tt.sonarr, tt.jf, tiers)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Refresh error = %v, want one containing %q", err, tt.wantErr)
+			}
+			if snap := s.Get(); !snap.ScannedAt.IsZero() || snap.Candidates != nil {
+				t.Errorf("a failed Refresh must not update the stored snapshot, got %+v", snap)
+			}
+		})
+	}
+}
+
+// TestRefresh_IgnoresLooseFiles: only folders are items. A stray file
+// sitting directly on a tier path is nobody's item folder, so it's never
+// reported as one.
+func TestRefresh_IgnoresLooseFiles(t *testing.T) {
+	tierDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(tierDir, "notes.txt"), 10)
+	mustMkdir(t, filepath.Join(tierDir, "Orphan"))
+	mustWriteFile(t, filepath.Join(tierDir, "Orphan", "video.mkv"), 100)
+
+	s, err := Load(t.TempDir() + "/orphans.json")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tiers := []model.Tier{{Name: "cold", Role: model.RoleCold, Paths: []string{tierDir}, Media: []model.MediaType{model.Movie}}}
+	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	snap := s.Get()
+	if len(snap.Candidates) != 1 || snap.Candidates[0].Path != filepath.Join(tierDir, "Orphan") || snap.Candidates[0].SizeBytes != 100 {
+		t.Fatalf("candidates = %+v, want only the Orphan folder (100 bytes)", snap.Candidates)
+	}
+}
+
+// TestRefresh_UnreadableFolderFailsTheScan pins the all-or-nothing rule
+// for the walk itself: a folder that can't be read partway through fails
+// the whole scan, rather than publishing a result with a hole in it or a
+// size that's quietly wrong.
+func TestRefresh_UnreadableFolderFailsTheScan(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root - permission bits don't restrict reads")
+	}
+
+	tests := []struct {
+		name       string
+		unreadable string
+		wantErr    string
+	}{
+		// Not tracked by anything, so it's a candidate whose size the scan
+		// can't measure.
+		{name: "orphan folder", unreadable: "Orphan", wantErr: "sizing"},
+		// An organizational folder above a tracked movie, so the scan has
+		// to descend through it.
+		{name: "organizational folder", unreadable: "Movies", wantErr: "reading"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tierDir := t.TempDir()
+			mustMkdir(t, filepath.Join(tierDir, "Movies", "Movie A"))
+			mustMkdir(t, filepath.Join(tierDir, "Orphan"))
+			locked := filepath.Join(tierDir, tt.unreadable)
+			if err := os.Chmod(locked, 0o000); err != nil {
+				t.Fatalf("Chmod: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o750) }) //nolint:gosec // restoring so t.TempDir() cleanup can remove it
+
+			radarr := fakeRadarrServer(t, map[int]string{1: filepath.Join(tierDir, "Movies", "Movie A")})
+			defer radarr.Close()
+
+			s, err := Load(t.TempDir() + "/orphans.json")
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			tiers := []model.Tier{{Name: "cold", Role: model.RoleCold, Paths: []string{tierDir}, Media: []model.MediaType{model.Movie}}}
+			err = s.Refresh(arrapi.NewRadarrClient(radarr.URL, "key"), nil, nil, tiers)
+			if err == nil || !strings.Contains(err.Error(), "scanning "+tierDir) || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Refresh error = %v, want a scan failure containing %q", err, tt.wantErr)
+			}
+			if !s.Get().ScannedAt.IsZero() {
+				t.Error("a failed Refresh must not update the stored snapshot")
+			}
+		})
+	}
+}
+
+// TestLoad_EmptyOrUnreadableCache: an empty file is a scan that was never
+// written, but a corrupt or unreadable one is an error.
+func TestLoad_EmptyOrUnreadableCache(t *testing.T) {
+	dir := t.TempDir()
+
+	empty := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load(empty)
+	if err != nil {
+		t.Fatalf("Load(empty file): %v", err)
+	}
+	if !s.Get().ScannedAt.IsZero() {
+		t.Error("an empty cache file should load as never scanned")
+	}
+
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(corrupt); err == nil || !strings.Contains(err.Error(), "parsing orphan scan cache") {
+		t.Errorf("Load(corrupt) error = %v, want a parse error", err)
+	}
+
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "reading orphan scan cache") {
+		t.Errorf("Load(directory) error = %v, want a read error", err)
+	}
+}
+
+func TestRefresh_ReportsAFailedSave(t *testing.T) {
+	tests := []struct {
+		name      string
+		breakSave func(path string) error
+		wantErr   string
+	}{
+		{name: "directory cannot be created", breakSave: func(path string) error { return os.WriteFile(filepath.Dir(path), nil, 0o600) }, wantErr: "creating orphan scan cache directory"},
+		{name: "temp file cannot be written", breakSave: func(path string) error { return os.MkdirAll(path+".tmp", 0o750) }, wantErr: "writing"},
+		{name: "file replaced by a directory", breakSave: func(path string) error { return os.MkdirAll(path, 0o750) }, wantErr: "saving"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state", "orphans.json")
+			s, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := tt.breakSave(path); err != nil {
+				t.Fatalf("breakSave: %v", err)
+			}
+			if err := s.Refresh(nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Refresh error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
 }

@@ -262,3 +262,41 @@ func TestEvaluate_FavoriteStillProtectedByStricterStates(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluate_LowPriorityQualityProfilePushesTowardCold: an item on a
+// profile the operator marked low-priority scores higher - and is named
+// as such in the reasons - than an otherwise identical item.
+func TestEvaluate_LowPriorityQualityProfilePushesTowardCold(t *testing.T) {
+	now := time.Now()
+	item := model.MediaItem{
+		Type:      model.Movie,
+		Added:     now.AddDate(0, -3, 0),
+		SizeBytes: 2 << 30,
+		Monitored: true,
+		HasFile:   true,
+	}
+	base := Evaluate(item, basePolicy(), now)
+
+	item.QualityProfileName = "SD"
+	lowPriority := Evaluate(item, basePolicy(), now)
+	if lowPriority.Score <= base.Score {
+		t.Fatalf("score on a low-priority profile = %.1f, want above the %.1f it scores otherwise", lowPriority.Score, base.Score)
+	}
+	found := false
+	for _, r := range lowPriority.Reasons {
+		if r == `low-priority quality profile "SD"` {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("reasons = %v, want the low-priority profile named", lowPriority.Reasons)
+	}
+}
+
+func TestEvaluate_ProtectedTagWinsOverAge(t *testing.T) {
+	now := time.Now()
+	item := model.MediaItem{Type: model.Movie, Tags: []string{"other", "keep-hot"}, Added: now.AddDate(-5, 0, 0), HasFile: true}
+	if eval := Evaluate(item, basePolicy(), now); eval.Decision == Cold {
+		t.Fatalf("an item tagged keep-hot was scored Cold: %+v", eval)
+	}
+}

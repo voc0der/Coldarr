@@ -199,3 +199,77 @@ func TestCheckPath_OKWithoutMountRequirement(t *testing.T) {
 		t.Fatalf("CheckPath: %v", err)
 	}
 }
+
+// TestStat_ReportsTheFilesystemBehindAPath sanity-checks Stat against the
+// real filesystem under the test's temp dir: whatever the machine, used and
+// free fit inside the total, and UsedPercent is the df-style figure the
+// planner packs against, not used/total.
+func TestStat_ReportsTheFilesystemBehindAPath(t *testing.T) {
+	dir := t.TempDir()
+	u, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if u.Path != dir {
+		t.Errorf("Path = %q, want %q", u.Path, dir)
+	}
+	if u.TotalBytes == 0 {
+		t.Fatal("TotalBytes = 0, want the filesystem's size")
+	}
+	if u.UsedBytes > u.TotalBytes || u.FreeBytes > u.TotalBytes {
+		t.Errorf("used %d / free %d exceed total %d", u.UsedBytes, u.FreeBytes, u.TotalBytes)
+	}
+	if want := PercentUsed(u.UsedBytes, u.FreeBytes); u.UsedPercent != want {
+		t.Errorf("UsedPercent = %v, want %v (used / (used + available))", u.UsedPercent, want)
+	}
+}
+
+func TestStat_MissingPath(t *testing.T) {
+	if _, err := Stat(filepath.Join(t.TempDir(), "unplugged")); err == nil || !strings.Contains(err.Error(), "statfs") {
+		t.Fatalf("Stat(missing) error = %v, want a statfs error", err)
+	}
+}
+
+// TestCheckPath_RequireMount_FailsClosedOnAnUnusableMountTable: when the
+// mount table can't settle where a path lives, the answer is "refuse",
+// never "assume it's fine".
+func TestCheckPath_RequireMount_FailsClosedOnAnUnusableMountTable(t *testing.T) {
+	t.Run("mount table missing", func(t *testing.T) {
+		drive := driveDir(t)
+		old := mountInfoPath
+		mountInfoPath = filepath.Join(t.TempDir(), "no-mountinfo")
+		t.Cleanup(func() { mountInfoPath = old })
+
+		err := CheckPath(drive, true)
+		if err == nil || !strings.Contains(err.Error(), "reading the mount table") {
+			t.Fatalf("CheckPath error = %v, want a refusal for an unreadable mount table", err)
+		}
+	})
+
+	t.Run("no root filesystem listed", func(t *testing.T) {
+		drive := driveDir(t)
+		withMountInfo(t, "30 1 8:1 / /boot rw,relatime - ext4 /dev/sda1 rw")
+
+		err := CheckPath(drive, true)
+		if err == nil || !strings.Contains(err.Error(), "could not find which filesystem") {
+			t.Fatalf("CheckPath error = %v, want a refusal when the path's filesystem can't be found", err)
+		}
+	})
+}
+
+// TestCheckPath_PathBeneathAFile: a tier path configured under a regular
+// file is a configuration mistake, reported as such - not dressed up as a
+// drive that "does not exist" and might just need mounting.
+func TestCheckPath_PathBeneathAFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "disk.img")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	err := CheckPath(filepath.Join(file, "movies"), false)
+	if err == nil || !strings.Contains(err.Error(), "checking path") {
+		t.Fatalf("CheckPath error = %v, want a checking-path error", err)
+	}
+	if strings.Contains(err.Error(), "is the drive mounted") {
+		t.Errorf("CheckPath error = %v, should not suggest a missing drive", err)
+	}
+}
