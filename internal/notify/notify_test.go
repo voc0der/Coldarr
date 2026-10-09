@@ -257,3 +257,13 @@ func TestNotifier_Summary_SendsLiteralBreakAsJSON(t *testing.T) {
 		t.Fatal("Summary() did not send a notification")
 	}
 }
+
+func TestTest_UnreachableEndpointIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+
+	if err := Test(url, "", false); err == nil || !strings.Contains(err.Error(), "POST "+url) {
+		t.Fatalf("Test error = %v, want the failed POST named", err)
+	}
+}
