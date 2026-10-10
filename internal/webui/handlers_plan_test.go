@@ -306,6 +306,9 @@ func TestApplyStart_RunsThePlanInTheBackground(t *testing.T) {
 	if status.Running || status.MovedCount != 1 || status.FailedCount != 0 || status.Finished == "" {
 		t.Fatalf("status = %+v, want a finished run with one move", status)
 	}
+	if status.Progress.Percent != 100 || status.Progress.Resolved != 1 || status.Progress.Total != 1 || status.Progress.Remaining != "Moves finished" {
+		t.Fatalf("finished progress missing from live status: %+v", status.Progress)
+	}
 
 	partial := httptest.NewRecorder()
 	srv.handleApplyStatusPartial(partial, httptest.NewRequest(http.MethodGet, "/plan/apply/status/partial", nil))
