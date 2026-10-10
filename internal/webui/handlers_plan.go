@@ -306,6 +306,7 @@ type applyStatusData struct {
 	MovedCount      int
 	FailedCount     int
 	Entries         []applyStatusEntryView
+	Progress        applyProgressView
 }
 
 // finishedResultTTL bounds how long a completed apply's result stays
@@ -332,7 +333,7 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	// Running tracks the whole run, not just the moves - see applyRun.active.
 	// Finished stays keyed on the moves themselves, since that is the time
 	// the table below is reporting.
-	data := applyStatusData{Running: run.active.Load()}
+	data := applyStatusData{Running: run.active.Load(), Progress: buildApplyProgress(snap, time.Now())}
 	if snap.Done {
 		data.Finished = snap.Finished.Format("2006-01-02 15:04")
 		data.SyncingJellyfin = data.Running

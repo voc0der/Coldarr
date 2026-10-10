@@ -115,6 +115,11 @@ type EntryProgress struct {
 	Entry  planner.MoveEntry
 	Status MoveStatus
 	Err    string
+	// Timing includes the command, settling, and reporting, so estimates
+	// reflect how long each move actually occupies its destination queue.
+	Started  time.Time
+	Finished time.Time
+	volume   string
 	// LandedPath is the item's own folder after the move, as Radarr/Sonarr
 	// reports it once the transfer is confirmed landed - not Entry.ToPath,
 	// which is only the destination tier root every item in that tier
@@ -174,10 +179,10 @@ type Progress struct {
 	doneCh   chan struct{}
 }
 
-func newProgress(plan *planner.Plan) *Progress {
+func newProgress(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
 	entries := make([]EntryProgress, len(plan.Entries))
 	for i, e := range plan.Entries {
-		entries[i] = EntryProgress{Entry: e, Status: StatusPending}
+		entries[i] = EntryProgress{Entry: e, Status: StatusPending, volume: volumeKey(e.ToPath, volumeOf)}
 	}
 	return &Progress{started: time.Now(), entries: entries, doneCh: make(chan struct{})}
 }
@@ -186,6 +191,12 @@ func (p *Progress) setStatus(i int, status MoveStatus, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[i].Status = status
+	switch status {
+	case StatusMoving:
+		p.entries[i].Started = time.Now()
+	case StatusDone, StatusFailed:
+		p.entries[i].Finished = time.Now()
+	}
 	if err != nil {
 		p.entries[i].Err = err.Error()
 	}
@@ -247,7 +258,7 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 // Entries blocked by an unmet prerequisite are marked failed explicitly so
 // a completed Progress never leaves work silently pending.
 func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
-	progress := newProgress(plan)
+	progress := newProgress(plan, volumeOf)
 
 	byPhase := map[int][]int{}
 	for i, e := range plan.Entries {
