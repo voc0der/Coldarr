@@ -56,4 +56,4 @@ Review the [contributing guide](https://voc0der.github.io/Coldarr/development/co
 
 ## License
 
-[MIT](LICENSE.md). Radarr, Sonarr, and Jellyfin logos in the web interface come from [selfh.st/icons](https://github.com/selfhst/icons), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+[MIT](LICENSE.md). Radarr, Sonarr, Lidarr, Jellyfin, and qBittorrent logos in the web interface come from [selfh.st/icons](https://github.com/selfhst/icons), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

@@ -164,12 +164,12 @@ func TestConnectionHandlers_RejectUnknownApps(t *testing.T) {
 		"external-url": srv.handleConnectionExternalURLSave,
 		"delete":       srv.handleConnectionDelete,
 	} {
-		rec := serveForm(handler, "/settings/connections/lidarr", url.Values{"url": {"http://lidarr:8686"}, "api_key": {"k"}}, "app", "lidarr")
+		rec := serveForm(handler, "/settings/connections/plex", url.Values{"url": {"http://plex:32400"}, "api_key": {"k"}}, "app", "plex")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s for an unknown app = %d, want 404", name, rec.Code)
 		}
 	}
-	if _, ok := srv.connStore.Get("lidarr"); ok {
+	if _, ok := srv.connStore.Get("plex"); ok {
 		t.Error("nothing should be stored for an unknown app")
 	}
 }
@@ -237,6 +237,123 @@ func TestConnectionSave_KeepsTheExternalURL(t *testing.T) {
 		}
 		if !strings.Contains(body, `id="ext-radarr" name="external_url" placeholder="https://radarr.mydomain.com" value="https://radarr.example.com"`) {
 			t.Errorf("the page after saving %v should still show the External URL:\n%s", form, body)
+		}
+	}
+}
+
+// TestConnectionSave_Qbittorrent: qBittorrent needs only a URL - its WebUI
+// can skip authentication - and its login follows the API key's rule that
+// a blank secret keeps the saved one, except that clearing the username
+// drops the password with it.
+func TestConnectionSave_Qbittorrent(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	save := func(form url.Values) string {
+		t.Helper()
+		return serveForm(srv.handleConnectionSave, "/settings/connections/qbittorrent", form, "app", "qbittorrent").Body.String()
+	}
+
+	if body := save(url.Values{"url": {"http://qbittorrent:8080"}}); !strings.Contains(body, "qbittorrent connection saved.") {
+		t.Fatalf("a URL alone should save:\n%s", body)
+	}
+	if got, source := srv.connStore.Effective("qbittorrent"); source != secrets.SourceStored || !got.Enabled {
+		t.Fatalf("Effective(qbittorrent) = (%+v, %q), want a stored, enabled connection", got, source)
+	}
+
+	save(url.Values{"url": {"http://qbittorrent:8080"}, "username": {" admin "}, "password": {"pa ss"}})
+	if got, _ := srv.connStore.Get("qbittorrent"); got.Username != "admin" || got.Password != "pa ss" {
+		t.Fatalf("stored = %+v, want the trimmed username and the password exactly as typed", got)
+	}
+
+	body := save(url.Values{"url": {"http://qbittorrent:8080"}, "username": {"admin"}, "api_key": {"k"}})
+	if got, _ := srv.connStore.Get("qbittorrent"); got.Password != "pa ss" || got.APIKey != "k" {
+		t.Fatalf("stored = %+v, want the password kept and the key added", got)
+	}
+	if strings.Contains(body, "pa ss") || !strings.Contains(body, `value="admin"`) {
+		t.Error("the username shows back on the form; the password never does")
+	}
+
+	save(url.Values{"url": {"http://qbittorrent:8080"}, "username": {""}, "clear_api_key": {"on"}})
+	if got, _ := srv.connStore.Get("qbittorrent"); got.Username != "" || got.Password != "" || got.APIKey != "" {
+		t.Fatalf("stored = %+v, want no login and no key left behind", got)
+	}
+}
+
+// TestConnectionTest_QbittorrentUsesTheSavedLogin: testing without retyping
+// the password signs in with the saved one, while a username field posted
+// blank tests without signing in at all.
+func TestConnectionTest_QbittorrentUsesTheSavedLogin(t *testing.T) {
+	var logins []string
+	var mu sync.Mutex
+	qb := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_ = r.ParseForm()
+			mu.Lock()
+			logins = append(logins, r.Form.Get("username")+":"+r.Form.Get("password"))
+			mu.Unlock()
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: "s", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode}) //nolint:gosec // qBittorrent over plain HTTP sets no Secure flag, and this fakes it
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/app/version":
+			if _, err := r.Cookie("SID"); err != nil {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+			_, _ = w.Write([]byte("v5.0.4"))
+		}
+	}))
+	t.Cleanup(qb.Close)
+
+	srv := newSettingsTestServer(t)
+	test := func(form url.Values) string {
+		t.Helper()
+		return serveForm(srv.handleConnectionTest, "/settings/connections/qbittorrent/test", form, "app", "qbittorrent").Body.String()
+	}
+	if body := test(nil); !strings.Contains(body, "URL is required to test") {
+		t.Fatalf("nothing typed or saved:\n%s", body)
+	}
+
+	if err := srv.connStore.Set("qbittorrent", secrets.Connection{URL: qb.URL, Username: "admin", Password: "saved"}); err != nil {
+		t.Fatal(err)
+	}
+	if body := test(url.Values{"url": {qb.URL}, "username": {"admin"}, "password": {""}}); !strings.Contains(body, "Connected - version v5.0.4") {
+		t.Fatalf("expected the saved password used:\n%s", body)
+	}
+	if body := test(nil); !strings.Contains(body, "Connected") {
+		t.Fatalf("an env-locked style test (no form) should use the saved login:\n%s", body)
+	}
+	if body := test(url.Values{"url": {qb.URL}, "username": {""}}); !strings.Contains(body, "needs a login") {
+		t.Fatalf("a blank username tests without signing in:\n%s", body)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(logins, ",") != "admin:saved,admin:saved" {
+		t.Errorf("logins = %v, want the saved login used twice", logins)
+	}
+}
+
+// TestConnectionsPage_PerAppFields: only qBittorrent asks for a login, and
+// only the apps with Links-column deep links offer an External URL.
+func TestConnectionsPage_PerAppFields(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.handleConnectionsPage(rec, httptest.NewRequest(http.MethodGet, "/settings/connections", nil))
+	body := rec.Body.String()
+
+	if strings.Count(body, `name="username"`) != 1 || !strings.Contains(body, `id="user-qbittorrent"`) {
+		t.Error("expected exactly one login form, qBittorrent's")
+	}
+	for _, app := range []string{"radarr", "sonarr", "jellyfin"} {
+		if !strings.Contains(body, `id="ext-`+app+`"`) {
+			t.Errorf("%s should offer an External URL", app)
+		}
+	}
+	for _, app := range []string{"lidarr", "qbittorrent"} {
+		if strings.Contains(body, `id="ext-`+app+`"`) {
+			t.Errorf("%s has no links to build, so no External URL", app)
+		}
+		if !strings.Contains(body, `placeholder="http://`+app+`:`+defaultPorts[app]+`"`) {
+			t.Errorf("%s should offer its form with the default-port placeholder", app)
 		}
 	}
 }

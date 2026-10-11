@@ -50,11 +50,15 @@ type dashboardData struct {
 	RadarrConfigured   bool
 	SonarrConfigured   bool
 	JellyfinConfigured bool
-	Rows               []tierRow
-	TotalItems         int
-	ProtectedCount     int
-	HotCount           int
-	ColdCount          int
+	// Lidarr and qBittorrent are optional extras for download tiers, so
+	// unlike the three above they're only listed once configured.
+	LidarrConfigured      bool
+	QbittorrentConfigured bool
+	Rows                  []tierRow
+	TotalItems            int
+	ProtectedCount        int
+	HotCount              int
+	ColdCount             int
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +74,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data.RadarrConfigured = eng.Radarr != nil
 	data.SonarrConfigured = eng.Sonarr != nil
 	data.JellyfinConfigured = eng.JellyfinClient() != nil
+	data.LidarrConfigured = eng.Lidarr != nil
+	data.QbittorrentConfigured = eng.Qbit != nil
 
 	inv, err := eng.BuildInventory(time.Now())
 	if err != nil {

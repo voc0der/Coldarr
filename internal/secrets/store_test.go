@@ -185,6 +185,73 @@ func TestEffective_StoredJellyfinKeepsItsEnabledFlag(t *testing.T) {
 	}
 }
 
+// TestEffective_QbittorrentNeedsOnlyAURL: qBittorrent's WebUI can skip
+// authentication for trusted addresses, so a URL alone is a working
+// connection - unlike every other app, which needs its API key too.
+func TestEffective_QbittorrentNeedsOnlyAURL(t *testing.T) {
+	s, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+	if err := s.Set("qbittorrent", Connection{URL: "http://qbittorrent:8080"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Set("lidarr", Connection{URL: "http://lidarr:8686"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if conn, source := s.Effective("qbittorrent"); source != SourceStored || !conn.Enabled {
+		t.Errorf("Effective(qbittorrent) = (%+v, %q), want a stored, enabled connection from the URL alone", conn, source)
+	}
+	if _, source := s.Effective("lidarr"); source != SourceNone {
+		t.Errorf("Effective(lidarr) source = %q, want %q without an API key", source, SourceNone)
+	}
+}
+
+// TestEffective_QbittorrentLoginEnvVars: the login has env overrides of its
+// own, and any one of them makes the connection environment-managed.
+func TestEffective_QbittorrentLoginEnvVars(t *testing.T) {
+	s, err := LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+	if err := s.Set("qbittorrent", Connection{URL: "http://stored:8080", Username: "stored-user", Password: "stored-pass"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	t.Setenv("QBITTORRENT_PASSWORD", "env-pass")
+	conn, source := s.Effective("qbittorrent")
+	if source != SourceEnv || conn.URL != "http://stored:8080" || conn.Username != "stored-user" || conn.Password != "env-pass" {
+		t.Errorf("password from env = (%+v, %q), want the env password over the stored URL and username", conn, source)
+	}
+
+	t.Setenv("QBITTORRENT_USERNAME", "env-user")
+	t.Setenv("QBITTORRENT_URL", "http://env:8080")
+	t.Setenv("QBITTORRENT_API_KEY", "env-key")
+	conn, _ = s.Effective("qbittorrent")
+	if conn.URL != "http://env:8080" || conn.Username != "env-user" || conn.APIKey != "env-key" {
+		t.Errorf("full env = %+v, want every env value to win", conn)
+	}
+
+	// The login variables mean nothing for an API-key app.
+	t.Setenv("RADARR_USERNAME", "ignored")
+	if _, source := s.Effective("radarr"); source != SourceNone {
+		t.Errorf("RADARR_USERNAME made radarr %q, want it ignored", source)
+	}
+}
+
+func TestEnvVars(t *testing.T) {
+	for app, want := range map[string]string{
+		"radarr":      "RADARR_URL RADARR_API_KEY",
+		"qbittorrent": "QBITTORRENT_URL QBITTORRENT_API_KEY QBITTORRENT_USERNAME QBITTORRENT_PASSWORD",
+		"jellyfin":    "JELLYFIN_URL JELLYFIN_API_KEY JELLYFIN_ENABLED",
+	} {
+		if got := strings.Join(EnvVars(app), " "); got != want {
+			t.Errorf("EnvVars(%q) = %q, want %q", app, got, want)
+		}
+	}
+}
+
 // TestLoadOrCreate_ReplacedKeyIsAnError: the encryption key lives beside
 // the ciphertext, and a key that was replaced or lost makes every stored
 // connection unreadable. That has to stop startup with an error naming the

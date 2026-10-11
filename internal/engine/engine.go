@@ -17,6 +17,7 @@ import (
 
 	"github.com/vocoder/coldarr/internal/arrapi"
 	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/conncheck"
 	"github.com/vocoder/coldarr/internal/cutoffcache"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/history"
@@ -24,14 +25,20 @@ import (
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/planner"
+	"github.com/vocoder/coldarr/internal/qbit"
 	"github.com/vocoder/coldarr/internal/scoring"
 	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 type Engine struct {
-	Cfg     *config.Config
-	Radarr  *arrapi.RadarrClient
-	Sonarr  *arrapi.SonarrClient
+	Cfg    *config.Config
+	Radarr *arrapi.RadarrClient
+	Sonarr *arrapi.SonarrClient
+	// Lidarr and Qbit are only used for download tiers: Coldarr doesn't
+	// tier music libraries, and asks Lidarr only whether it has imported a
+	// music download. Either is nil when not configured.
+	Lidarr  *arrapi.LidarrClient
+	Qbit    *qbit.Client
 	History *history.Store
 	// CutoffCache holds which items have an unmet quality-profile cutoff
 	// (see internal/cutoffcache) - read in BuildInventory, but never
@@ -60,6 +67,12 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 	}
 	if conn, source := connStore.Effective("sonarr"); source != secrets.SourceNone {
 		e.Sonarr = arrapi.NewSonarrClient(conn.URL, conn.APIKey)
+	}
+	if conn, source := connStore.Effective("lidarr"); source != secrets.SourceNone {
+		e.Lidarr = arrapi.NewLidarrClient(conn.URL, conn.APIKey)
+	}
+	if conn, source := connStore.Effective("qbittorrent"); source != secrets.SourceNone {
+		e.Qbit = conncheck.QbitClient(conn)
 	}
 	if conn, source := connStore.Effective("jellyfin"); source != secrets.SourceNone && conn.Enabled {
 		e.jellyfinConn = conn

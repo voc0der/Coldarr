@@ -1,6 +1,7 @@
-// Package secrets stores Radarr/Sonarr/Jellyfin connection info (URL +
-// API key) encrypted at rest, separate from the human-edited coldarr.yaml.
-// It also resolves the env-var override layer: a container env var like
+// Package secrets stores connection info for Radarr, Sonarr, Lidarr,
+// Jellyfin and qBittorrent (a URL plus an API key, or qBittorrent's login)
+// encrypted at rest, separate from the human-edited coldarr.yaml. It also
+// resolves the env-var override layer: a container env var like
 // RADARR_URL/RADARR_API_KEY always wins over whatever is stored, so a
 // deployment can be configured entirely via Docker env vars, entirely via
 // the web GUI, or a mix of both per app.
@@ -35,12 +36,18 @@ const (
 
 // Connection is one app's connection info. Enabled is only meaningful for
 // apps that can be toggled off independent of having credentials on file
-// (currently just Jellyfin) - Radarr/Sonarr are considered enabled
-// whenever both URL and APIKey are set.
+// (currently just Jellyfin) - every other app is considered enabled
+// whenever it's configured (see configured).
 type Connection struct {
-	URL     string `json:"url"`
-	APIKey  string `json:"api_key"`
-	Enabled bool   `json:"enabled"`
+	URL    string `json:"url"`
+	APIKey string `json:"api_key"`
+	// Username and Password are qBittorrent's WebUI login. Its API key
+	// (qBittorrent 5.2+) goes in APIKey like any other app's; all three
+	// are optional there, since its WebUI can skip authentication for
+	// trusted addresses.
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Enabled  bool   `json:"enabled"`
 	// ExternalURL, if set, replaces URL as the prefix used to build
 	// clickable links into this app's web UI from the Plan/History pages
 	// (the "Links" column) - e.g. a public hostname a reverse proxy
@@ -50,7 +57,16 @@ type Connection struct {
 	ExternalURL string `json:"external_url"`
 }
 
-func (c Connection) configured() bool {
+// LoginApp is the one app that signs in with a username and password, and
+// can be reachable with no credentials at all.
+const LoginApp = "qbittorrent"
+
+// configured reports whether conn holds enough to reach app: a URL and an
+// API key for the *arr apps and Jellyfin, but only a URL for qBittorrent.
+func (c Connection) configured(app string) bool {
+	if app == LoginApp {
+		return c.URL != ""
+	}
 	return c.URL != "" && c.APIKey != ""
 }
 
@@ -254,20 +270,40 @@ func (s *Store) persistLocked() error {
 	return nil
 }
 
+// EnvVars returns the environment variables that override app's stored
+// connection, in the order the Connections page lists them: <APP>_URL and
+// <APP>_API_KEY for every app, plus <APP>_USERNAME/<APP>_PASSWORD for
+// qBittorrent and <APP>_ENABLED for Jellyfin.
+func EnvVars(app string) []string {
+	prefix := strings.ToUpper(app) + "_"
+	vars := []string{prefix + "URL", prefix + "API_KEY"}
+	switch app {
+	case LoginApp:
+		vars = append(vars, prefix+"USERNAME", prefix+"PASSWORD")
+	case "jellyfin":
+		vars = append(vars, prefix+"ENABLED")
+	}
+	return vars
+}
+
 // Effective resolves the connection Coldarr should actually use for app:
-// env vars named <APP>_URL / <APP>_API_KEY (and, for jellyfin,
-// <APP>_ENABLED) always take precedence over whatever is stored. source
-// tells the caller (the GUI) whether the effective value came from the
-// environment, the encrypted store, or neither.
+// the env vars named by EnvVars always take precedence over whatever is
+// stored. source tells the caller (the GUI) whether the effective value
+// came from the environment, the encrypted store, or neither.
 func (s *Store) Effective(app string) (conn Connection, source string) {
 	stored, ok := s.Get(app)
 
 	prefix := strings.ToUpper(app) + "_"
 	envURL := os.Getenv(prefix + "URL")
 	envKey := os.Getenv(prefix + "API_KEY")
+	var envUser, envPass string
+	if app == LoginApp {
+		envUser = os.Getenv(prefix + "USERNAME")
+		envPass = os.Getenv(prefix + "PASSWORD")
+	}
 
-	if envURL == "" && envKey == "" {
-		if !ok || !stored.configured() {
+	if envURL == "" && envKey == "" && envUser == "" && envPass == "" {
+		if !ok || !stored.configured(app) {
 			return Connection{}, SourceNone
 		}
 		if app != "jellyfin" {
@@ -282,6 +318,12 @@ func (s *Store) Effective(app string) (conn Connection, source string) {
 	}
 	if envKey != "" {
 		conn.APIKey = envKey
+	}
+	if envUser != "" {
+		conn.Username = envUser
+	}
+	if envPass != "" {
+		conn.Password = envPass
 	}
 	conn.Enabled = true
 	if v := os.Getenv(prefix + "ENABLED"); v != "" {

@@ -1,6 +1,7 @@
 // Package arrapi is a small client for the Radarr and Sonarr (Servarr) v3
 // REST APIs - just enough to inventory library items, check for active
-// downloads, and perform bulk root-folder moves.
+// downloads, and perform bulk root-folder moves - plus Lidarr's v1 API, which
+// Coldarr only reads, to learn whether a music download has been imported.
 package arrapi
 
 import (
@@ -19,6 +20,9 @@ type client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
+	// api is the versioned API root - "/api/v3" for Radarr and Sonarr,
+	// "/api/v1" for Lidarr - for the endpoints every Servarr app shares.
+	api string
 }
 
 func newClient(baseURL, apiKey string) *client {
@@ -26,6 +30,7 @@ func newClient(baseURL, apiKey string) *client {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		http:    &http.Client{Timeout: 30 * time.Second},
+		api:     "/api/v3",
 	}
 }
 
@@ -135,7 +140,7 @@ type commandResource struct {
 // merely delays an apply; a false negative overlaps writes).
 func (c *client) activeMoveCommands() (int, error) {
 	var cmds []commandResource
-	if err := c.get("/api/v3/command", nil, &cmds); err != nil {
+	if err := c.get(c.api+"/command", nil, &cmds); err != nil {
 		return 0, err
 	}
 	n := 0
@@ -159,13 +164,13 @@ func (c *client) activeMoveCommands() (int, error) {
 // shape, since it varies per command.
 func (c *client) runCommand(body interface{}) error {
 	var cmd commandResource
-	if err := c.post("/api/v3/command", body, &cmd); err != nil {
+	if err := c.post(c.api+"/command", body, &cmd); err != nil {
 		return err
 	}
 
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		if err := c.get(fmt.Sprintf("/api/v3/command/%d", cmd.ID), nil, &cmd); err != nil {
+		if err := c.get(fmt.Sprintf("%s/command/%d", c.api, cmd.ID), nil, &cmd); err != nil {
 			return err
 		}
 		switch cmd.Status {
@@ -192,12 +197,12 @@ type systemStatusResource struct {
 	Version string `json:"version"`
 }
 
-// ping hits the Servarr system status endpoint, common to both Radarr and
-// Sonarr, and returns the reported version - used to confirm a connection
-// actually works before saving it.
+// ping hits the Servarr system status endpoint, common to Radarr, Sonarr
+// and Lidarr, and returns the reported version - used to confirm a
+// connection actually works before saving it.
 func (c *client) ping() (version string, err error) {
 	var status systemStatusResource
-	if err := c.get("/api/v3/system/status", nil, &status); err != nil {
+	if err := c.get(c.api+"/system/status", nil, &status); err != nil {
 		return "", err
 	}
 	return status.Version, nil
