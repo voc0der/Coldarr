@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vocoder/coldarr/internal/connectionhttp"
 )
 
 // Auth is how Coldarr signs in to qBittorrent. An API key wins when set;
@@ -56,7 +58,7 @@ func NewClient(baseURL string, auth Auth) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		auth:    auth,
-		http:    &http.Client{Timeout: 30 * time.Second, Jar: jar},
+		http:    &http.Client{Timeout: 30 * time.Second, Jar: jar, Transport: connectionhttp.Transport},
 		useKey:  auth.APIKey != "",
 	}
 }

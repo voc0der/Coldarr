@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vocoder/coldarr/internal/connectionhttp"
 )
 
 type Client struct {
@@ -81,7 +83,7 @@ func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:             strings.TrimRight(baseURL, "/"),
 		apiKey:              apiKey,
-		http:                &http.Client{Timeout: 30 * time.Second},
+		http:                &http.Client{Timeout: 30 * time.Second, Transport: connectionhttp.Transport},
 		Logf:                log.Printf,
 		ResolvePollInterval: DefaultResolvePollInterval,
 		ResolveTimeout:      DefaultResolveTimeout,

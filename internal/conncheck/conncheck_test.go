@@ -3,6 +3,7 @@ package conncheck
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/vocoder/coldarr/internal/secrets"
@@ -73,6 +74,34 @@ func TestTest_Jellyfin(t *testing.T) {
 func TestTest_UnreachableFails(t *testing.T) {
 	if _, err := Test("radarr", secrets.Connection{URL: "http://127.0.0.1:1", APIKey: "key"}); err == nil {
 		t.Fatal("expected an error connecting to an unreachable address")
+	}
+}
+
+func TestTest_LocalHTTPS(t *testing.T) {
+	var loggedIn atomic.Bool
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			loggedIn.Store(true)
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/app/version":
+			_, _ = w.Write([]byte("1.2.3"))
+		default:
+			_, _ = w.Write([]byte(`{"version":"1.2.3"}`))
+		}
+	}))
+	defer srv.Close()
+
+	for _, app := range Apps {
+		t.Run(app, func(t *testing.T) {
+			version, err := Test(app, secrets.Connection{URL: srv.URL, APIKey: "key"})
+			if err != nil || version != "1.2.3" {
+				t.Fatalf("Test = %q, %v; want local HTTPS to work", version, err)
+			}
+		})
+	}
+	if _, err := Test("qbittorrent", secrets.Connection{URL: srv.URL, Username: "admin", Password: "secret"}); err != nil || !loggedIn.Load() {
+		t.Fatalf("qBittorrent HTTPS login: loggedIn = %v, error = %v", loggedIn.Load(), err)
 	}
 }
 
