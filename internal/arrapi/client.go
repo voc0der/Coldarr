@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/vocoder/coldarr/internal/connectionhttp"
 )
 
 type client struct {
@@ -29,7 +31,7 @@ func newClient(baseURL, apiKey string) *client {
 	return &client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: 30 * time.Second, Transport: connectionhttp.Transport},
 		api:     "/api/v3",
 	}
 }
