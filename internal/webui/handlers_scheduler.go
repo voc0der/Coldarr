@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -59,6 +60,10 @@ type schedulerData struct {
 	RefreshLinks scheduleFormView
 	ScanCutoffs  scheduleFormView
 	ScanOrphans  scheduleFormView
+	// ShowDownloads lists the download-tiering tasks - only once
+	// qBittorrent is connected.
+	ShowDownloads  bool
+	RunTorrentPlan scheduleFormView
 }
 
 type omitDayView struct {
@@ -132,6 +137,10 @@ func (s *Server) schedulerData() schedulerData {
 		ScanCutoffs: s.scheduleView("scan_cutoffs", "Scan Quality Cutoffs",
 			`Checks which movies/series have a file that doesn't meet its quality profile's upgrade cutoff, so scoring can keep those on hot storage (Radarr/Sonarr are still going to replace that file). This calls Radarr/Sonarr's own wanted/cutoff lookup, which can be slow on a large library - that's exactly why it only ever runs here, on a schedule (or via "Scan now" below), never live on a Dashboard/Plan page view. Until this has run at least once, every item is treated as cutoff-met.`,
 			cfg.Scheduler.ScanCutoffs, s.getLastRanScanCutoffs()),
+		ShowDownloads: s.downloadsEnabled(),
+		RunTorrentPlan: s.scheduleView(taskRunTorrentPlan, "Move Settled Downloads",
+			`Moves downloads that have finished and sat on the download drive for the settle time to seed storage, one at a time, and gives each the seed label once it has landed - identical to clicking "Move these downloads" on the Downloads page, just unattended. Runs after Run the Plan by default; the two never run at once.`,
+			cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).LastRan),
 		ScanOrphans: s.scheduleView("scan_orphans", "Scan for Orphaned Storage",
 			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers) - and, with qBittorrent connected, every file and folder in the download folders it doesn't know about. This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
 			cfg.Scheduler.ScanOrphans, s.getLastRanScanOrphans()),
@@ -144,7 +153,7 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "omit-days" && task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" && task != "scan_orphans" {
+	if task != "omit-days" && !slices.Contains(scheduledTasks, task) {
 		http.NotFound(w, r)
 		return
 	}
@@ -207,6 +216,9 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanOrphans.Label, data.ScanOrphans.Hint, data.ScanOrphans.LastRan
 			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
 			data.ScanOrphans = submitted
+		case taskRunTorrentPlan:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.RunTorrentPlan.Label, data.RunTorrentPlan.Hint, data.RunTorrentPlan.LastRan
+			data.RunTorrentPlan = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return

@@ -670,48 +670,18 @@ func copyUsage(usage map[string]diskusage.Usage) map[string]diskusage.Usage {
 // groupByVolume builds, for every path with a known device ID, the full
 // set of configured paths (including itself) sharing that device.
 func groupByVolume(volumeOf map[string]uint64) map[string][]string {
-	byDevice := map[uint64][]string{}
-	for path, dev := range volumeOf {
-		byDevice[dev] = append(byDevice[dev], path)
-	}
-
-	groups := make(map[string][]string, len(volumeOf))
-	for _, paths := range byDevice {
-		for _, p := range paths {
-			groups[p] = paths
-		}
-	}
-	return groups
+	return diskusage.GroupVolumes(volumeOf)
 }
 
 // applyDeltaToVolume applies deltaBytes to path's usage and to every other
 // path sharing its physical volume, since they're really one capacity
 // pool - a move affecting one must be reflected on all of them.
 func applyDeltaToVolume(working map[string]diskusage.Usage, groups map[string][]string, path string, deltaBytes int64) {
-	siblings, ok := groups[path]
-	if !ok {
-		siblings = []string{path}
-	}
-	for _, p := range siblings {
-		if u, ok := working[p]; ok {
-			working[p] = applyDelta(u, deltaBytes)
-		}
-	}
+	diskusage.Volumes(groups).Apply(working, path, deltaBytes)
 }
 
 func applyDelta(u diskusage.Usage, deltaBytes int64) diskusage.Usage {
-	used := int64(u.UsedBytes) + deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
-	if used < 0 {
-		used = 0
-	}
-	free := int64(u.FreeBytes) - deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
-	if free < 0 {
-		free = 0
-	}
-	u.UsedBytes = uint64(used)
-	u.FreeBytes = uint64(free)
-	u.UsedPercent = diskusage.PercentUsed(u.UsedBytes, u.FreeBytes)
-	return u
+	return u.Plus(deltaBytes)
 }
 
 func gb(b int64) float64 {

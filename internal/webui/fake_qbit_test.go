@@ -329,3 +329,43 @@ func newFakeArrDownloads(t *testing.T) *fakeArrDownloads {
 	t.Cleanup(f.Close)
 	return f
 }
+
+func (f *fakeQbittorrent) torrent(hash string) fakeTorrent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.torrents {
+		if t.Hash == hash {
+			return *t
+		}
+	}
+	return fakeTorrent{}
+}
+
+func (f *fakeArrDownloads) setImported(hash string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.imported[strings.ToUpper(hash)] = true
+}
+
+// waitDownloadsIdle waits for the downloads run to finish, relabels and
+// all.
+func waitDownloadsIdle(t *testing.T, srv *Server) {
+	t.Helper()
+	srv.applyMu.Lock()
+	run := srv.currentDownloadsRun
+	srv.applyMu.Unlock()
+	if run == nil {
+		t.Fatal("no downloads run started")
+	}
+	select {
+	case <-run.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the downloads run didn't finish")
+	}
+}
+
+func (f *fakeQbittorrent) postedPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.posts...)
+}

@@ -3,17 +3,20 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/importcache"
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/qbit"
 	"github.com/vocoder/coldarr/internal/torrents"
 )
@@ -527,4 +530,109 @@ func (inv *DownloadsInventory) Wedged() map[string]int64 {
 		}
 	}
 	return out
+}
+
+// BuildDownloadsPlan plans which ready downloads move to seed storage (see
+// torrents.BuildPlan), with space downloads still in progress will claim
+// already counted as used. Its warnings add what the inventory knows about
+// seed storage nothing can make room on.
+func (e *Engine) BuildDownloadsPlan(inv *DownloadsInventory) *torrents.Plan {
+	plan := torrents.BuildPlan(torrents.PlanInput{
+		Downloads: inv.Downloads,
+		Tiers:     e.Cfg.Tiers,
+		Usage:     applyReservations(inv.UsableUsage(), inv.Reserved),
+		VolumeOf:  inv.VolumeOf(),
+		Unseen:    inv.Unseen,
+		FS:        downloadsFS{},
+	})
+	wedged := inv.Wedged()
+	paths := make([]string, 0, len(wedged))
+	for p := range wedged {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s is full of content Coldarr can't move: %.1f GB there is downloads it leaves alone or files that aren't downloads at all, and that alone passes its max - nothing will move there until some of it is cleared or the max is raised", p, float64(wedged[p])/(1<<30)))
+	}
+	plan.Warnings = append(plan.Warnings, reservationNotes(inv.Reserved, inv.Tiers)...)
+	return plan
+}
+
+// DownloadsExecutor returns the executor that carries out downloads plans
+// through qBittorrent.
+func (e *Engine) DownloadsExecutor() *torrents.Executor {
+	return &torrents.Executor{Qbit: e.Qbit, SeedLabel: e.Cfg.Torrents.SeedLabel, FS: downloadsFS{}, Log: e.DownloadLog}
+}
+
+// DownloadsOptions are the move engine's settings for a downloads run: the
+// same settle timing and storage re-check as a library run, but one move
+// at a time, whichever drive it's bound for - each one confirmed finished
+// before the next begins.
+func (e *Engine) DownloadsOptions() mover.Options {
+	return mover.Options{
+		CheckStorage:        e.CheckStorage,
+		SettleCheckInterval: envDuration("COLDARR_SETTLE_CHECK_INTERVAL"),
+		SettleStableChecks:  envInt("COLDARR_SETTLE_STABLE_CHECKS"),
+		SettleMaxWait:       envDuration("COLDARR_SETTLE_MAX_WAIT"),
+		Serial:              true,
+	}
+}
+
+// downloadsFS is the real filesystem as the downloads planner and executor
+// look at it.
+type downloadsFS struct{}
+
+func (downloadsFS) Exists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	}
+	return false, err
+}
+
+// Size totals every regular file at or under path.
+func (downloadsFS) Size(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+// HasHardLinks reports whether any regular file at or under path has another
+// hard link - stopping at the first.
+func (downloadsFS) HasHardLinks(path string) (bool, error) {
+	linked := false
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+			linked = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return linked, err
 }

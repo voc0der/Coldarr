@@ -29,4 +29,8 @@
 {{template "schedule_form" .RefreshLinks}}
 {{template "schedule_form" .ScanCutoffs}}
 {{template "schedule_form" .ScanOrphans}}
+{{if .ShowDownloads}}
+<h2>Downloads</h2>
+{{template "schedule_form" .RunTorrentPlan}}
+{{end}}
 {{end}}

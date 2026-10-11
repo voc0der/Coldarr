@@ -27,6 +27,10 @@ func TestHandleSchedulerSave_RejectedScheduleKeepsWhatWasTyped(t *testing.T) {
 	for _, task := range scheduledTasks {
 		t.Run(task, func(t *testing.T) {
 			srv := newSettingsTestServer(t)
+			// Download tasks are only on the page with qBittorrent connected.
+			if err := srv.connStore.Set("qbittorrent", secrets.Connection{URL: "http://qbittorrent:8080"}); err != nil {
+				t.Fatal(err)
+			}
 			before := scheduleFor(srv.currentConfig(), task)
 
 			page := httptest.NewRecorder()

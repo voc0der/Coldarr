@@ -99,6 +99,11 @@ type SchedulerConfig struct {
 	// Settings > Orphaned Storage page only ever shows the last scan's
 	// results.
 	ScanOrphans scheduler.Schedule `yaml:"scan_orphans"`
+	// RunTorrentPlan moves settled downloads from the download drive to
+	// seed storage - the downloads counterpart of RunPlan. Staggered after
+	// it by default: both hold the same apply lock, and a scheduled run
+	// that finds the lock taken simply tries again on the next tick.
+	RunTorrentPlan scheduler.Schedule `yaml:"run_torrent_plan"`
 }
 
 type AuthConfig struct {
@@ -307,6 +312,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	if err := scheduler.Validate(cfg.ScanOrphans); err != nil {
 		return fmt.Errorf("scheduler.scan_orphans: %w", err)
 	}
+	if err := scheduler.Validate(cfg.RunTorrentPlan); err != nil {
+		return fmt.Errorf("scheduler.run_torrent_plan: %w", err)
+	}
 	return nil
 }
 
@@ -428,6 +436,7 @@ func applyDefaults(cfg *Config) {
 	applyScheduleDefaults(&cfg.Scheduler.RefreshLinks, "01:00")
 	applyScheduleDefaults(&cfg.Scheduler.ScanCutoffs, "00:30")
 	applyScheduleDefaults(&cfg.Scheduler.ScanOrphans, "00:45")
+	applyScheduleDefaults(&cfg.Scheduler.RunTorrentPlan, "04:30")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

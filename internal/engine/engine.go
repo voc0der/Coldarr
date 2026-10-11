@@ -53,7 +53,10 @@ type Engine struct {
 	// Imports remembers which downloads an *arr app has confirmed
 	// importing (see internal/importcache) - asked once per download, never
 	// again once confirmed.
-	Imports      *importcache.Store
+	Imports *importcache.Store
+	// DownloadLog records what Coldarr has had qBittorrent do - moves,
+	// relabels, removals.
+	DownloadLog  *history.DownloadLog
 	jellyfinConn secrets.Connection
 	jellyfinOK   bool
 }
@@ -101,6 +104,12 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 		return nil, err
 	}
 	e.Imports = imports
+
+	downloadLog, err := history.LoadDownloadLog(filepath.Join(filepath.Dir(cfg.History.Path), "coldarr-download-history.json"))
+	if err != nil {
+		return nil, err
+	}
+	e.DownloadLog = downloadLog
 
 	return e, nil
 }

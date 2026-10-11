@@ -211,3 +211,58 @@ func CheckPath(path string, requireMount bool) error {
 	}
 	return nil
 }
+
+// Plus returns u with deltaBytes more used (or, negative, freed), as a
+// planner projects a move: used and free shift by the same amount, floored
+// at zero, and the percentage follows.
+func (u Usage) Plus(deltaBytes int64) Usage {
+	used := int64(u.UsedBytes) + deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
+	if used < 0 {
+		used = 0
+	}
+	free := int64(u.FreeBytes) - deltaBytes //nolint:gosec // disk usage byte counts never approach int64 overflow range
+	if free < 0 {
+		free = 0
+	}
+	u.UsedBytes = uint64(used)
+	u.FreeBytes = uint64(free)
+	u.UsedPercent = PercentUsed(u.UsedBytes, u.FreeBytes)
+	return u
+}
+
+// Volumes maps each path to every configured path on the same device
+// (itself included) - one capacity pool, however differently the paths
+// are named.
+type Volumes map[string][]string
+
+// GroupVolumes builds Volumes from each path's device ID, where known. A
+// path with no known device is its own pool.
+func GroupVolumes(volumeOf map[string]uint64) Volumes {
+	byDevice := map[uint64][]string{}
+	for path, dev := range volumeOf {
+		byDevice[dev] = append(byDevice[dev], path)
+	}
+
+	groups := make(Volumes, len(volumeOf))
+	for _, paths := range byDevice {
+		for _, p := range paths {
+			groups[p] = paths
+		}
+	}
+	return groups
+}
+
+// Apply adds deltaBytes to path's usage and to every other path sharing its
+// device - a move affecting one must be reflected on all of them, or the
+// same free space would be counted twice.
+func (v Volumes) Apply(usage map[string]Usage, path string, deltaBytes int64) {
+	siblings, ok := v[path]
+	if !ok {
+		siblings = []string{path}
+	}
+	for _, p := range siblings {
+		if u, ok := usage[p]; ok {
+			usage[p] = u.Plus(deltaBytes)
+		}
+	}
+}

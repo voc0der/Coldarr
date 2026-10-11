@@ -1,0 +1,116 @@
+{{define "content"}}
+<h1>Downloads</h1>
+
+{{if not .Run.NoRun}}
+<h2>{{if .Run.Running}}Moving{{else}}Last run{{end}}</h2>
+{{template "apply_status_table" .Run}}
+{{end}}
+
+{{if not .Run.Running}}
+{{if .Plan.Error}}
+<div class="alert alert-error">{{.Plan.Error}}</div>
+{{else}}
+<div class="card">
+  <div class="stat-row">
+    <div class="stat">{{template "icon-download"}}<div><div class="value">{{.Plan.Counts.Active}}</div><div class="label">downloading or busy</div></div></div>
+    <div class="stat">{{template "icon-clock"}}<div><div class="value">{{.Plan.Counts.Waiting}}</div><div class="label">settling</div></div></div>
+    <div class="stat">{{template "icon-play"}}<div><div class="value">{{.Plan.Counts.Ready}}</div><div class="label">ready to move</div></div></div>
+    <div class="stat">{{template "icon-alert-triangle"}}<div><div class="value">{{.Plan.Counts.Held}}</div><div class="label">held back</div></div></div>
+    <div class="stat">{{template "icon-snowflake"}}<div><div class="value">{{.Plan.Counts.Parked}}</div><div class="label">on seed storage</div></div></div>
+  </div>
+</div>
+
+<p class="muted">This is a dry run - nothing moves until you click Move. A download that has finished and sat on the download drive for the settle time moves to seed storage, one at a time, and gets the seed label once it has landed.{{if .Plan.NextSettled}} The next one finishes settling at {{.Plan.NextSettled}}.{{end}}</p>
+
+{{if .Plan.Empty}}
+<div class="card empty-state">
+  {{template "icon-check-circle"}}
+  <div class="title">Nothing to move</div>
+  <p class="muted">No finished download has settled and is clear to move, with room on seed storage.</p>
+</div>
+{{else}}
+{{if .Plan.Moves}}
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Download</th><th>Size</th><th>Finished</th><th>From</th><th>To</th></tr></thead>
+<tbody>
+{{range .Plan.Moves}}
+<tr><td>{{.Name}}{{if .CrossSeeds}} <span class="badge badge-muted" title="Cross-seeds sharing these files move with it">+{{.CrossSeeds}} cross-seed</span>{{end}}</td><td>{{.Size}}</td><td class="muted">{{.Finished}}</td><td class="mono">{{.From}}</td><td class="mono">{{.To}}</td></tr>
+{{end}}
+</tbody>
+</table>
+<p><strong>{{len .Plan.Moves}} download(s), {{.Plan.TotalSize}} total</strong></p>
+</div>
+{{end}}
+
+{{if .Plan.Relabels}}
+<div class="card">
+  <h2 style="margin-top:0">Relabel only</h2>
+  <p class="hint">Already on seed storage, but still carrying a download label - left by a move whose relabel never ran, or saved straight to seed storage. These just get the seed label.</p>
+  <table>
+  <thead><tr><th>Download</th><th>Label now</th></tr></thead>
+  <tbody>
+  {{range .Plan.Relabels}}<tr><td>{{.Name}}</td><td class="mono">{{if .Category}}{{.Category}}{{else}}-{{end}}</td></tr>{{end}}
+  </tbody>
+  </table>
+</div>
+{{end}}
+
+<form method="post" action="/downloads/apply" onsubmit="return confirm('Go ahead? Coldarr will ask qBittorrent to move {{len .Plan.Moves}} download(s) to seed storage now - one at a time, each confirmed before the next starts - and relabel {{len .Plan.Relabels}}.')">
+  <button type="submit" class="btn btn-primary">{{template "icon-play"}} Move these downloads</button>
+</form>
+{{end}}
+
+{{if .Plan.Usage}}
+<h2>Projected usage</h2>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Tier</th><th>Path</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+{{range .Plan.Usage}}
+<tr><td>{{.Tier}}</td><td class="mono">{{.Path}}</td><td>{{pct .Before}}</td><td>{{pct .After}}</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{end}}
+
+{{if .Plan.Held}}
+<h2>Held back</h2>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>Download</th><th>Why</th></tr></thead>
+<tbody>
+{{range .Plan.Held}}
+<tr><td>{{.Name}}{{if ne .State "held"}} <span class="badge badge-muted">{{.State}}</span>{{end}}</td><td class="muted">{{.Reason}}</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{end}}
+
+{{if .Plan.Warnings}}
+<h2>Warnings</h2>
+<div class="card">
+<ul>
+{{range .Plan.Warnings}}<li>{{.}}</li>{{end}}
+</ul>
+</div>
+{{end}}
+{{end}}
+{{end}}
+
+{{if .Recent}}
+<h2>Recent activity</h2>
+<div class="card overflow-table">
+<table>
+<thead><tr><th>When</th><th>What</th><th>Download</th><th>Size</th><th>Detail</th></tr></thead>
+<tbody>
+{{range .Recent}}
+<tr><td>{{.At}}</td><td><span class="badge {{if eq .Action "removed"}}badge-danger{{else if eq .Action "unlisted"}}badge-warn{{else}}badge-muted{{end}}">{{.Action}}</span></td><td>{{.Names}}</td><td>{{.Size}}</td><td class="mono muted">{{.Detail}}</td></tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{end}}
+{{end}}

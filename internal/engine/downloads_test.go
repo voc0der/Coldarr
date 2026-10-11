@@ -474,3 +474,86 @@ func TestWedged(t *testing.T) {
 		t.Fatalf("Wedged = %v, want only /seed2, with all 95 bytes unmanaged", got)
 	}
 }
+
+func TestDownloadsFS(t *testing.T) {
+	root := t.TempDir()
+	mkContent(t, filepath.Join(root, "Album", "disc1"))
+	if err := os.WriteFile(filepath.Join(root, "Album", "a.flac"), make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Album", "disc1", "b.flac"), make([]byte, 50), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.flac", filepath.Join(root, "Album", "link")); err != nil {
+		t.Fatal(err)
+	}
+	fs := downloadsFS{}
+
+	if n, err := fs.Size(filepath.Join(root, "Album")); err != nil || n != 150 {
+		t.Errorf("Size = %d, %v; want 150, symlinks not counted", n, err)
+	}
+	if n, err := fs.Size(filepath.Join(root, "Album", "a.flac")); err != nil || n != 100 {
+		t.Errorf("Size of a file = %d, %v", n, err)
+	}
+	if ok, err := fs.Exists(filepath.Join(root, "Album")); !ok || err != nil {
+		t.Errorf("Exists = %v, %v", ok, err)
+	}
+	if ok, err := fs.Exists(filepath.Join(root, "Nope")); ok || err != nil {
+		t.Errorf("Exists(missing) = %v, %v", ok, err)
+	}
+	if linked, err := fs.HasHardLinks(filepath.Join(root, "Album")); linked || err != nil {
+		t.Errorf("HasHardLinks before linking = %v, %v", linked, err)
+	}
+	if err := os.Link(filepath.Join(root, "Album", "disc1", "b.flac"), filepath.Join(root, "library-copy.flac")); err != nil {
+		t.Fatal(err)
+	}
+	if linked, err := fs.HasHardLinks(filepath.Join(root, "Album")); !linked || err != nil {
+		t.Errorf("HasHardLinks after linking = %v, %v", linked, err)
+	}
+	if _, err := fs.Size(filepath.Join(root, "Nope")); err == nil {
+		t.Error("sizing a missing path is an error")
+	}
+}
+
+func TestBuildDownloadsPlan(t *testing.T) {
+	f := newDownloadsFixture(t, func(ssd, seed string) []qbitTorrent {
+		return []qbitTorrent{
+			finished("aaa", "Linux.ISO", "manual", ssd, 7*24*time.Hour),
+			{Hash: "bbb", Name: "Partial", State: "downloading", Category: "manual", SavePath: ssd, ContentPath: filepath.Join(ssd, "Partial"), AmountLeft: 3 << 30, Progress: 0.5},
+		}
+	})
+	mkContent(t, filepath.Join(f.ssd, "Linux.ISO"))
+	mkContent(t, filepath.Join(f.ssd, "Partial"))
+
+	inv, err := f.engine.BuildDownloadsInventory(time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := f.engine.BuildDownloadsPlan(inv)
+	if len(plan.Entries) != 1 || plan.Entries[0].Name != "Linux.ISO" || plan.Entries[0].NewContentPath != filepath.Join(f.seed, "Linux.ISO") {
+		t.Fatalf("entries = %+v", plan.Entries)
+	}
+	if joined := strings.Join(plan.Warnings, "\n"); !strings.Contains(joined, "3.0 GB is held back on "+f.ssd) {
+		t.Errorf("warnings = %v, want the in-progress download's reservation noted", plan.Warnings)
+	}
+
+	// Seed storage capped below what's there, none of it Coldarr's.
+	f.engine.Cfg.Tiers[1].MaxUsedPercent = 0.0001
+	f.engine.Cfg.Tiers[1].TargetUsedPercent = 0.0001
+	inv, err = f.engine.BuildDownloadsInventory(time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = f.engine.BuildDownloadsPlan(inv)
+	if len(plan.Entries) != 0 || !strings.Contains(strings.Join(plan.Warnings, "\n"), f.seed+" is full of content Coldarr can't move") {
+		t.Errorf("plan = %+v, want nothing moved and the wedged seed storage named", plan)
+	}
+
+	opts := f.engine.DownloadsOptions()
+	if !opts.Serial || opts.CheckStorage == nil {
+		t.Errorf("DownloadsOptions = %+v, want one move at a time with the storage re-check", opts)
+	}
+	if x := f.engine.DownloadsExecutor(); x.SeedLabel != "seed" || x.Qbit != f.engine.Qbit {
+		t.Errorf("DownloadsExecutor = %+v", x)
+	}
+}

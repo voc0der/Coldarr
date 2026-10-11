@@ -276,14 +276,15 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 	return progress, nil
 }
 
-// applyInFlight reports whether an apply run is still occupying the mover
-// lock, and is the single answer both the manual "Apply this plan" button
-// and the scheduler gate on. See applyRun.active for why the moves being
-// done is not the same question.
+// applyInFlight reports whether an apply run - library or downloads - is
+// still occupying the mover lock, and is the single answer every Apply
+// button and scheduled task gates on. See applyRun.active for why the
+// moves being done is not the same question.
 func (s *Server) applyInFlight() bool {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	return s.currentRun != nil && s.currentRun.active.Load()
+	return (s.currentRun != nil && s.currentRun.active.Load()) ||
+		(s.currentDownloadsRun != nil && s.currentDownloadsRun.active.Load())
 }
 
 type applyStatusEntryView struct {
@@ -294,6 +295,13 @@ type applyStatusEntryView struct {
 }
 
 type applyStatusData struct {
+	// PollURL is where the status panel polls for updates while running.
+	PollURL string
+	// OneAtATime words a run that moves strictly one item at a time - a
+	// downloads run - rather than one per destination volume.
+	OneAtATime bool
+	// Note is a line about the run beyond its moves, if any.
+	Note    string
 	NoRun   bool
 	Running bool
 	// SyncingJellyfin is the tail end of a run: every move has landed, but
@@ -333,7 +341,7 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	// Running tracks the whole run, not just the moves - see applyRun.active.
 	// Finished stays keyed on the moves themselves, since that is the time
 	// the table below is reporting.
-	data := applyStatusData{Running: run.active.Load(), Progress: buildApplyProgress(snap, time.Now())}
+	data := applyStatusData{PollURL: "/plan/apply/status/partial", Running: run.active.Load(), Progress: buildApplyProgress(snap, time.Now())}
 	if snap.Done {
 		data.Finished = snap.Finished.Format("2006-01-02 15:04")
 		data.SyncingJellyfin = data.Running

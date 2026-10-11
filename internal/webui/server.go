@@ -42,6 +42,10 @@ type Server struct {
 	// separate requests while it runs in the background.
 	applyMu    sync.Mutex
 	currentRun *applyRun
+	// currentDownloadsRun is the downloads counterpart of currentRun,
+	// under the same lock: both kinds of apply hold the mover lock, so
+	// only one of either ever runs at a time.
+	currentDownloadsRun *downloadsRun
 
 	// verifyMu guards currentVerify the same way applyMu guards
 	// currentRun - only one size-verification run in flight at a time,
@@ -270,6 +274,10 @@ func (s *Server) routes() http.Handler {
 		http.Redirect(w, r, "/plan", http.StatusMovedPermanently)
 	})
 
+	mux.HandleFunc("GET /downloads", s.handleDownloadsPage)
+	mux.HandleFunc("POST /downloads/apply", s.handleDownloadsApplyStart)
+	mux.HandleFunc("GET /downloads/apply/status/partial", s.handleDownloadsApplyStatusPartial)
+
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 	mux.HandleFunc("POST /history/verify", s.handleVerifyStart)
 	mux.HandleFunc("GET /history/verify/status", s.handleVerifyStatus)
@@ -464,6 +472,9 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.ScanOrphans, s.getLastRunScanOrphans(), now) {
 		s.runScheduledScanOrphans(now)
 	}
+	if scheduler.Due(cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).Anchor, now) {
+		s.runScheduledDownloadsPlan(now)
+	}
 }
 
 // updateWeeklyOmitDays persists the page-level scheduler blackout. It does
@@ -488,8 +499,7 @@ func (s *Server) updateWeeklyOmitDays(days []scheduler.Weekday) error {
 }
 
 // updateSchedule validates and persists a single named task's schedule
-// ("run_plan", "rescan_cold", "refresh_links", "scan_cutoffs", or
-// "scan_orphans"), then re-arms that task (see scheduler.Arm) - whether
+// (one of scheduledTasks), then re-arms that task (see scheduler.Arm) - whether
 // enabling, disabling, or just adjusting the time - so saving a schedule
 // can never itself trigger an immediate unattended run as a surprise side
 // effect. This does not touch the "last ran" fact shown on the settings
@@ -526,6 +536,8 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 		updated.Scheduler.ScanCutoffs = sched
 	case taskScanOrphans:
 		updated.Scheduler.ScanOrphans = sched
+	case taskRunTorrentPlan:
+		updated.Scheduler.RunTorrentPlan = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()

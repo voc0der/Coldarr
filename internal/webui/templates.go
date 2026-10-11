@@ -32,6 +32,7 @@ var pageNames = []string{
 	"settings_orphans",
 	"settings_downloads",
 	"plan",
+	"downloads",
 	"history",
 	"verify_status",
 	"login",
