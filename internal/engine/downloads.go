@@ -344,8 +344,11 @@ func (f *cachedFS) Exists(path string) (bool, error) {
 // that asked for them is still alive, and disk numbers read meanwhile are
 // unreliable - for library tiers as much as downloads ones, when they
 // share a disk. An error is returned as an error, never treated as idle.
+// Without download tiering, Coldarr never asks qBittorrent to move
+// anything, so it isn't consulted - and its being down can't hold library
+// tiering up.
 func (e *Engine) TorrentMovesInFlight() (bool, string, error) {
-	if e.Qbit == nil {
+	if !e.DownloadsEnabled() {
 		return false, "", nil
 	}
 	list, err := e.Qbit.Torrents()

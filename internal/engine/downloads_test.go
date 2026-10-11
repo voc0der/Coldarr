@@ -334,7 +334,10 @@ func TestTorrentMovesInFlight(t *testing.T) {
 		}
 		return out
 	})
-	e := &Engine{Qbit: qbit.NewClient(qb.URL, qbit.Auth{})}
+	e := &Engine{
+		Cfg:  &config.Config{Tiers: []model.Tier{{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}}}},
+		Qbit: qbit.NewClient(qb.URL, qbit.Auth{}),
+	}
 
 	if busy, _, err := e.TorrentMovesInFlight(); err != nil || busy {
 		t.Fatalf("idle = %v, %v", busy, err)
@@ -357,6 +360,14 @@ func TestTorrentMovesInFlight(t *testing.T) {
 	}
 	if _, _, err := e.MovesInFlight(); err == nil {
 		t.Error("MovesInFlight must refuse when qBittorrent can't be checked")
+	}
+
+	// Connected but with no downloads tier, Coldarr never moves anything
+	// through qBittorrent, so it isn't asked: even unreachable, it holds
+	// nothing up.
+	e.Cfg.Tiers = []model.Tier{{Name: "hot", Role: model.RoleHot, Paths: []string{"/media"}}}
+	if busy, _, err := e.MovesInFlight(); err != nil || busy {
+		t.Errorf("MovesInFlight without download tiering = %v, %v; want qBittorrent left out", busy, err)
 	}
 
 	e.Qbit = nil
