@@ -103,10 +103,10 @@
   <p class="hint">{{if eq .Plan.RemovalMode "report"}}Report only: these would be removed from qBittorrent - nothing is, until removal is set to Remove under Settings &gt; Downloads.{{else}}These are removed from qBittorrent by "Remove these now" or the Remove Finished Seeds task, with their files unless another download still uses them.{{end}}</p>
   <div class="overflow-table">
   <table>
-  <thead><tr><th>Download</th><th>Seeded</th><th>Rule</th><th>Files</th></tr></thead>
+  <thead><tr><th>Download</th><th>Seeded</th><th>Rule</th><th>Its files</th></tr></thead>
   <tbody>
   {{range .Plan.Removals}}
-  <tr><td>{{.Name}}{{if .CrossSeeds}} <span class="badge badge-muted">+{{.CrossSeeds}} cross-seed</span>{{end}}<div class="mono muted">{{.Where}}</div></td><td>{{.Seeded}}</td><td class="muted">{{.Rule}}</td><td>{{if .KeptFor}}<span class="badge badge-muted" title="Another download still seeds these files">kept for {{.KeptFor}}</span>{{else}}{{.Size}} deleted{{end}}</td></tr>
+  <tr><td>{{.Name}}{{if .CrossSeeds}} <span class="badge badge-muted">+{{.CrossSeeds}} cross-seed</span>{{end}}<div class="mono muted">{{.Where}}</div></td><td>{{.Seeded}}</td><td class="muted">{{.Rule}}</td><td>{{if .KeptFor}}<span class="badge badge-muted" title="Another download still seeds these files">kept for {{.KeptFor}}</span>{{else}}deleted too ({{.Size}}){{end}}</td></tr>
   {{end}}
   </tbody>
   </table>

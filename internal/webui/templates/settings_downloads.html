@@ -45,8 +45,11 @@
     <tr>
       <td class="mono">{{.Label}}<input type="hidden" name="label_{{.Index}}" value="{{.Label}}"></td>
       <td>{{if .Where}}{{.Where}}{{else}}<span class="badge badge-warn">{{template "icon-alert-triangle"}} not in qBittorrent now</span>{{end}}{{if .IsSeedLabel}} <span class="badge badge-muted">seed label</span>{{end}}</td>
+      {{if .IsSeedLabel}}
+      <td class="muted" colspan="2">Managed - it's the seed label, which Coldarr gives downloads once they've landed on seed storage{{if .Action}}<input type="hidden" name="action_{{.Index}}" value="{{.Action}}">{{end}}</td>
+      {{else}}
       <td>
-        <select name="action_{{.Index}}" aria-label="What Coldarr does with {{.Label}}">
+        <select name="action_{{.Index}}" aria-label="What Coldarr does with {{.Label}}" data-imported-by="imported_by_{{.Index}}" onchange="coldarrToggleImportedBy(this)">
           <option value="" {{if eq .Action ""}}selected{{end}}>No rule - leave alone</option>
           <option value="move" {{if eq .Action "move"}}selected{{end}}>Move to seed storage</option>
           <option value="ignore" {{if eq .Action "ignore"}}selected{{end}}>Never touch</option>
@@ -54,11 +57,12 @@
         {{if not .Where}}{{if .Action}}<label class="radio-row" style="margin-top:0.3rem"><input type="checkbox" name="remove_{{.Index}}"> Remove this rule</label>{{end}}{{end}}
       </td>
       <td>
-        <select name="imported_by_{{.Index}}" aria-label="App that imports {{.Label}}">
+        <select name="imported_by_{{.Index}}" id="imported_by_{{.Index}}" aria-label="App that imports {{.Label}}">
           <option value="" {{if eq .ImportedBy ""}}selected{{end}}>Nothing - move without asking</option>
           {{$current := .ImportedBy}}{{range $.ImportApps}}<option value="{{.Value}}" {{if eq $current .Value}}selected{{end}}>{{.Label}}</option>{{end}}
         </select>
       </td>
+      {{end}}
     </tr>
     {{end}}
     </tbody>
@@ -68,6 +72,13 @@
       <button type="submit" class="btn btn-primary">Save label rules</button>
     </div>
   </form>
+  <script>
+    // Only a label that moves downloads can be waiting on an import.
+    function coldarrToggleImportedBy(action) {
+      document.getElementById(action.dataset.importedBy).disabled = action.value !== "move";
+    }
+    document.querySelectorAll("select[data-imported-by]").forEach(coldarrToggleImportedBy);
+  </script>
   {{else}}
   <div class="empty-state">
     {{template "icon-download"}}

@@ -43,6 +43,9 @@ func (r *downloadsRun) note() string {
 	if r.relabels == 0 {
 		return ""
 	}
+	if r.active.Load() && r.relabeled+len(r.relabelEr) == 0 {
+		return fmt.Sprintf("Once the moves are done, %d download(s) already on seed storage get the seed label.", r.relabels)
+	}
 	note := fmt.Sprintf("Relabeled %d of %d download(s) already on seed storage.", r.relabeled, r.relabels)
 	if len(r.relabelEr) > 0 {
 		note += " Failed: " + strings.Join(r.relabelEr, "; ")
