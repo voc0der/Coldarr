@@ -109,6 +109,11 @@ type SchedulerConfig struct {
 	// known - so seeding requirements can be worked out. Never done on a
 	// page view, for the same reason as ScanCutoffs.
 	ScanTrackers scheduler.Schedule `yaml:"scan_trackers"`
+	// ExpireSeeds reports or removes downloads whose seeding is done,
+	// according to torrents.removal - scanning trackers first. Staggered
+	// before RunTorrentPlan, so a download that's done seeding on the
+	// download drive is removed rather than moved.
+	ExpireSeeds scheduler.Schedule `yaml:"expire_seeds"`
 }
 
 type AuthConfig struct {
@@ -142,6 +147,50 @@ type TorrentsConfig struct {
 	// Seeding is how long downloads must seed before their trackers are
 	// satisfied - what eventually makes one removable.
 	Seeding SeedingConfig `yaml:"seeding"`
+	// Removal is whether Coldarr removes downloads whose seeding is done.
+	Removal RemovalConfig `yaml:"removal"`
+}
+
+// RemovalMode is how far Coldarr goes with downloads whose seeding is done.
+type RemovalMode string
+
+const (
+	// RemovalOff, the default, never removes anything.
+	RemovalOff RemovalMode = "off"
+	// RemovalReport lists what would be removed - on the Downloads page,
+	// and in a notification when the task runs - and removes nothing. A
+	// separate step from RemovalRemove on purpose: turning removal on
+	// should show what it would do before it does any of it.
+	RemovalReport RemovalMode = "report"
+	// RemovalRemove removes them from qBittorrent, with their files.
+	RemovalRemove RemovalMode = "remove"
+)
+
+// RemovalConfig is whether, and how far, Coldarr removes downloads whose
+// seeding is done.
+type RemovalConfig struct {
+	// Mode is off (the default when unset), report, or remove.
+	Mode RemovalMode `yaml:"mode,omitempty"`
+	// MaxPerRun caps how many downloads one run removes: a mistaken rule
+	// should cost a handful of downloads and a notification, not the
+	// drive. Defaults to 25.
+	MaxPerRun int `yaml:"max_per_run,omitempty"`
+}
+
+// EffectiveMode returns Mode, off when unset.
+func (c RemovalConfig) EffectiveMode() RemovalMode {
+	if c.Mode == "" {
+		return RemovalOff
+	}
+	return c.Mode
+}
+
+// Limit returns MaxPerRun, or the default 25 when unset.
+func (c RemovalConfig) Limit() int {
+	if c.MaxPerRun <= 0 {
+		return 25
+	}
+	return c.MaxPerRun
 }
 
 // SeedingConfig is each tracker's seeding requirement: a default for every
@@ -270,7 +319,18 @@ func ValidateTorrents(cfg TorrentsConfig) error {
 			return fmt.Errorf("torrents.labels: %q is the seed label Coldarr gives downloads on seed storage, so it can only be a plain move label", r.Label)
 		}
 	}
-	return validateSeeding(cfg.Seeding)
+	if err := validateSeeding(cfg.Seeding); err != nil {
+		return err
+	}
+	switch cfg.Removal.EffectiveMode() {
+	case RemovalOff, RemovalReport, RemovalRemove:
+	default:
+		return fmt.Errorf("torrents.removal.mode must be %q, %q or %q, got %q", RemovalOff, RemovalReport, RemovalRemove, cfg.Removal.Mode)
+	}
+	if cfg.Removal.MaxPerRun < 0 {
+		return fmt.Errorf("torrents.removal.max_per_run must not be negative, got %d", cfg.Removal.MaxPerRun)
+	}
+	return nil
 }
 
 func validateSeeding(cfg SeedingConfig) error {
@@ -401,6 +461,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	if err := scheduler.Validate(cfg.ScanTrackers); err != nil {
 		return fmt.Errorf("scheduler.scan_trackers: %w", err)
 	}
+	if err := scheduler.Validate(cfg.ExpireSeeds); err != nil {
+		return fmt.Errorf("scheduler.expire_seeds: %w", err)
+	}
 	return nil
 }
 
@@ -524,6 +587,7 @@ func applyDefaults(cfg *Config) {
 	applyScheduleDefaults(&cfg.Scheduler.ScanOrphans, "00:45")
 	applyScheduleDefaults(&cfg.Scheduler.RunTorrentPlan, "04:30")
 	applyScheduleDefaults(&cfg.Scheduler.ScanTrackers, "04:00")
+	applyScheduleDefaults(&cfg.Scheduler.ExpireSeeds, "04:15")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

@@ -196,3 +196,29 @@ func TestFits(t *testing.T) {
 		t.Error("the ceiling is inclusive and never crossed")
 	}
 }
+
+// TestBuildPlan_LeavesWhatsAboutToBeRemoved: with removal on, a download
+// done seeding isn't copied to seed storage only to be deleted - unless a
+// cross-seed sharing its files still has to move, which takes it along.
+func TestBuildPlan_LeavesWhatsAboutToBeRemoved(t *testing.T) {
+	done := ready("d", "Done", "/downloads", 10, 30*24*time.Hour)
+	pairDone := ready("p1", "Pair", "/downloads", 10, 30*24*time.Hour)
+	pairNot := ready("p2", "Pair", "/downloads", 10, 30*24*time.Hour)
+	plan := BuildPlan(PlanInput{
+		Downloads: []*Download{done, pairDone, pairNot, ready("k", "Keep", "/downloads", 10, 30*24*time.Hour)},
+		Tiers:     planTiers(),
+		Usage:     map[string]diskusage.Usage{"/seed2": usage(0, 1000)},
+		Leave:     map[string]bool{"d": true, "p1": true},
+		FS:        planFS{},
+	})
+	var moved []string
+	for _, e := range plan.Entries {
+		moved = append(moved, e.Name)
+	}
+	if strings.Join(moved, ",") != "Keep,Pair" {
+		t.Errorf("moved = %v, want Done left for removal and the pair moved together", moved)
+	}
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "1 download(s) on the download drive are done seeding") {
+		t.Errorf("warnings = %v", plan.Warnings)
+	}
+}

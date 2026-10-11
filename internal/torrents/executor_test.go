@@ -16,13 +16,16 @@ import (
 )
 
 type execTorrent struct {
-	Hash       string  `json:"hash"`
-	Name       string  `json:"name"`
-	State      string  `json:"state"`
-	SavePath   string  `json:"save_path"`
-	Progress   float64 `json:"progress"`
-	AmountLeft int64   `json:"amount_left"`
-	AutoTMM    bool    `json:"auto_tmm"`
+	Hash         string  `json:"hash"`
+	Name         string  `json:"name"`
+	State        string  `json:"state"`
+	SavePath     string  `json:"save_path"`
+	ContentPath  string  `json:"content_path"`
+	Progress     float64 `json:"progress"`
+	AmountLeft   int64   `json:"amount_left"`
+	AutoTMM      bool    `json:"auto_tmm"`
+	SeedingTime  int64   `json:"seeding_time"`
+	CompletionOn int64   `json:"completion_on"`
 }
 
 // execQbit is a qBittorrent whose torrent list the test sets directly, and
@@ -35,6 +38,9 @@ type execQbit struct {
 	posts      []string
 	failPath   string
 	failCode   int
+	// ignoreDeletes answers deletes 200 without deleting, as qBittorrent
+	// does whatever happens.
+	ignoreDeletes bool
 }
 
 func newExecQbit(t *testing.T, torrents ...execTorrent) *execQbit {
@@ -72,6 +78,12 @@ func newExecQbit(t *testing.T, torrents ...execTorrent) *execQbit {
 			_ = json.NewEncoder(w).Encode(out)
 		case "/api/v2/torrents/createCategory":
 			f.categories[r.PostForm.Get("category")] = true
+		case "/api/v2/torrents/delete":
+			if !f.ignoreDeletes {
+				for _, h := range strings.Split(r.PostForm.Get("hashes"), "|") {
+					delete(f.torrents, h)
+				}
+			}
 		}
 	}))
 	t.Cleanup(f.Close)

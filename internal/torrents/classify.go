@@ -128,8 +128,16 @@ type Download struct {
 	// requirement - worked out for every finished download Coldarr
 	// manages, wherever it is.
 	Seeding Seeding
+	// ImportsConfirmed is set once every app in ImportedBy has confirmed
+	// importing the download - and from the start when there are none.
+	// It's only worked out where it matters: before a move or relabel,
+	// and for a download whose seeding is done.
+	ImportsConfirmed bool
 	// pendingImports are the import checks the download is waiting on.
 	pendingImports []ImportKey
+	// importReason memoizes importsReason.
+	importReason  string
+	importChecked bool
 }
 
 // Managed reports whether the download is Coldarr's to move - on a
@@ -205,6 +213,11 @@ func classifyOne(in Input, tiers []model.Tier, t qbit.Torrent) *Download {
 		return d
 	}
 	d.Seeding = seedingStatus(t, in.Trackers, in.Config.Seeding, in.Now)
+	if d.Seeding.Met {
+		// Done seeding means a removal candidate, wherever it is - and
+		// removing a download its importer hasn't imported loses it.
+		d.importsReason(in)
+	}
 
 	if tier.Role == model.RoleCold {
 		d.State = Parked
@@ -254,7 +267,22 @@ func (d *Download) clearToTouch(in Input) string {
 		}
 		d.DisableAutoTMM = true
 	}
+	return d.importsReason(in)
+}
 
+// importsReason says why the download's imports aren't confirmed, or ""
+// if they are - recording any checks still to run, once.
+func (d *Download) importsReason(in Input) string {
+	if d.importChecked {
+		return d.importReason
+	}
+	d.importChecked = true
+	d.importReason = d.checkImports(in)
+	d.ImportsConfirmed = d.importReason == ""
+	return d.importReason
+}
+
+func (d *Download) checkImports(in Input) string {
 	hash := strings.ToUpper(d.Hash)
 	var waiting []string
 	for _, app := range d.ImportedBy {

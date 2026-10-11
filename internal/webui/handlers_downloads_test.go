@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/scheduler"
 	"github.com/vocoder/coldarr/internal/secrets"
+	"github.com/vocoder/coldarr/internal/torrents"
 )
 
 // TestDownloads_PlanThenMove walks the downloads lifecycle through the GUI:
@@ -196,5 +199,139 @@ func TestDownloads_ScheduledRunWithoutQbittorrent(t *testing.T) {
 	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
 	if !strings.Contains(page.Body.String(), "Download tiering needs qBittorrent connected") {
 		t.Errorf("the page should explain what's missing:\n%s", page.Body.String())
+	}
+}
+
+// doneSeedingServer has two downloads past a 1-day requirement, their
+// trackers scanned, and one that isn't.
+func doneSeedingServer(t *testing.T, mode config.RemovalMode) *downloadsTestServer {
+	t.Helper()
+	srv := newDownloadsTestServer(t)
+	zero := 0
+	srv.cfg.Torrents.Seeding = config.SeedingConfig{MinSeedDays: 1, GraceDays: &zero, Overrides: []config.TrackerOverride{{Host: "strict.example.org", MinSeedDays: 30}}}
+	srv.cfg.Torrents.Removal = config.RemovalConfig{Mode: mode}
+	srv.qb.add(t, finishedDownload("aaa", "Old.ISO", "seed", srv.seed))
+	srv.qb.add(t, finishedDownload("bbb", "Other.ISO", "seed", srv.seed))
+	srv.qb.add(t, finishedDownload("ccc", "Strict.ISO", "seed", srv.seed))
+	srv.qb.trackers["aaa"] = []string{"tracker.example.org"}
+	srv.qb.trackers["bbb"] = []string{"tracker.example.org"}
+	srv.qb.trackers["ccc"] = []string{"strict.example.org"}
+	if _, err := srv.scanTrackersNow(); err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
+func TestDownloads_RemovalModes(t *testing.T) {
+	// Off: just a count.
+	srv := doneSeedingServer(t, config.RemovalOff)
+	page := httptest.NewRecorder()
+	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	if !strings.Contains(page.Body.String(), "2 download(s) have met their seeding requirement. Removal is off") {
+		t.Fatalf("off:\n%s", page.Body.String())
+	}
+
+	// Report: the list, and no button.
+	srv = doneSeedingServer(t, config.RemovalReport)
+	page = httptest.NewRecorder()
+	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	body := page.Body.String()
+	if !strings.Contains(body, "Report only: these would be removed") || !strings.Contains(body, "Old.ISO") || strings.Contains(body, "Remove these now") {
+		t.Fatalf("report:\n%s", body)
+	}
+	if strings.Contains(body, "<td>Strict.ISO") {
+		t.Error("a download short of its tracker's override is not done")
+	}
+	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	if !strings.Contains(rec.Body.String(), "removal isn&#39;t set to remove") {
+		t.Errorf("a crafted remove in report mode must be refused:\n%s", rec.Body.String())
+	}
+	if got := srv.qb.torrent("aaa"); got.Hash == "" {
+		t.Fatal("report mode removed something")
+	}
+}
+
+func TestDownloads_RemoveNow(t *testing.T) {
+	srv := doneSeedingServer(t, config.RemovalRemove)
+	srv.cfg.Torrents.Removal.MaxPerRun = 1
+	apprise := newFakeApprise(t)
+	if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+		t.Fatal(err)
+	}
+
+	page := httptest.NewRecorder()
+	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	if !strings.Contains(page.Body.String(), "Remove these now") || !strings.Contains(page.Body.String(), "1 more wait for later runs") {
+		t.Fatalf("remove mode, capped at 1:\n%s", page.Body.String())
+	}
+
+	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, "Removed 1 download(s)") {
+		t.Fatalf("remove now:\n%s", body)
+	}
+	var gone, left []string
+	for _, h := range []string{"aaa", "bbb", "ccc"} {
+		if srv.qb.torrent(h).Hash == "" {
+			gone = append(gone, h)
+		} else {
+			left = append(left, h)
+		}
+	}
+	if len(gone) != 1 || strings.Join(left, ",") == "aaa,bbb,ccc" {
+		t.Fatalf("gone = %v, want exactly one removed under the cap", gone)
+	}
+	names := map[string]string{"aaa": "Old.ISO", "bbb": "Other.ISO"}
+	if _, err := os.Stat(filepath.Join(srv.seed, names[gone[0]])); !os.IsNotExist(err) {
+		t.Error("its files should be deleted")
+	}
+	got := apprise.notifications()
+	if len(got) != 1 || !strings.Contains(got[0]["body"], "removed 1 download(s)") || !strings.Contains(got[0]["body"], "1 more wait for the next run") {
+		t.Errorf("notifications = %+v, want a summary even though verbose is off", got)
+	}
+	if !strings.Contains(body, "removed") || !strings.Contains(body, "Recent activity") {
+		t.Errorf("the removal should be in the activity log:\n%s", body)
+	}
+
+	// Never alongside an apply.
+	srv.currentDownloadsRun = &downloadsRun{done: make(chan struct{}), progress: mover.Run[torrents.MoveEntry](&torrents.Executor{}, nil, nil, mover.Options{})}
+	srv.currentDownloadsRun.active.Store(true)
+	rec = serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	srv.currentDownloadsRun.active.Store(false)
+	if !strings.Contains(rec.Body.String(), "an apply is running") {
+		t.Errorf("remove during an apply:\n%s", rec.Body.String())
+	}
+}
+
+func TestScheduledExpireSeeds(t *testing.T) {
+	for _, tt := range []struct {
+		mode      config.RemovalMode
+		wantTitle string
+		wantBody  string
+		removed   bool
+	}{
+		{mode: config.RemovalOff, wantTitle: "removal is off"},
+		{mode: config.RemovalReport, wantTitle: "Finished seeds (report only)", wantBody: "2 download(s) would be removed"},
+		{mode: config.RemovalRemove, wantTitle: "Scheduled removal of finished seeds", wantBody: "removed 2 download(s)", removed: true},
+	} {
+		t.Run(string(tt.mode), func(t *testing.T) {
+			srv := doneSeedingServer(t, tt.mode)
+			apprise := newFakeApprise(t)
+			if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			srv.runScheduledExpireSeeds(now)
+			got := apprise.notifications()
+			if len(got) != 1 || !strings.Contains(got[0]["title"], tt.wantTitle) || !strings.Contains(got[0]["body"], tt.wantBody) {
+				t.Fatalf("notifications = %+v", got)
+			}
+			if gone := srv.qb.torrent("aaa").Hash == ""; gone != tt.removed {
+				t.Errorf("aaa removed = %v, want %v", gone, tt.removed)
+			}
+			if !srv.taskState(taskExpireSeeds).LastRan.Equal(now) {
+				t.Error("the run should count")
+			}
+		})
 	}
 }

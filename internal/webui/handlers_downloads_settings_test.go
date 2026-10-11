@@ -321,3 +321,29 @@ func TestScheduledTrackerScan(t *testing.T) {
 		t.Errorf("Scan now with qBittorrent down:\n%s", rec.Body.String())
 	}
 }
+
+func TestDownloadsSettings_Removal(t *testing.T) {
+	srv, _ := newDownloadsSettingsServer(t)
+	data := srv.downloadsSettingsData()
+	if data.RemovalMode != "off" || data.MaxPerRun != 25 {
+		t.Fatalf("removal defaults = %q, %d; want off and 25", data.RemovalMode, data.MaxPerRun)
+	}
+	body := serveForm(srv.handleDownloadsRemovalSave, "/settings/downloads/removal", url.Values{"mode": {"report"}, "max_per_run": {"10"}}).Body.String()
+	if !strings.Contains(body, "Removal settings saved.") {
+		t.Fatalf("save:\n%s", body)
+	}
+	if got := srv.currentConfig().Torrents.Removal; got.Mode != config.RemovalReport || got.MaxPerRun != 10 {
+		t.Errorf("removal = %+v", got)
+	}
+	for _, bad := range []url.Values{
+		{"mode": {"remove"}, "max_per_run": {"0"}},
+		{"mode": {"purge"}, "max_per_run": {"5"}},
+	} {
+		if body := serveForm(srv.handleDownloadsRemovalSave, "/settings/downloads/removal", bad).Body.String(); !strings.Contains(body, "alert-error") {
+			t.Errorf("%v should be refused:\n%s", bad, body)
+		}
+	}
+	if got := srv.currentConfig().Torrents.Removal.Mode; got != config.RemovalReport {
+		t.Errorf("a refused save changed the mode to %q", got)
+	}
+}

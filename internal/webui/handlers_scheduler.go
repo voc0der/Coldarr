@@ -65,6 +65,7 @@ type schedulerData struct {
 	ShowDownloads  bool
 	RunTorrentPlan scheduleFormView
 	ScanTrackers   scheduleFormView
+	ExpireSeeds    scheduleFormView
 }
 
 type omitDayView struct {
@@ -145,6 +146,9 @@ func (s *Server) schedulerData() schedulerData {
 		ScanTrackers: s.scheduleView(taskScanTrackers, "Scan Torrent Trackers",
 			`Looks up which trackers each download announces to, so its seeding requirement (Settings > Downloads) can be worked out. qBittorrent answers one download per request, so this only ever runs here, on a schedule (or via "Scan now" below), and only looks up downloads it hasn't seen before. Until a download's trackers have been scanned, it never counts as done seeding.`,
 			cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).LastRan),
+		ExpireSeeds: s.scheduleView(taskExpireSeeds, "Remove Finished Seeds",
+			`Scans trackers, then reports or removes downloads whose seeding is done - whichever the removal mode under Settings > Downloads says (it's off until you choose). Every run that removes anything sends a summary naming what went, whether or not notifications are verbose.`,
+			cfg.Scheduler.ExpireSeeds, s.taskState(taskExpireSeeds).LastRan),
 		ScanOrphans: s.scheduleView("scan_orphans", "Scan for Orphaned Storage",
 			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers) - and, with qBittorrent connected, every file and folder in the download folders it doesn't know about. This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
 			cfg.Scheduler.ScanOrphans, s.getLastRanScanOrphans()),
@@ -227,6 +231,9 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanTrackers.Label, data.ScanTrackers.Hint, data.ScanTrackers.LastRan
 			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
 			data.ScanTrackers = submitted
+		case taskExpireSeeds:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ExpireSeeds.Label, data.ExpireSeeds.Hint, data.ExpireSeeds.LastRan
+			data.ExpireSeeds = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return

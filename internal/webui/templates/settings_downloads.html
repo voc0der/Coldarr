@@ -144,4 +144,26 @@
     </form>
   </div>
 </div>
+
+<div class="card">
+  <h2 style="margin-top:0">Removing finished seeds</h2>
+  <p class="hint">Once a download is done seeding - see Seeding rules - Coldarr can remove it from qBittorrent, from either drive. It never removes a download with no seeding rule met, one Radarr/Sonarr/Lidarr hasn't confirmed importing, one sharing a folder with your library, or one still in use, and never deletes files another download still seeds - that one just leaves qBittorrent. Removals run from the Downloads page or the "Remove Finished Seeds" task.</p>
+  <form class="stacked" method="post" action="/settings/downloads/removal">
+    <fieldset class="tier-access">
+      <legend>Mode</legend>
+      <label class="radio-row"><input type="radio" name="mode" value="off" {{if eq .RemovalMode "off"}}checked{{end}}> Off - never remove anything</label>
+      <label class="radio-row"><input type="radio" name="mode" value="report" {{if eq .RemovalMode "report"}}checked{{end}}> Report only - list what would be removed, and notify, but remove nothing</label>
+      <label class="radio-row"><input type="radio" name="mode" value="remove" {{if eq .RemovalMode "remove"}}checked{{end}}> Remove - delete finished downloads and their files</label>
+      <div class="alert alert-warn">Remove deletes downloads from qBittorrent along with their files, which can't be undone. Try Report only first and check the list on the Downloads page. A download on the download drive that's done seeding is then removed instead of being moved to seed storage.</div>
+    </fieldset>
+    <div>
+      <label for="max_per_run">Most to remove per run</label>
+      <input type="number" id="max_per_run" name="max_per_run" min="1" step="1" value="{{.MaxPerRun}}">
+      <p class="hint">A mistaken rule then costs at most this many downloads and a notification, never the whole drive. The rest wait for the next run.</p>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
 {{end}}

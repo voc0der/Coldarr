@@ -86,6 +86,8 @@ func newArrDownloads(t *testing.T, root string) *arrDownloads {
 				records = append(records, map[string]string{"downloadId": id, "eventType": "downloadFolderImported"})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"records": records})
+		case root + "/movie":
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -597,5 +599,68 @@ func TestScanTrackers(t *testing.T) {
 	e.Qbit = nil
 	if _, err := e.ScanTrackers(time.Now()); !errors.Is(err, ErrQbitNotConnected) {
 		t.Errorf("no qBittorrent = %v", err)
+	}
+}
+
+func TestPlanRemovals_Engine(t *testing.T) {
+	week := 7 * 24 * time.Hour
+	f := newDownloadsFixture(t, func(ssd, seed string) []qbitTorrent {
+		return []qbitTorrent{
+			finished("aaa", "Done.ISO", "manual", ssd, 30*24*time.Hour),
+			finished("bbb", "Young.ISO", "manual", ssd, week),
+		}
+	})
+	mkContent(t, filepath.Join(f.ssd, "Done.ISO"))
+	mkContent(t, filepath.Join(f.ssd, "Young.ISO"))
+	cache, err := trackercache.Load(filepath.Join(t.TempDir(), "trackers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackersSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"url": "https://tracker.example.org/announce"}]`))
+	}))
+	defer trackersSrv.Close()
+	if _, err := cache.Refresh(qbit.NewClient(trackersSrv.URL, qbit.Auth{}), []qbit.Torrent{{Hash: "aaa"}, {Hash: "bbb"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.engine.Trackers = cache
+	f.engine.Cfg.Torrents.Seeding = config.SeedingConfig{MinSeedDays: 14}
+
+	inv, err := f.engine.BuildDownloadsInventory(time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Off: nothing, whatever's done.
+	if plan, err := f.engine.PlanRemovals(inv); err != nil || len(plan.Removals) != 0 {
+		t.Fatalf("removal off = %+v, %v", plan, err)
+	}
+
+	f.engine.Cfg.Torrents.Removal.Mode = config.RemovalRemove
+	plan, err := f.engine.PlanRemovals(inv)
+	if err != nil || len(plan.Removals) != 1 || plan.Removals[0].Name != "Done.ISO" {
+		t.Fatalf("removals = %+v, %v; want only the download past 14+7 days", plan, err)
+	}
+	// ...and the move planner leaves it for removal.
+	moves := f.engine.BuildDownloadsPlan(inv)
+	if len(moves.Entries) != 1 || moves.Entries[0].Name != "Young.ISO" {
+		t.Errorf("moves = %+v, want Done.ISO left to be removed", moves.Entries)
+	}
+	if x := f.engine.Remover(); x.Qbit != f.engine.Qbit || x.Seeding.MinSeedDays != 14 {
+		t.Errorf("Remover = %+v", x)
+	}
+
+	// The library guard can't run without every library: refuse.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer broken.Close()
+	f.engine.Sonarr = arrapi.NewSonarrClient(broken.URL, "key")
+	if _, err := f.engine.PlanRemovals(inv); err == nil || !strings.Contains(err.Error(), "reading sonarr's library") {
+		t.Errorf("an unreadable library = %v, want a refusal", err)
+	}
+	// With removal planning failing, moves go ahead as if it were off.
+	if moves := f.engine.BuildDownloadsPlan(inv); len(moves.Entries) != 2 {
+		t.Errorf("moves with removal planning failing = %+v, want both moved", moves.Entries)
 	}
 }

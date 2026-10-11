@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vocoder/coldarr/internal/arrapi"
+	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/importcache"
 	"github.com/vocoder/coldarr/internal/model"
@@ -537,13 +539,29 @@ func (inv *DownloadsInventory) Wedged() map[string]int64 {
 // torrents.BuildPlan), with space downloads still in progress will claim
 // already counted as used. Its warnings add what the inventory knows about
 // seed storage nothing can make room on.
+//
+// With removal on, a download on the download drive that's done seeding is
+// left there to be removed, rather than copied to seed storage only to be
+// deleted.
 func (e *Engine) BuildDownloadsPlan(inv *DownloadsInventory) *torrents.Plan {
+	var leave map[string]bool
+	if e.Cfg.Torrents.Removal.EffectiveMode() == config.RemovalRemove {
+		if removals, err := e.PlanRemovals(inv); err == nil {
+			leave = map[string]bool{}
+			for _, r := range append(removals.Removals, removals.Deferred...) {
+				for _, h := range r.Hashes {
+					leave[h] = true
+				}
+			}
+		}
+	}
 	plan := torrents.BuildPlan(torrents.PlanInput{
 		Downloads: inv.Downloads,
 		Tiers:     e.Cfg.Tiers,
 		Usage:     applyReservations(inv.UsableUsage(), inv.Reserved),
 		VolumeOf:  inv.VolumeOf(),
 		Unseen:    inv.Unseen,
+		Leave:     leave,
 		FS:        downloadsFS{},
 	})
 	wedged := inv.Wedged()
@@ -650,4 +668,75 @@ func (e *Engine) ScanTrackers(now time.Time) (int, error) {
 		return 0, fmt.Errorf("listing qBittorrent's downloads: %w", err)
 	}
 	return e.Trackers.Refresh(e.Qbit, list, now)
+}
+
+// PlanRemovals works out which downloads are done seeding and safe to
+// remove (see torrents.PlanRemovals) - nothing at all when removal is off.
+// The library guard needs every Radarr, Sonarr and Lidarr item's folder,
+// so a failure reading any of them refuses, rather than guess.
+func (e *Engine) PlanRemovals(inv *DownloadsInventory) (torrents.RemovalPlan, error) {
+	if e.Cfg.Torrents.Removal.EffectiveMode() == config.RemovalOff {
+		return torrents.RemovalPlan{}, nil
+	}
+	paths, err := e.libraryPaths()
+	if err != nil {
+		return torrents.RemovalPlan{}, err
+	}
+	return torrents.PlanRemovals(inv.Downloads, paths, e.Cfg.Torrents.Removal.Limit()), nil
+}
+
+// Remover returns what carries out removals through qBittorrent.
+func (e *Engine) Remover() *torrents.Remover {
+	return &torrents.Remover{Qbit: e.Qbit, Trackers: e.Trackers.Get(), Seeding: e.Cfg.Torrents.Seeding, Log: e.DownloadLog}
+}
+
+// libraryPaths returns the folder of every item Radarr, Sonarr and Lidarr
+// manage, fetched concurrently.
+func (e *Engine) libraryPaths() ([]string, error) {
+	type source struct {
+		app   string
+		fetch func() ([]string, error)
+	}
+	var sources []source
+	if e.Radarr != nil {
+		sources = append(sources, source{"radarr", func() ([]string, error) { return targetPaths(e.Radarr.LinkTargets()) }})
+	}
+	if e.Sonarr != nil {
+		sources = append(sources, source{"sonarr", func() ([]string, error) { return targetPaths(e.Sonarr.LinkTargets()) }})
+	}
+	if e.Lidarr != nil {
+		sources = append(sources, source{"lidarr", e.Lidarr.ArtistPaths})
+	}
+	results := make([][]string, len(sources))
+	errs := make([]error, len(sources))
+	var wg sync.WaitGroup
+	for i, src := range sources {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = src.fetch()
+		}()
+	}
+	wg.Wait()
+	var paths []string
+	for i, src := range sources {
+		if errs[i] != nil {
+			return nil, fmt.Errorf("reading %s's library, needed to be sure no download shares a folder with it: %w", src.app, errs[i])
+		}
+		paths = append(paths, results[i]...)
+	}
+	return paths, nil
+}
+
+func targetPaths(targets map[int]arrapi.LinkTarget, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if t.Path != "" {
+			paths = append(paths, t.Path)
+		}
+	}
+	return paths, nil
 }

@@ -63,6 +63,9 @@ type downloadsSettingsData struct {
 	AllowDisablingAutoTMM bool
 	Categories            []string
 
+	RemovalMode string
+	MaxPerRun   int
+
 	// LabelsError says why qBittorrent's labels couldn't be read; the
 	// saved rules still show, and can still be edited.
 	LabelsError string
@@ -77,6 +80,8 @@ func (s *Server) downloadsSettingsData() downloadsSettingsData {
 		DefaultSeedDays:       cfg.Seeding.MinSeedDays,
 		GraceDays:             cfg.Seeding.Grace(),
 		SettleDays:            cfg.SettleDays,
+		RemovalMode:           string(cfg.Removal.EffectiveMode()),
+		MaxPerRun:             cfg.Removal.Limit(),
 		SeedLabel:             cfg.SeedLabel,
 		AllowDisablingAutoTMM: cfg.AllowDisablingAutoTMM,
 		ImportApps: []importAppView{
@@ -240,6 +245,22 @@ func (s *Server) handleDownloadsTrackerDelete(w http.ResponseWriter, r *http.Req
 		t.Seeding.Overrides = kept
 	})
 	s.renderDownloadsSettings(w, fmt.Sprintf("Override for %s removed.", host), err)
+}
+
+// handleDownloadsRemovalSave saves the removal mode and the per-run cap.
+func (s *Server) handleDownloadsRemovalSave(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	mode := config.RemovalMode(r.FormValue("mode"))
+	limit, err := strconv.Atoi(strings.TrimSpace(r.FormValue("max_per_run")))
+	if err != nil || limit < 1 {
+		s.renderDownloadsSettings(w, "", fmt.Errorf("the most to remove per run must be a whole number, at least 1"))
+		return
+	}
+	err = s.updateTorrents(func(t *config.TorrentsConfig) {
+		t.Removal.Mode = mode
+		t.Removal.MaxPerRun = limit
+	})
+	s.renderDownloadsSettings(w, "Removal settings saved.", err)
 }
 
 // handleDownloadsTrackerScan is the Seeding rules card's own "Scan now" -

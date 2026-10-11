@@ -244,6 +244,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/downloads/trackers", s.handleDownloadsTrackerSave)
 	mux.HandleFunc("POST /settings/downloads/trackers/delete", s.handleDownloadsTrackerDelete)
 	mux.HandleFunc("POST /settings/downloads/trackers/scan", s.handleDownloadsTrackerScan)
+	mux.HandleFunc("POST /settings/downloads/removal", s.handleDownloadsRemovalSave)
 
 	mux.HandleFunc("GET /settings/notifications", s.handleNotificationsPage)
 	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
@@ -286,6 +287,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /downloads", s.handleDownloadsPage)
 	mux.HandleFunc("POST /downloads/apply", s.handleDownloadsApplyStart)
 	mux.HandleFunc("GET /downloads/apply/status/partial", s.handleDownloadsApplyStatusPartial)
+	mux.HandleFunc("POST /downloads/remove", s.handleDownloadsRemove)
 
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 	mux.HandleFunc("POST /history/verify", s.handleVerifyStart)
@@ -485,6 +487,9 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).Anchor, now) {
 		s.runScheduledScanTrackers(now)
 	}
+	if scheduler.Due(cfg.Scheduler.ExpireSeeds, s.taskState(taskExpireSeeds).Anchor, now) {
+		s.runScheduledExpireSeeds(now)
+	}
 	if scheduler.Due(cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).Anchor, now) {
 		s.runScheduledDownloadsPlan(now)
 	}
@@ -553,6 +558,8 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 		updated.Scheduler.RunTorrentPlan = sched
 	case taskScanTrackers:
 		updated.Scheduler.ScanTrackers = sched
+	case taskExpireSeeds:
+		updated.Scheduler.ExpireSeeds = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()

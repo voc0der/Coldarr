@@ -91,7 +91,11 @@ type PlanInput struct {
 	// Unseen marks (cleaned) paths Coldarr can't see qBittorrent's
 	// downloads on; nothing moves into them.
 	Unseen map[string]bool
-	FS     PlanFS
+	// Leave names downloads, by hash, to leave where they are because
+	// they're about to be removed - a move group stays only if every
+	// member is.
+	Leave map[string]bool
+	FS    PlanFS
 }
 
 // BuildPlan works out which ready downloads move where. The longest-
@@ -135,8 +139,13 @@ func BuildPlan(in PlanInput) *Plan {
 		}
 	}
 
+	left := 0
 	for _, group := range readyGroups(in.Downloads) {
 		head := group[0]
+		if allLeft(group, in.Leave) {
+			left++
+			continue
+		}
 		size := int64(0)
 		var hashes, names, disable []string
 		completed := time.Time{}
@@ -223,6 +232,10 @@ func BuildPlan(in PlanInput) *Plan {
 		volumes.Apply(working, chosen.path, size)
 	}
 
+	if left > 0 {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%d download(s) on the download drive are done seeding, so they're left there to be removed rather than moved", left))
+	}
+
 	for _, d := range in.Downloads {
 		if d.Relabel {
 			plan.Relabels = append(plan.Relabels, Relabel{Name: d.Name, Hash: d.Hash, Category: d.Category, ContentPath: d.ContentPath, DisableAutoTMM: d.DisableAutoTMM})
@@ -293,4 +306,13 @@ func fits(u diskusage.Usage, sizeBytes int64, ceiling float64) bool {
 
 func gb(b int64) float64 {
 	return float64(b) / (1 << 30)
+}
+
+func allLeft(group []*Download, leave map[string]bool) bool {
+	for _, d := range group {
+		if !leave[d.Hash] {
+			return false
+		}
+	}
+	return len(leave) > 0
 }

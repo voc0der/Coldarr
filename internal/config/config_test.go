@@ -610,6 +610,22 @@ func TestValidateSeeding(t *testing.T) {
 	}
 }
 
+func TestRemovalConfig(t *testing.T) {
+	var unset RemovalConfig
+	if unset.EffectiveMode() != RemovalOff || unset.Limit() != 25 {
+		t.Errorf("unset removal = %q, %d; want off and 25", unset.EffectiveMode(), unset.Limit())
+	}
+	set := RemovalConfig{Mode: RemovalRemove, MaxPerRun: 5}
+	if set.EffectiveMode() != RemovalRemove || set.Limit() != 5 {
+		t.Errorf("set removal = %q, %d", set.EffectiveMode(), set.Limit())
+	}
+	for _, bad := range []RemovalConfig{{Mode: "delete"}, {MaxPerRun: -1}} {
+		if err := ValidateTorrents(TorrentsConfig{SeedLabel: "seed", Removal: bad}); err == nil || !strings.Contains(err.Error(), "torrents.removal") {
+			t.Errorf("%+v: err = %v", bad, err)
+		}
+	}
+}
+
 func TestNormalizeTrackerHost(t *testing.T) {
 	for raw, want := range map[string]string{
 		"tracker.example.org":                          "tracker.example.org",
