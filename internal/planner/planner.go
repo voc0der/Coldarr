@@ -74,6 +74,15 @@ type MoveEntry struct {
 	Reasons        []string
 }
 
+// MoveTitle, MoveSize, MoveDestination, MovePhase and MoveCeiling describe
+// the entry to the shared move engine (see internal/mover's Entry), which
+// runs library and download moves alike.
+func (e MoveEntry) MoveTitle() string       { return e.Item.Title }
+func (e MoveEntry) MoveSize() int64         { return e.Item.SizeBytes }
+func (e MoveEntry) MoveDestination() string { return e.ToPath }
+func (e MoveEntry) MovePhase() int          { return e.Phase }
+func (e MoveEntry) MoveCeiling() float64    { return e.MaxUsedPercent }
+
 type Plan struct {
 	Entries []MoveEntry
 	// FinalUsage is the projected per-path usage if every entry in the

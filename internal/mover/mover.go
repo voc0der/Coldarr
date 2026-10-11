@@ -1,6 +1,7 @@
-// Package mover executes a planner.Plan by asking Radarr/Sonarr to relocate
-// items - Coldarr never touches media files directly, so the owning Arr
-// app's database stays the source of truth.
+// Package mover executes a move plan by asking the app that owns each item
+// to relocate it - Radarr/Sonarr for library items, qBittorrent for
+// downloads - so the owning app's database stays the source of truth.
+// Coldarr never moves media files itself.
 //
 // Moves are serialized per destination physical volume: never more than
 // one move in flight against the same disk at a time, though different
@@ -19,15 +20,19 @@
 // number reflecting real dependency order (see planner.MoveEntry.Phase),
 // and Apply executes phases strictly in that order, waiting for one to
 // fully land - including settling - before the next begins. See Apply.
+//
+// That machinery - phases, per-volume queues, the room re-check before
+// each move, and waiting for a move to land - is the same whichever app
+// does the moving, and exists once, in Run. What differs is behind an
+// Executor: how a move is requested, how the app confirms it landed, and
+// what happens once it has. Movers is the Radarr/Sonarr one.
 package mover
 
 import (
 	"errors"
 	"fmt"
 	"log"
-	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +41,49 @@ import (
 	"github.com/vocoder/coldarr/internal/history"
 	"github.com/vocoder/coldarr/internal/planner"
 )
+
+// Entry is one planned move, as the shared engine sees it - whichever app
+// carries it out.
+type Entry interface {
+	// MoveTitle names the move in errors and progress.
+	MoveTitle() string
+	// MoveSize is how many bytes the move adds at its destination; zero or
+	// less when unknown.
+	MoveSize() int64
+	// MoveDestination is the tier path the move writes to - what's
+	// checked for room beforehand, and watched while it lands.
+	MoveDestination() string
+	// MovePhase orders dependent moves (see planner.MoveEntry.Phase).
+	MovePhase() int
+	// MoveCeiling is the destination's hard usage ceiling, in percent;
+	// zero for none.
+	MoveCeiling() float64
+}
+
+// Executor carries out one app's moves for the shared engine.
+type Executor[E Entry] interface {
+	// Move asks the app to start moving e. It returns once the app has
+	// accepted the request - the move itself runs inside the app.
+	Move(e E) error
+	// Rejected reports whether err, returned by Move, proves the app
+	// turned the request down, so nothing from it can still be writing.
+	// Anything else - a request whose answer was lost, say - may have
+	// been accepted, so the destination is treated as busy.
+	Rejected(err error) bool
+	// ConfirmLanded asks the app whether e has fully landed, and where.
+	// An error wrapping ErrMoveFailed says the move has failed for good,
+	// and waiting longer can't land it; any other error is retried.
+	ConfirmLanded(e E) (landed bool, path string, err error)
+	// Landed finishes a confirmed move - recording it, telling anything
+	// downstream - and reports whether a downstream report succeeded
+	// (see EntryProgress.Reported). An error is shown on the entry, but
+	// the move still counts as landed: its capacity change has happened.
+	Landed(e E, landedPath string) (reported bool, err error)
+}
+
+// ErrMoveFailed marks a ConfirmLanded error as final: the app reports the
+// move itself went wrong, so there's nothing left to wait for.
+var ErrMoveFailed = errors.New("move failed")
 
 // MoveReporter is told where an item landed the moment its move is
 // confirmed, so a downstream consumer of the library (in practice
@@ -52,6 +100,39 @@ type MoveReporter interface {
 	ReportMoved(oldPath, newPath string) error
 }
 
+// Options are the shared engine's settings.
+type Options struct {
+	// CheckStorage, when set, runs immediately before each move and fails
+	// that move without contacting the app if it returns an error - a
+	// drive can drop out partway through a run that takes hours.
+	CheckStorage func() error
+
+	// SettleCheckInterval, SettleStableChecks, and SettleMaxWait
+	// control how long Run waits, after asking the app to move an item,
+	// for it to actually land on disk before starting the next item
+	// queued for the same volume. Zero values fall back to production
+	// defaults; tests override them to run fast.
+	SettleCheckInterval time.Duration
+	SettleStableChecks  int
+	SettleMaxWait       time.Duration
+
+	// Serial runs every entry of a phase in one queue, one at a time,
+	// whatever volume it's bound for.
+	Serial bool
+
+	// statFunc defaults to diskusage.Stat; tests override it to observe
+	// and control settling without touching a real filesystem.
+	statFunc func(path string) (diskusage.Usage, error)
+}
+
+func (o Options) stat(path string) (diskusage.Usage, error) {
+	if o.statFunc != nil {
+		return o.statFunc(path)
+	}
+	return diskusage.Stat(path)
+}
+
+// Movers runs library plans through Radarr/Sonarr.
 type Movers struct {
 	Radarr  *arrapi.RadarrClient
 	Sonarr  *arrapi.SonarrClient
@@ -95,11 +176,14 @@ func (m *Movers) logf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-func (m *Movers) stat(path string) (diskusage.Usage, error) {
-	if m.statFunc != nil {
-		return m.statFunc(path)
+func (m *Movers) options() Options {
+	return Options{
+		CheckStorage:        m.CheckStorage,
+		SettleCheckInterval: m.SettleCheckInterval,
+		SettleStableChecks:  m.SettleStableChecks,
+		SettleMaxWait:       m.SettleMaxWait,
+		statFunc:            m.statFunc,
 	}
-	return diskusage.Stat(path)
 }
 
 type MoveStatus string
@@ -111,8 +195,9 @@ const (
 	StatusFailed  MoveStatus = "failed"
 )
 
-type EntryProgress struct {
-	Entry  planner.MoveEntry
+// RunEntry is one entry of a run and how it's going.
+type RunEntry[E Entry] struct {
+	Entry  E
 	Status MoveStatus
 	Err    string
 	// Timing includes the command, settling, and reporting, so estimates
@@ -120,17 +205,18 @@ type EntryProgress struct {
 	Started  time.Time
 	Finished time.Time
 	volume   string
-	// LandedPath is the item's own folder after the move, as Radarr/Sonarr
-	// reports it once the transfer is confirmed landed - not Entry.ToPath,
-	// which is only the destination tier root every item in that tier
+	// LandedPath is the item's own folder after the move, as the app
+	// reports it once the transfer is confirmed landed - not the entry's
+	// destination, which is only the tier root every item in that tier
 	// shares. Consumers that need to point at the item itself (notifying
 	// Jellyfin, which keys items by their exact path) need this; guessing
-	// it by joining ToPath with the old folder's name would be wrong for
-	// any item Radarr/Sonarr renamed as part of the move. Empty if the
-	// move never landed.
+	// it by joining the destination with the old folder's name would be
+	// wrong for any item Radarr/Sonarr renamed as part of the move. Empty
+	// if the move never landed.
 	LandedPath string
-	// Reported records that Movers.Reporter was successfully told about
-	// this move as it landed, rather than at the end of the run.
+	// Reported records that a downstream consumer (see MoveReporter) was
+	// successfully told about this move as it landed, rather than at the
+	// end of the run.
 	//
 	// Consumers need this to avoid reporting the same path twice: Jellyfin
 	// restarts its library-monitor debounce every time a path it already
@@ -141,26 +227,26 @@ type EntryProgress struct {
 	Reported bool
 }
 
-// ProgressSnapshot is a point-in-time, race-free copy of an apply run's
-// state, safe to read from any goroutine (e.g. a web handler polling for
-// status while the run continues in the background).
-type ProgressSnapshot struct {
+// RunSnapshot is a point-in-time, race-free copy of a run's state, safe to
+// read from any goroutine (e.g. a web handler polling for status while the
+// run continues in the background).
+type RunSnapshot[E Entry] struct {
 	Started  time.Time
 	Finished time.Time
 	Done     bool
-	Entries  []EntryProgress
+	Entries  []RunEntry[E]
 }
 
-func (s ProgressSnapshot) Moved() []EntryProgress {
+func (s RunSnapshot[E]) Moved() []RunEntry[E] {
 	return s.byStatus(StatusDone)
 }
 
-func (s ProgressSnapshot) Failed() []EntryProgress {
+func (s RunSnapshot[E]) Failed() []RunEntry[E] {
 	return s.byStatus(StatusFailed)
 }
 
-func (s ProgressSnapshot) byStatus(status MoveStatus) []EntryProgress {
-	var out []EntryProgress
+func (s RunSnapshot[E]) byStatus(status MoveStatus) []RunEntry[E] {
+	var out []RunEntry[E]
 	for _, e := range s.Entries {
 		if e.Status == status {
 			out = append(out, e)
@@ -169,25 +255,44 @@ func (s ProgressSnapshot) byStatus(status MoveStatus) []EntryProgress {
 	return out
 }
 
-// Progress is a live view of an in-progress (or completed) apply run.
-type Progress struct {
+// RunProgress is a live view of an in-progress (or completed) run.
+type RunProgress[E Entry] struct {
 	mu       sync.Mutex
 	started  time.Time
 	finished time.Time
 	done     bool
-	entries  []EntryProgress
+	entries  []RunEntry[E]
 	doneCh   chan struct{}
 }
 
+// The library's instantiation keeps the names everything outside this
+// package has always used.
+type (
+	EntryProgress    = RunEntry[planner.MoveEntry]
+	ProgressSnapshot = RunSnapshot[planner.MoveEntry]
+	Progress         = RunProgress[planner.MoveEntry]
+)
+
 func newProgress(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
-	entries := make([]EntryProgress, len(plan.Entries))
-	for i, e := range plan.Entries {
-		entries[i] = EntryProgress{Entry: e, Status: StatusPending, volume: volumeKey(e.ToPath, volumeOf)}
-	}
-	return &Progress{started: time.Now(), entries: entries, doneCh: make(chan struct{})}
+	return newRunProgress(plan.Entries, volumeOf, false)
 }
 
-func (p *Progress) setStatus(i int, status MoveStatus, err error) {
+// serialQueue is the one queue every entry of a serial run shares.
+const serialQueue = "serial"
+
+func newRunProgress[E Entry](plan []E, volumeOf map[string]uint64, serial bool) *RunProgress[E] {
+	entries := make([]RunEntry[E], len(plan))
+	for i, e := range plan {
+		volume := serialQueue
+		if !serial {
+			volume = volumeKey(e.MoveDestination(), volumeOf)
+		}
+		entries[i] = RunEntry[E]{Entry: e, Status: StatusPending, volume: volume}
+	}
+	return &RunProgress[E]{started: time.Now(), entries: entries, doneCh: make(chan struct{})}
+}
+
+func (p *RunProgress[E]) setStatus(i int, status MoveStatus, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[i].Status = status
@@ -202,19 +307,19 @@ func (p *Progress) setStatus(i int, status MoveStatus, err error) {
 	}
 }
 
-func (p *Progress) setLandedPath(i int, path string) {
+func (p *RunProgress[E]) setLandedPath(i int, path string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[i].LandedPath = path
 }
 
-func (p *Progress) setReported(i int, reported bool) {
+func (p *RunProgress[E]) setReported(i int, reported bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.entries[i].Reported = reported
 }
 
-func (p *Progress) markDone() {
+func (p *RunProgress[E]) markDone() {
 	p.mu.Lock()
 	p.done = true
 	p.finished = time.Now()
@@ -222,19 +327,19 @@ func (p *Progress) markDone() {
 	close(p.doneCh)
 }
 
-// Wait blocks until the apply run has finished - every volume's queue
-// drained. For callers (like the CLI) that want to run synchronously.
-func (p *Progress) Wait() {
+// Wait blocks until the run has finished - every volume's queue drained.
+// For callers (like the CLI) that want to run synchronously.
+func (p *RunProgress[E]) Wait() {
 	<-p.doneCh
 }
 
 // Snapshot returns a race-free copy of the current state.
-func (p *Progress) Snapshot() ProgressSnapshot {
+func (p *RunProgress[E]) Snapshot() RunSnapshot[E] {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	entries := make([]EntryProgress, len(p.entries))
+	entries := make([]RunEntry[E], len(p.entries))
 	copy(entries, p.entries)
-	return ProgressSnapshot{Started: p.started, Finished: p.finished, Done: p.done, Entries: entries}
+	return RunSnapshot[E]{Started: p.started, Finished: p.finished, Done: p.done, Entries: entries}
 }
 
 // Apply starts executing plan and returns immediately with a *Progress the
@@ -258,11 +363,19 @@ func (p *Progress) Snapshot() ProgressSnapshot {
 // Entries blocked by an unmet prerequisite are marked failed explicitly so
 // a completed Progress never leaves work silently pending.
 func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress {
-	progress := newProgress(plan, volumeOf)
+	return Run[planner.MoveEntry](arrExecutor{m}, plan.Entries, volumeOf, m.options())
+}
+
+// Run starts executing entries through exec and returns immediately with a
+// *RunProgress the caller can poll or Wait() on - see Apply, which is Run
+// for Radarr/Sonarr.
+func Run[E Entry](exec Executor[E], entries []E, volumeOf map[string]uint64, opts Options) *RunProgress[E] {
+	r := &runner[E]{exec: exec, opts: opts}
+	progress := newRunProgress(entries, volumeOf, opts.Serial)
 
 	byPhase := map[int][]int{}
-	for i, e := range plan.Entries {
-		byPhase[e.Phase] = append(byPhase[e.Phase], i)
+	for i, e := range entries {
+		byPhase[e.MovePhase()] = append(byPhase[e.MovePhase()], i)
 	}
 	phases := make([]int, 0, len(byPhase))
 	for p := range byPhase {
@@ -272,7 +385,7 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 
 	go func() {
 		for phaseIndex, phase := range phases {
-			if m.runPhase(plan, byPhase[phase], progress, volumeOf) {
+			if r.runPhase(byPhase[phase], progress) {
 				continue
 			}
 
@@ -287,6 +400,11 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 	}()
 
 	return progress
+}
+
+type runner[E Entry] struct {
+	exec Executor[E]
+	opts Options
 }
 
 // runPhase groups the given plan-entry indices by destination volume and
@@ -304,11 +422,11 @@ func (m *Movers) Apply(plan *planner.Plan, volumeOf map[string]uint64) *Progress
 // starting another write to the same volume would defeat the very
 // serialization this package provides. Other volume groups in the same
 // phase are independent and are allowed to finish.
-func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress, volumeOf map[string]uint64) bool {
+func (r *runner[E]) runPhase(indices []int, progress *RunProgress[E]) bool {
 	groups := map[string][]int{}
 	var order []string
 	for _, i := range indices {
-		key := volumeKey(plan.Entries[i].ToPath, volumeOf)
+		key := progress.entries[i].volume
 		if _, ok := groups[key]; !ok {
 			order = append(order, key)
 		}
@@ -329,7 +447,7 @@ func (m *Movers) runPhase(plan *planner.Plan, indices []int, progress *Progress,
 		go func(groupIndices []int) {
 			defer wg.Done()
 			for groupIndex, i := range groupIndices {
-				landed, destinationSafe := m.runOne(plan.Entries[i], progress, i)
+				landed, destinationSafe := r.runOne(progress.entries[i].Entry, progress, i)
 				if !landed {
 					markLandingUnmet()
 				}
@@ -359,109 +477,94 @@ func volumeKey(path string, volumeOf map[string]uint64) string {
 	return "path:" + path
 }
 
-// verifyRoom re-stats entry.ToPath immediately before firing the move and
-// refuses to proceed if it doesn't actually have room for the item right
-// now. The plan's own capacity math (see internal/planner) is computed
-// once, from a snapshot taken before the run started - a long-running
-// apply, or anything else writing to the same destination in the
-// meantime (another download landing, a concurrent process, drift from
+// verifyRoom re-stats the destination immediately before firing the move
+// and refuses to proceed if it doesn't actually have room for the item
+// right now. The plan's own capacity math (see internal/planner) is
+// computed once, from a snapshot taken before the run started - a
+// long-running apply, or anything else writing to the same destination in
+// the meantime (another download landing, a concurrent process, drift from
 // an earlier bug), can leave real free space short of what the plan
 // assumed by the time this specific entry's turn comes up. This is the
-// last line of defense against ever handing Radarr/Sonarr a move with
-// nowhere for it to actually land or beyond the destination tier's hard
-// usage ceiling - independent of whether the plan (or anything upstream
-// of it) got the arithmetic right.
-func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
-	need := entry.Item.SizeBytes
+// last line of defense against ever handing an app a move with nowhere
+// for it to actually land or beyond the destination tier's hard usage
+// ceiling - independent of whether the plan (or anything upstream of it)
+// got the arithmetic right.
+func verifyRoom[E Entry](stat func(string) (diskusage.Usage, error), entry E) error {
+	need := entry.MoveSize()
 	if need <= 0 {
 		// Nothing meaningful to check against - don't invent a failure
 		// for data Coldarr doesn't have.
 		return nil
 	}
 
-	u, err := m.stat(entry.ToPath)
+	u, err := stat(entry.MoveDestination())
 	if err != nil {
 		// Can't observe real free space - fail safe rather than writing
 		// blind on the plan's stale assumption alone.
-		return fmt.Errorf("checking free space at %s before moving %q: %w", entry.ToPath, entry.Item.Title, err)
+		return fmt.Errorf("checking free space at %s before moving %q: %w", entry.MoveDestination(), entry.MoveTitle(), err)
 	}
 	needBytes := uint64(need)
 	if needBytes > u.FreeBytes {
-		return fmt.Errorf("refusing to move %q to %s: only %.1f GB free right now, need %.1f GB - plan may be stale, re-run Plan", entry.Item.Title, entry.ToPath, float64(u.FreeBytes)/(1<<30), float64(need)/(1<<30))
+		return fmt.Errorf("refusing to move %q to %s: only %.1f GB free right now, need %.1f GB - plan may be stale, re-run Plan", entry.MoveTitle(), entry.MoveDestination(), float64(u.FreeBytes)/(1<<30), float64(need)/(1<<30))
 	}
 
-	if entry.MaxUsedPercent > 0 {
+	if ceiling := entry.MoveCeiling(); ceiling > 0 {
 		projectedPercent := diskusage.PercentUsed(u.UsedBytes+needBytes, u.FreeBytes-needBytes)
-		if projectedPercent > entry.MaxUsedPercent {
-			return fmt.Errorf("refusing to move %q to %s: it would leave the destination %.1f%% used, above its %.1f%% hard ceiling - plan may be stale, re-run Plan", entry.Item.Title, entry.ToPath, projectedPercent, entry.MaxUsedPercent)
+		if projectedPercent > ceiling {
+			return fmt.Errorf("refusing to move %q to %s: it would leave the destination %.1f%% used, above its %.1f%% hard ceiling - plan may be stale, re-run Plan", entry.MoveTitle(), entry.MoveDestination(), projectedPercent, ceiling)
 		}
 	}
 	return nil
 }
 
+func (m *Movers) verifyRoom(entry planner.MoveEntry) error {
+	return verifyRoom(m.options().stat, entry)
+}
+
 // runOne reports both whether the physical move landed and whether it is
 // safe to start another move to the same destination volume. A failure
 // after confirmed landing (currently history persistence) returns landed
-// even though its visible status is Failed. Failures before Arr accepted a
-// command leave the volume safe but do not satisfy phase prerequisites. A
-// settle failure does neither: the accepted transfer may still be writing.
-func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (landed, destinationSafe bool) {
+// even though its visible status is Failed. Failures before the app
+// accepted a move leave the volume safe but do not satisfy phase
+// prerequisites. A settle failure does neither: the accepted transfer may
+// still be writing.
+func (r *runner[E]) runOne(entry E, progress *RunProgress[E], idx int) (landed, destinationSafe bool) {
 	progress.setStatus(idx, StatusMoving, nil)
 
-	if m.CheckStorage != nil {
-		if err := m.CheckStorage(); err != nil {
+	if r.opts.CheckStorage != nil {
+		if err := r.opts.CheckStorage(); err != nil {
 			progress.setStatus(idx, StatusFailed, err)
 			return false, true
 		}
 	}
 
-	if err := m.verifyRoom(entry); err != nil {
+	if err := verifyRoom(r.opts.stat, entry); err != nil {
 		progress.setStatus(idx, StatusFailed, err)
 		return false, true
 	}
 
-	var err error
-	switch entry.Item.ArrApp {
-	case "radarr":
-		err = m.Radarr.MoveMovies([]int{entry.Item.ID}, entry.ToPath)
-	case "sonarr":
-		err = m.Sonarr.MoveSeries([]int{entry.Item.ID}, entry.ToPath)
-	default:
-		progress.setStatus(idx, StatusFailed, fmt.Errorf("unknown arr app %q", entry.Item.ArrApp))
-		return false, true
-	}
-	if err != nil {
+	if err := r.exec.Move(entry); err != nil {
 		progress.setStatus(idx, StatusFailed, err)
-		// A concrete non-2xx response means Arr rejected the command, so
-		// no transfer from this entry is running and the volume itself is
-		// safe for independent same-phase work. Transport and response-
-		// decoding failures are ambiguous: Arr may have accepted the move
-		// before the response was lost, so conservatively stop this
-		// destination queue until a later apply can establish fresh state.
-		var statusErr *arrapi.StatusError
-		return false, errors.As(err, &statusErr)
+		// A definite refusal means no transfer from this entry is
+		// running, so the volume itself is safe for independent
+		// same-phase work. Anything ambiguous - the app may have accepted
+		// the move before the answer was lost - conservatively stops
+		// this destination queue until a later apply can establish fresh
+		// state.
+		return false, r.exec.Rejected(err)
 	}
 
-	landedPath, err := m.settle(entry)
+	landedPath, err := r.settle(entry)
 	if err != nil {
 		progress.setStatus(idx, StatusFailed, err)
 		return false, false
 	}
 	progress.setLandedPath(idx, landedPath)
-	progress.setReported(idx, m.reportMoved(entry, landedPath))
 
-	if err := m.History.Append(history.Record{
-		ArrApp:    entry.Item.ArrApp,
-		ItemID:    entry.Item.ID,
-		Title:     entry.Item.Title,
-		FromTier:  entry.FromTier,
-		FromPath:  entry.FromPath,
-		ToTier:    entry.ToTier,
-		ToPath:    entry.ToPath,
-		SizeBytes: entry.Item.SizeBytes,
-		MovedAt:   time.Now(),
-	}); err != nil {
-		progress.setStatus(idx, StatusFailed, fmt.Errorf("moved, but recording history failed: %w", err))
+	reported, err := r.exec.Landed(entry, landedPath)
+	progress.setReported(idx, reported)
+	if err != nil {
+		progress.setStatus(idx, StatusFailed, err)
 		return true, true
 	}
 
@@ -469,57 +572,25 @@ func (m *Movers) runOne(entry planner.MoveEntry, progress *Progress, idx int) (l
 	return true, true
 }
 
-// reportMoved hands this item's old and new folders to Reporter inline
-// with the move that just landed, rather than leaving every item in the
-// run to be reported in one batch at the end, and reports whether that
-// succeeded.
-//
-// Timing is the whole point. A consumer's indexing work is slow and
-// starts late - Jellyfin sits on a reported path for a minute before
-// touching it, then re-validates the entire containing library root - so
-// a batch delivered after the last move means all of that begins from a
-// standstill, with nothing left to overlap it. Delivered here it runs
-// against the remaining moves, which take minutes to hours apiece.
-//
-// Synchronous, not fired into a goroutine: this is one small POST to a
-// service the run is going to poll anyway, bounded by that client's own
-// timeout, which is nothing beside the transfer it follows. Waiting for it
-// is also what makes the result trustworthy enough to record, so the
-// end-of-run pass can pick up precisely the items still needing a report
-// instead of re-reporting everything and resetting their debounce.
-//
-// Never fatal, and deliberately not reflected in the entry's status: a
-// consumer being unreachable says nothing about whether the media moved,
-// which Radarr/Sonarr already confirmed.
-func (m *Movers) reportMoved(entry planner.MoveEntry, landedPath string) bool {
-	if m.Reporter == nil {
-		return false
-	}
-	if err := m.Reporter.ReportMoved(entry.Item.Path, landedPath); err != nil {
-		m.logf("mover: reporting %q moved to %s failed, leaving it for the end of the run: %v", entry.Item.Title, landedPath, err)
-		return false
-	}
-	return true
-}
-
 // settle waits for entry's move to actually land on the destination's
 // filesystem before returning, so the next item queued for this same
-// volume doesn't start writing concurrently with it. Radarr/Sonarr's move
-// API returns once the operation is queued, not once the bytes are
-// actually on disk, so this watches disk usage directly rather than
-// trusting the API response alone - true regardless of exactly how
-// Radarr/Sonarr implement the move internally.
+// volume doesn't start writing concurrently with it. The apps' move APIs
+// return once the operation is queued, not once the bytes are actually on
+// disk, so this watches disk usage directly rather than trusting the API
+// response alone - true regardless of exactly how the app implements the
+// move internally.
 //
 // Disk usage looking stable is a hint, never proof: a transfer can
 // plateau for many seconds - a write-cache flush, the destination's own
 // housekeeping, a network stall - while genuinely still in progress, and
 // that plateau looks identical to a finished transfer from disk usage
 // alone. Every path to "settled" below is therefore gated on
-// confirmLanded actually agreeing with Radarr/Sonarr before returning;
-// the disk-usage tracker only decides when it's worth paying for that
-// check, not whether the move is done. A confirmLanded failure resets
-// the stability count rather than looping immediately, so a stalled
-// rescan doesn't get hammered every single interval.
+// ConfirmLanded actually agreeing with the app before returning; the
+// disk-usage tracker only decides when it's worth paying for that check,
+// not whether the move is done. A ConfirmLanded failure resets the
+// stability count rather than looping immediately, so a stalled rescan
+// doesn't get hammered every single interval - unless it says the move
+// has failed for good (ErrMoveFailed), which ends the wait at once.
 //
 // Disk-usage growth also can't tell a finished move that added no
 // measurable usage - the item was already sitting at (or very near) the
@@ -527,46 +598,57 @@ func (m *Movers) reportMoved(entry planner.MoveEntry, landedPath string) bool {
 // hasn't started yet, so that case is tracked separately (noGrowthChecks)
 // rather than through the growth-based tracker, which never reports
 // stability before any growth at all.
-// It returns the item's own post-move folder path alongside its verdict
-// (see EntryProgress.LandedPath).
-func (m *Movers) settle(entry planner.MoveEntry) (string, error) {
-	interval := m.SettleCheckInterval
+// It returns the item's own post-move path alongside its verdict
+// (see RunEntry.LandedPath).
+func (r *runner[E]) settle(entry E) (string, error) {
+	interval := r.opts.SettleCheckInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	stableTarget := m.SettleStableChecks
+	stableTarget := r.opts.SettleStableChecks
 	if stableTarget <= 0 {
 		stableTarget = 3
 	}
-	maxWait := m.SettleMaxWait
+	maxWait := r.opts.SettleMaxWait
 	if maxWait <= 0 {
 		maxWait = 6 * time.Hour
 	}
 
-	baseline, err := m.stat(entry.ToPath)
+	baseline, err := r.opts.stat(entry.MoveDestination())
 	if err != nil {
-		return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
+		return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.MoveDestination(), entry.MoveTitle(), err)
 	}
 
-	tracker := newSettleTracker(baseline.UsedBytes, entry.Item.SizeBytes)
+	tracker := newSettleTracker(baseline.UsedBytes, entry.MoveSize())
 	deadline := time.Now().Add(maxWait)
 	noGrowthChecks := 0
 	var lastConfirmationErr error
 
+	confirm := func() (bool, string, error) {
+		landed, path, err := r.exec.ConfirmLanded(entry)
+		if err != nil && errors.Is(err, ErrMoveFailed) {
+			return false, "", err
+		}
+		lastConfirmationErr = err
+		return landed, path, nil
+	}
+
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 
-		u, err := m.stat(entry.ToPath)
+		u, err := r.opts.stat(entry.MoveDestination())
 		if err != nil {
-			return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.ToPath, entry.Item.Title, err)
+			return "", fmt.Errorf("move command was accepted, but checking destination %s while waiting for %q to land failed: %w", entry.MoveDestination(), entry.MoveTitle(), err)
 		}
 
 		if tracker.observe(u.UsedBytes, stableTarget) {
-			landed, path, err := m.confirmLanded(entry)
+			landed, path, err := confirm()
+			if err != nil {
+				return "", err
+			}
 			if landed {
 				return path, nil
 			}
-			lastConfirmationErr = err
 			tracker.stableCount = 0
 			continue
 		}
@@ -577,104 +659,31 @@ func (m *Movers) settle(entry planner.MoveEntry) (string, error) {
 		}
 		noGrowthChecks++
 		if noGrowthChecks >= stableTarget {
-			landed, path, err := m.confirmLanded(entry)
+			landed, path, err := confirm()
+			if err != nil {
+				return "", err
+			}
 			if landed {
 				return path, nil
 			}
-			lastConfirmationErr = err
 			noGrowthChecks = 0
 		}
 	}
 
-	err = fmt.Errorf("move command was accepted, but landing of %q at %s could not be confirmed within %s", entry.Item.Title, entry.ToPath, maxWait)
+	err = fmt.Errorf("move command was accepted, but landing of %q at %s could not be confirmed within %s", entry.MoveTitle(), entry.MoveDestination(), maxWait)
 	if lastConfirmationErr != nil {
 		return "", fmt.Errorf("%w: last confirmation failed: %w", err, lastConfirmationErr)
 	}
 	return "", err
 }
 
-// confirmLanded asks Radarr/Sonarr to rescan the item's folder - forcing
-// it to recompute the item's location/size from the real filesystem
-// rather than a possibly-stale cached value - and reports whether it now
-// considers the item fully landed: its path under entry.ToPath, AND its
-// freshly-rescanned size actually matching what was planned (see
-// sizeLanded). Checking the path alone isn't enough: Radarr/Sonarr can
-// update an item's recorded path before the underlying file transfer is
-// completely finished, so a path-only check can say "landed" while the
-// file is still short. This is the ground-truth check settle() gates
-// every "looks done" signal on; see settle's doc comment for why disk
-// usage alone isn't enough either.
-// It also returns the item's own folder path as Radarr/Sonarr now reports
-// it, which is the only authoritative source for where the item actually
-// ended up - see EntryProgress.LandedPath.
-func (m *Movers) confirmLanded(entry planner.MoveEntry) (bool, string, error) {
-	switch entry.Item.ArrApp {
-	case "radarr":
-		if err := m.Radarr.RescanMovie(entry.Item.ID); err != nil {
-			return false, "", fmt.Errorf("rescanning movie: %w", err)
-		}
-		size, path, found, err := m.Radarr.GetMovieSize(entry.Item.ID)
-		return landingMatches("Radarr", entry, size, path, found, err)
-	case "sonarr":
-		if err := m.Sonarr.RescanSeries(entry.Item.ID); err != nil {
-			return false, "", fmt.Errorf("rescanning series: %w", err)
-		}
-		size, path, found, err := m.Sonarr.GetSeriesSize(entry.Item.ID)
-		return landingMatches("Sonarr", entry, size, path, found, err)
-	default:
-		return false, "", fmt.Errorf("unknown arr app %q", entry.Item.ArrApp)
-	}
-}
-
-func landingMatches(app string, entry planner.MoveEntry, size int64, path string, found bool, err error) (bool, string, error) {
-	if err != nil {
-		return false, "", fmt.Errorf("reading item from %s after rescan: %w", app, err)
-	}
-	if !found {
-		return false, "", fmt.Errorf("%s no longer reports the item", app)
-	}
-	if !isUnderPath(path, entry.ToPath) {
-		return false, "", fmt.Errorf("%s reports path %q, expected it under %q", app, path, entry.ToPath)
-	}
-	if !sizeLanded(size, entry.Item.SizeBytes) {
-		return false, "", fmt.Errorf("%s reports %d bytes, expected approximately %d", app, size, entry.Item.SizeBytes)
-	}
-	return true, path, nil
-}
-
-// sizeLanded reports whether gotBytes - Radarr/Sonarr's freshly-rescanned,
-// real read of the file on disk - is close enough to wantBytes (the
-// item's expected size from the plan) to trust the transfer is actually
-// finished, rather than a partial file that merely happens to already
-// sit at the right path. A plain move never legitimately shrinks a file,
-// so anything meaningfully short of wantBytes means it's still copying;
-// a small tolerance absorbs harmless slack (e.g. a filesystem block-size
-// rounding difference between how Coldarr and Radarr/Sonarr each compute
-// "size on disk"), not genuine incompleteness.
-func sizeLanded(gotBytes, wantBytes int64) bool {
-	if wantBytes <= 0 {
-		// No usable expected size to compare against - fall back to
-		// trusting the rescanned path alone rather than blocking forever
-		// on a check that can never be satisfied.
-		return true
-	}
-	return gotBytes >= wantBytes*99/100
-}
-
-// isUnderPath reports whether path is root itself or a descendant of it.
-func isUnderPath(path, root string) bool {
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
-}
-
 // settleTracker decides whether a transfer looks complete from a series
-// of disk-usage-used-bytes readings alone, with no knowledge of
-// Radarr/Sonarr's internal state. It requires usage to have grown by
-// roughly the item's expected size before it will ever consider the
-// reading "stable" - otherwise a transfer that simply hasn't started yet
-// (usage unchanged because nothing has happened) would look identical to
-// one that's already finished.
+// of disk-usage-used-bytes readings alone, with no knowledge of the app's
+// internal state. It requires usage to have grown by roughly the item's
+// expected size before it will ever consider the reading "stable" -
+// otherwise a transfer that simply hasn't started yet (usage unchanged
+// because nothing has happened) would look identical to one that's
+// already finished.
 type settleTracker struct {
 	startUsed    uint64
 	targetGrowth uint64
