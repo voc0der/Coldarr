@@ -17,6 +17,25 @@ page, which writes the same file.
     Saving tiers (or any other setting) through the GUI rewrites the whole
     `coldarr.yaml` file, so hand-added comments won't survive a GUI save.
 
+## Library and downloads tiers
+
+A tier holds either library media - what Radarr and Sonarr manage, the
+default - or qBittorrent downloads. Library tiers are what everything below
+describes. Downloads tiers (**Used for: Downloads (qBittorrent)** in the
+form, `domain: downloads` in YAML, offered once qBittorrent is connected)
+are the download drive (hot) and seed storage (cold) - see
+[Downloads and seeding](downloads.md). Both kinds share everything about
+storage itself: the mount check, usage, and shared-volume detection, so a
+library tier and a downloads tier on the same disk are one capacity pool.
+
+A downloads tier takes no media types - it holds any download - and is
+**read-only** unless you mark it otherwise. Marking one as **not read-only**
+(`allow_deletes: true`) lets the Orphaned Storage page delete files in it
+that qBittorrent doesn't know about, when you ask. Coldarr itself writes
+nothing to a read-only one, not even a test file; qBittorrent still moves
+downloads in and out of it. A library tier can never be marked so: Coldarr
+deletes no library files.
+
 ## Hot tiers
 
 **Hot tiers have no `target_used_percent`.** Coldarr doesn't proactively

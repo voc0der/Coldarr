@@ -25,6 +25,7 @@ nav = [
     { "Connections" = "configuration/connections.md" },
     { "Docker and environment" = "configuration/docker.md" },
     { "Storage tiers" = "configuration/tiers.md" },
+    { "Downloads and seeding" = "configuration/downloads.md" },
     { "Jellyfin" = "configuration/jellyfin.md" },
     { "Scoring and Favorites" = "configuration/scoring.md" },
     { "Example configuration" = "configuration/example.md" },

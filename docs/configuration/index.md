@@ -10,9 +10,10 @@ Values inside the YAML file can also use `${VAR}` substitution.
 
 | Configure | Reference |
 | --- | --- |
-| Radarr, Sonarr, and Jellyfin URLs and API keys | [Connections](connections.md) |
+| Radarr, Sonarr, Lidarr, Jellyfin, and qBittorrent connections | [Connections](connections.md) |
 | Container mounts, password, OIDC, HTTPS, and environment variables | [Docker and environment](docker.md) |
 | Hot and cold storage, fill limits, and mount checks | [Storage tiers](tiers.md) |
+| Moving finished downloads to seed storage, seeding rules, and removal | [Downloads and seeding](downloads.md) |
 | Library paths, Favorites, and artwork and date added after a move | [Jellyfin](jellyfin.md) |
 | Tags, thresholds, and cold eligibility | [Scoring and Favorites](scoring.md) |
 | Run summaries and scheduled jobs | [Notifications and scheduling](../features.md#keeping-tabs-on-it-without-watching-it) |
@@ -20,10 +21,10 @@ Values inside the YAML file can also use `${VAR}` substitution.
 
 !!! note "Editing configuration through the web interface"
 
-    Saving tiers, notifications, auth, or scheduler settings through the web
-    interface rewrites `coldarr.yaml`, so hand-written comments do not
-    survive a save. Policy thresholds are configured in YAML; the web
-    interface does not yet expose them.
+    Saving tiers, downloads, notifications, auth, or scheduler settings
+    through the web interface rewrites `coldarr.yaml`, so hand-written
+    comments do not survive a save. Policy thresholds are configured in
+    YAML; the web interface does not yet expose them.
 
 For daily operation, see [How a run works](../usage/how-it-works.md), the
 [web interface](../usage/web-interface.md), or the [CLI](../usage/cli.md).

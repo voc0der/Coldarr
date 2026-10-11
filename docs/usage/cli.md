@@ -22,8 +22,17 @@ cp coldarr.example.yaml coldarr.yaml   # or add tiers via `coldarr serve`
 ```
 
 Radarr/Sonarr API keys are under **Settings > General** in each app. Jellyfin
-is optional and set up the same way, with `jellyfin` as the app name. See
-[Connections](../configuration/connections.md) for how connections are
+is optional and set up the same way, with `jellyfin` as the app name. So is
+Lidarr (`lidarr`), for [download tiering](../configuration/downloads.md),
+along with qBittorrent, which takes an API key (qBittorrent 5.2+), a WebUI
+login, or just the URL if its WebUI skips authentication for Coldarr's
+address:
+
+```sh
+./coldarr connections set qbittorrent --url http://localhost:8080 --username admin --password <password>
+```
+
+See [Connections](../configuration/connections.md) for how connections are
 stored and env-var overrides.
 
 ## Commands
@@ -33,10 +42,13 @@ coldarr report   # tier usage + scored inventory, read-only
 coldarr plan     # builds and prints a move plan, makes no changes
 coldarr apply    # builds a plan, prompts, then executes it
 coldarr apply -y # skip the confirmation prompt (e.g. for cron/systemd)
-coldarr connections list|set|test|delete <radarr|sonarr|jellyfin>
+coldarr connections list|set|test|delete <radarr|sonarr|lidarr|jellyfin|qbittorrent>
 coldarr serve    # run the web GUI, default port 8478
 coldarr version  # print the Coldarr version
 ```
+
+Download tiering has no commands of its own yet: it runs from the web
+interface's Downloads page and the scheduler.
 
 All commands take `--config path/to/coldarr.yaml` (or `-c`; default
 `./coldarr.yaml`, overridable via the `COLDARR_CONFIG` env var).

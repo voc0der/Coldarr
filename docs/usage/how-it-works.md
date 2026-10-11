@@ -71,6 +71,21 @@ again. A whole-library
 scan is still used as a fallback if an item can't be found at its new
 path. See [Jellyfin](../configuration/jellyfin.md).
 
+## Downloads
+
+With qBittorrent connected and downloads tiers set up, there's a second,
+separate kind of run: finished downloads move from the download drive to
+seed storage once they've settled (and been imported, if an *arr app
+imports them), one at a time, each confirmed before the next starts, and
+get the seed label once they've landed. Downloads that are done seeding can
+be removed, if you turn that on. It's planned and applied the same way -
+dry run first, then Apply - from the Downloads page or a schedule. See
+[Downloads and seeding](../configuration/downloads.md).
+
+A library apply and a downloads apply never run at the same time, and
+neither starts while Radarr, Sonarr, or qBittorrent is still moving
+something: moves in one can be filling the disk the other is measuring.
+
 ## Confirmation
 
 `report` and `plan` (or the web interface's dashboard and Plan page) are

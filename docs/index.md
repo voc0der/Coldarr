@@ -8,6 +8,11 @@ state, Jellyfin Favorites, and available disk space. It asks Radarr and
 Sonarr to move eligible items, so their databases stay the source of truth.
 Coldarr never moves files directly.
 
+With qBittorrent, it can also move finished downloads off a fast download
+drive onto seed storage once they've settled, and clear them out once your
+trackers' seeding requirements are met - see
+[Downloads and seeding](configuration/downloads.md).
+
 [Get started](getting-started.md){ .md-button .md-button--primary }
 [See the features](features.md){ .md-button }
 

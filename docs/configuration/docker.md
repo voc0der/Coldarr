@@ -85,8 +85,13 @@ container.
 
 ### Connections
 
-`RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`)
+`RADARR_URL` / `RADARR_API_KEY` (`SONARR_*`, `LIDARR_*`, `JELLYFIN_*`, `JELLYFIN_ENABLED`)
 :   Connection overrides - see [Connections](connections.md).
+
+`QBITTORRENT_URL` / `QBITTORRENT_API_KEY` / `QBITTORRENT_USERNAME` / `QBITTORRENT_PASSWORD`
+:   qBittorrent connection overrides. The URL alone is enough when qBittorrent's
+    WebUI skips authentication for Coldarr's address; otherwise set an API key
+    (qBittorrent 5.2+) or a username and password.
 
 ### Move timing
 
@@ -110,6 +115,15 @@ Tier paths must be bind-mounted at the *same path Radarr/Sonarr use
 internally* - Coldarr compares its own disk checks and the root folder
 paths the Arr APIs report as literal strings, so a mismatched mount looks
 like a misplaced or unavailable path.
+
+Downloads tiers follow the same rule with qBittorrent: mount the download
+drive and seed storage at the *same paths qBittorrent uses* (if it saves to
+`/downloads` and seeds from `/seed`, so does Coldarr). Coldarr spots a
+download folder mounted from the wrong drive - qBittorrent lists finished
+downloads there that Coldarr can't see - and won't move anything to or from
+it. Read-only mounts are fine, unless you mark a downloads tier as not
+read-only to delete orphaned files in it: then that folder has to be mounted
+read-write. See [Downloads and seeding](downloads.md).
 
 ## Example compose file
 

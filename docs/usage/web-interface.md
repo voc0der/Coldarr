@@ -18,20 +18,28 @@ configure real identity-provider-backed login and group-based access via
 Once signed in:
 
 - **Dashboard** - tier usage/space allotment, library item counts by
-  decision (protected/hot/cold), connection status.
+  decision (protected/hot/cold), downloads by state, connection status.
 - **Plan** - the same dry-run preview as the CLI's `plan`, with an Apply
   button (confirm dialog, then executes through Radarr/Sonarr) and live
   progress of the current (or most recent) apply run, auto-refreshing
   until it finishes.
+- **Downloads** (with qBittorrent connected) - the same dry run and Apply
+  for downloads: what moves to seed storage next, what's held back and why,
+  what's done seeding, and recent moves and removals. See
+  [Downloads and seeding](../configuration/downloads.md).
 - **History** - every move Coldarr has executed, with a size-verification
   check to catch a transfer a crash left half-done.
 - **Settings**:
-    - **Connections** - configure/test Radarr/Sonarr/Jellyfin.
+    - **Connections** - configure/test Radarr/Sonarr/Lidarr/Jellyfin/qBittorrent.
     - **Storage tiers** - add/edit/delete hot and cold tiers, live per-path
       disk usage.
-    - **Orphaned Storage** - folders on a tier path that Radarr, Sonarr, and
-      Jellyfin no longer track, including leftovers from an interrupted move,
-      and whether each tier path is writable.
+    - **Downloads** (with qBittorrent connected) - settle time, label
+      rules, seeding rules, and removal.
+    - **Orphaned Storage** - folders on a tier path that Radarr, Sonarr,
+      Lidarr, Jellyfin, and qBittorrent no longer track, including leftovers
+      from an interrupted move, and whether each tier path is writable. With
+      qBittorrent connected, a panel compares the download folders against it
+      file by file, with a Delete button for tiers marked as not read-only.
     - **Auth** - optional OIDC login and group access.
     - **Notifications** - an Apprise webhook for run summaries.
     - **Scheduler** - optionally run the plan, a cold-storage health check,
