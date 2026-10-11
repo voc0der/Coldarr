@@ -277,6 +277,16 @@ func TestClient_TransportAndShapeFailures(t *testing.T) {
 	if _, err := NewClient(broken.URL, Auth{Username: "u", Password: "p"}).Version(); !errors.As(err, &statusErr) {
 		t.Errorf("500 on login: err = %v, want a StatusError", err)
 	}
+
+	// A long error page is cut short in the message.
+	verbose := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, strings.Repeat("x", 5000), http.StatusBadGateway)
+	}))
+	defer verbose.Close()
+	err := NewClient(verbose.URL, Auth{}).SetLocation([]string{"a"}, "/seed")
+	if err == nil || !strings.Contains(err.Error(), "unexpected status 502") || !strings.HasSuffix(err.Error(), "...") || len(err.Error()) > 500 {
+		t.Errorf("502 with a long body: err = %v, want the status and a shortened body", err)
+	}
 }
 
 func TestTorrents_Normalized(t *testing.T) {

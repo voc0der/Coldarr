@@ -56,6 +56,9 @@ type fakeQbittorrent struct {
 	// unseenMoves lands moves somewhere other than where they were asked
 	// to go - what a mismatched mount looks like from Coldarr's side.
 	unseenMoves string
+	// dropDeletes answers delete requests without removing anything - a
+	// request qBittorrent accepted but never carried out.
+	dropDeletes bool
 }
 
 func newFakeQbittorrent(t *testing.T) *fakeQbittorrent {
@@ -78,6 +81,9 @@ func (f *fakeQbittorrent) add(t *testing.T, tor fakeTorrent) {
 		tor.State = "stalledUP"
 	}
 	if tor.Progress >= 1 {
+		if !strings.HasPrefix(tor.ContentPath, os.TempDir()+string(filepath.Separator)) {
+			t.Fatalf("a finished fake download gets content on disk, so it must be in a temp dir, not %s", tor.ContentPath)
+		}
 		if err := os.MkdirAll(tor.ContentPath, 0o750); err != nil {
 			t.Fatal(err)
 		}
@@ -161,6 +167,9 @@ func (f *fakeQbittorrent) serve(w http.ResponseWriter, r *http.Request) {
 			f.startMove(t, location)
 		}
 	case "/api/v2/torrents/delete":
+		if f.dropDeletes {
+			return
+		}
 		deleteFiles := r.PostForm.Get("deleteFiles") == "true"
 		selected := map[*fakeTorrent]bool{}
 		for _, t := range f.selected(r) {

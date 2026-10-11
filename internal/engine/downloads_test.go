@@ -59,11 +59,13 @@ type arrDownloads struct {
 	imported map[string]bool
 	asked    []string
 	fail     bool
+	// event is the history event an import is recorded as.
+	event string
 }
 
 func newArrDownloads(t *testing.T, root string) *arrDownloads {
 	t.Helper()
-	f := &arrDownloads{imported: map[string]bool{}}
+	f := &arrDownloads{imported: map[string]bool{}, event: "downloadFolderImported"}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -83,7 +85,7 @@ func newArrDownloads(t *testing.T, root string) *arrDownloads {
 			f.asked = append(f.asked, id)
 			records := []map[string]string{}
 			if f.imported[id] {
-				records = append(records, map[string]string{"downloadId": id, "eventType": "downloadFolderImported"})
+				records = append(records, map[string]string{"downloadId": id, "eventType": f.event})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"records": records})
 		case root + "/movie":
@@ -242,6 +244,57 @@ func TestBuildDownloadsInventory_ClassifiesAndConfirmsImports(t *testing.T) {
 	}
 	if stateOf(t, inv, "aaa").State != torrents.Ready {
 		t.Error("a remembered confirmation should keep it ready")
+	}
+}
+
+// TestBuildDownloadsInventory_EachImporter: Sonarr's and Lidarr's imports
+// are confirmed from their own history and queue - Lidarr's under its own
+// API version and event name - and while a label's importer isn't
+// connected, its downloads are held, naming the app.
+func TestBuildDownloadsInventory_EachImporter(t *testing.T) {
+	week := 7 * 24 * time.Hour
+	f := newDownloadsFixture(t, func(ssd, seed string) []qbitTorrent {
+		return []qbitTorrent{
+			finished("aaa", "Show.S01", "tv", ssd, week),
+			finished("bbb", "Album", "music", ssd, week),
+			finished("ccc", "Show.S02", "tv", ssd, week),
+		}
+	})
+	for _, n := range []string{"Show.S01", "Album", "Show.S02"} {
+		mkContent(t, filepath.Join(f.ssd, n))
+	}
+	f.engine.Cfg.Torrents.Labels = append(f.engine.Cfg.Torrents.Labels,
+		config.LabelRule{Label: "tv", Action: config.LabelMove, ImportedBy: "sonarr"},
+		config.LabelRule{Label: "music", Action: config.LabelMove, ImportedBy: "lidarr"})
+
+	inv, err := f.engine.BuildDownloadsInventory(time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for hash, app := range map[string]string{"aaa": "Sonarr", "bbb": "Lidarr"} {
+		if d := stateOf(t, inv, hash); d.State != torrents.Held || !strings.Contains(d.Reason, app+" isn't connected") {
+			t.Errorf("%s with %s not connected = %s (%s)", hash, app, d.State, d.Reason)
+		}
+	}
+
+	sonarr := newArrDownloads(t, "/api/v3")
+	sonarr.imported["AAA"] = true
+	sonarr.queue = []string{"CCC"}
+	lidarr := newArrDownloads(t, "/api/v1")
+	lidarr.event = "downloadImported"
+	lidarr.imported["BBB"] = true
+	f.engine.Sonarr = arrapi.NewSonarrClient(sonarr.URL, "key")
+	f.engine.Lidarr = arrapi.NewLidarrClient(lidarr.URL, "key")
+
+	inv, err = f.engine.BuildDownloadsInventory(time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]torrents.State{"aaa": torrents.Ready, "bbb": torrents.Ready, "ccc": torrents.Active}
+	for hash, state := range want {
+		if d := stateOf(t, inv, hash); d.State != state {
+			t.Errorf("%s = %s (%s), want %s", hash, d.State, d.Reason, state)
+		}
 	}
 }
 

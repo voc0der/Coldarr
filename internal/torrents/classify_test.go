@@ -235,8 +235,11 @@ func TestClassify_CrossSeeds(t *testing.T) {
 	nestedInner := settled("h", "Episode", "manual")
 	nestedInner.SavePath, nestedInner.ContentPath = "/downloads/Pack", "/downloads/Pack/Episode.mkv"
 	sibling := settled("i", "Pack.REPACK", "manual") // shares a name prefix, not files
+	downloadingTwin := settled("j", "Doc", "manual")
+	downloadingTwin2 := settled("k", "Doc", "manual") // added since, still fetching its share
+	downloadingTwin2.State, downloadingTwin2.Progress = "downloading", 0.5
 
-	got := Classify(input(a, b, waitingTwin, waitingTwin2, ignoredTwin, ignoredTwin2, nestedOuter, nestedInner, sibling))
+	got := Classify(input(a, b, waitingTwin, waitingTwin2, ignoredTwin, ignoredTwin2, nestedOuter, nestedInner, sibling, downloadingTwin, downloadingTwin2))
 
 	for _, h := range []string{"a", "b", "i"} {
 		if d := byHash(t, got, h); d.State != Ready {
@@ -245,6 +248,11 @@ func TestClassify_CrossSeeds(t *testing.T) {
 	}
 	if d := byHash(t, got, "c"); d.State != Held || !strings.Contains(d.Reason, "cross-seeded with Film, which is still settling") {
 		t.Errorf("c = %s (%s), want held for its settling twin", d.State, d.Reason)
+	}
+	if k := byHash(t, got, "k"); k.State != Active {
+		t.Errorf("k = %s, want active", k.State)
+	} else if d := byHash(t, got, "j"); d.State != Held || !strings.Contains(d.Reason, "cross-seeded with Doc, which is "+k.Reason) {
+		t.Errorf("j = %s (%s), want held for its twin, saying why (%s)", d.State, d.Reason, k.Reason)
 	}
 	if d := byHash(t, got, "e"); d.State != Held || !strings.Contains(d.Reason, "left alone") {
 		t.Errorf("e = %s (%s), want held: its twin is one Coldarr must not touch", d.State, d.Reason)

@@ -119,7 +119,7 @@ func TestDownloads_RelabelOnly(t *testing.T) {
 func TestDownloads_RefusesWhileAnythingMoves(t *testing.T) {
 	srv := newDownloadsTestServer(t)
 	srv.qb.add(t, finishedDownload("aaa", "Linux.ISO", "manual", srv.ssd))
-	srv.qb.add(t, fakeTorrent{Hash: "zzz", Name: "Elsewhere", Category: "other", SavePath: "/elsewhere", State: "moving", Progress: 1})
+	srv.qb.add(t, fakeTorrent{Hash: "zzz", Name: "Elsewhere", Category: "other", SavePath: filepath.Join(srv.dir, "elsewhere"), State: "moving", Progress: 1})
 
 	page := httptest.NewRecorder()
 	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
@@ -333,5 +333,202 @@ func TestScheduledExpireSeeds(t *testing.T) {
 				t.Error("the run should count")
 			}
 		})
+	}
+}
+
+// TestDownloads_RemovalGuards: each guard in front of removal refuses
+// before anything is removed - from the page, and from the scheduled task,
+// which skips the tick (no notification, the run not counted) for what
+// clears up on its own, and fails, notified and counted, for what doesn't.
+func TestDownloads_RemovalGuards(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		setup   func(t *testing.T, srv *downloadsTestServer)
+		want    string
+		skipped bool
+	}{
+		{
+			name: "qBittorrent still moving something",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				srv.qb.add(t, fakeTorrent{Hash: "zzz", Name: "Elsewhere", Category: "other", SavePath: filepath.Join(srv.dir, "elsewhere"), State: "moving", Progress: 1})
+			},
+			want:    "refusing to remove anything: qBittorrent is still moving",
+			skipped: true,
+		},
+		{
+			name: "qBittorrent unreachable",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				if err := srv.connStore.Set("qbittorrent", secrets.Connection{URL: "http://127.0.0.1:1"}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:    "checking qBittorrent for in-flight moves",
+			skipped: true,
+		},
+		{
+			name: "another run holds the lock",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				lock, err := mover.AcquireLock(srv.dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = lock.Release() })
+			},
+			want:    "another apply is running",
+			skipped: true,
+		},
+		{
+			name: "a drive failing its check",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				srv.cfg.Tiers[0].Paths = []string{filepath.Join(srv.dir, "unplugged")}
+			},
+			want: "storage unavailable",
+		},
+		{
+			name: "qBittorrent no longer connected",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				if err := srv.connStore.Delete("qbittorrent"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "download tiering needs qBittorrent connected",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := doneSeedingServer(t, config.RemovalRemove)
+			apprise := newFakeApprise(t)
+			if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+				t.Fatal(err)
+			}
+			tt.setup(t, srv)
+			untouched := func(when string) {
+				t.Helper()
+				for hash, name := range map[string]string{"aaa": "Old.ISO", "bbb": "Other.ISO"} {
+					if srv.qb.torrent(hash).Hash == "" {
+						t.Fatalf("%s: %s was removed", when, hash)
+					}
+					if _, err := os.Stat(filepath.Join(srv.seed, name)); err != nil {
+						t.Fatalf("%s: %s's files: %v", when, hash, err)
+					}
+				}
+			}
+
+			rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+			if !strings.Contains(rec.Body.String(), tt.want) {
+				t.Errorf("page = %s, want %q", rec.Body.String(), tt.want)
+			}
+			untouched("from the page")
+
+			now := time.Now()
+			srv.runScheduledExpireSeeds(now)
+			untouched("scheduled")
+			got := apprise.notifications()
+			counted := srv.taskState(taskExpireSeeds).LastRan.Equal(now)
+			if tt.skipped {
+				if len(got) != 0 || counted {
+					t.Errorf("want the tick skipped: notifications = %+v, counted = %v", got, counted)
+				}
+				return
+			}
+			if len(got) != 1 || got[0]["type"] != "failure" || !strings.Contains(got[0]["body"], tt.want) || !counted {
+				t.Errorf("want one failure naming %q, counted: notifications = %+v, counted = %v", tt.want, got, counted)
+			}
+		})
+	}
+}
+
+// TestDownloads_RemovalThatDoesntTake: a delete qBittorrent accepts but
+// doesn't carry out is a failure - on the page, and in the scheduled run's
+// notification - and never recorded as removed.
+func TestDownloads_RemovalThatDoesntTake(t *testing.T) {
+	srv := doneSeedingServer(t, config.RemovalRemove)
+	srv.qb.mu.Lock()
+	srv.qb.dropDeletes = true
+	srv.qb.mu.Unlock()
+
+	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, "Removed 0 download(s)") || !strings.Contains(body, "2 couldn&#39;t be removed") || !strings.Contains(body, "qBittorrent still lists") {
+		t.Fatalf("page:\n%s", body)
+	}
+	if strings.Contains(body, ">removed</span>") {
+		t.Error("a removal that didn't happen was recorded")
+	}
+
+	apprise := newFakeApprise(t)
+	if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Notifications.Verbose = true
+	srv.runScheduledExpireSeeds(time.Now())
+	got := apprise.notifications()
+	if len(got) != 3 || got[0]["type"] != "warning" || !strings.Contains(got[0]["body"], "removed 0 download(s)") || !strings.Contains(got[0]["body"], "failed 2") || !strings.Contains(got[1]["title"], "Failed to remove a download") {
+		t.Errorf("notifications = %+v, want a warning summary and, verbose, one per failure", got)
+	}
+}
+
+// TestDownloads_ScheduledRunGuards: the scheduled move skips a tick while
+// qBittorrent is moving something, and refuses - notified, counted - while
+// a drive fails its check.
+func TestDownloads_ScheduledRunGuards(t *testing.T) {
+	srv := newDownloadsTestServer(t)
+	apprise := newFakeApprise(t)
+	if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+		t.Fatal(err)
+	}
+	srv.qb.add(t, finishedDownload("aaa", "Linux.ISO", "manual", srv.ssd))
+	srv.qb.add(t, fakeTorrent{Hash: "zzz", Name: "Elsewhere", Category: "other", SavePath: filepath.Join(srv.dir, "elsewhere"), State: "moving", Progress: 1})
+
+	now := time.Now()
+	srv.runScheduledDownloadsPlan(now)
+	if got := apprise.notifications(); len(got) != 0 || !srv.taskState(taskRunTorrentPlan).LastRan.IsZero() {
+		t.Fatalf("want the tick skipped while qBittorrent moves: notifications = %+v", got)
+	}
+
+	srv.qb.mu.Lock()
+	for _, tor := range srv.qb.torrents {
+		tor.State = "stalledUP"
+	}
+	srv.qb.mu.Unlock()
+	srv.cfg.Tiers[1].Paths = []string{filepath.Join(srv.dir, "unplugged")}
+	srv.runScheduledDownloadsPlan(now)
+	got := apprise.notifications()
+	if len(got) != 1 || !strings.Contains(got[0]["title"], "Scheduled downloads move refused") || !strings.Contains(got[0]["body"], "storage unavailable") || !srv.taskState(taskRunTorrentPlan).LastRan.Equal(now) {
+		t.Errorf("want one refusal, counted: notifications = %+v", got)
+	}
+	if srv.qb.torrent("aaa").SavePath != srv.ssd {
+		t.Error("nothing moves while a drive fails its check")
+	}
+}
+
+// TestDownloads_ApplyStartEdges: Move with nothing to move, or while a run
+// is going, goes back to the page and starts nothing; with qBittorrent
+// unreachable or not set up, the page says what's wrong.
+func TestDownloads_ApplyStartEdges(t *testing.T) {
+	srv := newDownloadsTestServer(t)
+	if rec := serveForm(srv.handleDownloadsApplyStart, "/downloads/apply", nil); rec.Code != http.StatusSeeOther {
+		t.Errorf("nothing to move: %d, want back to the page", rec.Code)
+	}
+
+	srv.qb.add(t, finishedDownload("aaa", "Linux.ISO", "manual", srv.ssd))
+	srv.currentDownloadsRun = &downloadsRun{done: make(chan struct{}), progress: mover.Run[torrents.MoveEntry](&torrents.Executor{}, nil, nil, mover.Options{})}
+	srv.currentDownloadsRun.active.Store(true)
+	rec := serveForm(srv.handleDownloadsApplyStart, "/downloads/apply", nil)
+	srv.currentDownloadsRun = nil
+	if rec.Code != http.StatusSeeOther || len(srv.qb.postedPaths()) != 0 {
+		t.Errorf("a run in flight: %d, posts %v; want back to the page, nothing asked", rec.Code, srv.qb.postedPaths())
+	}
+
+	if err := srv.connStore.Set("qbittorrent", secrets.Connection{URL: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if rec := serveForm(srv.handleDownloadsApplyStart, "/downloads/apply", nil); !strings.Contains(rec.Body.String(), "listing qBittorrent&#39;s downloads") {
+		t.Errorf("qBittorrent unreachable:\n%s", rec.Body.String())
+	}
+	if err := srv.connStore.Delete("qbittorrent"); err != nil {
+		t.Fatal(err)
+	}
+	if rec := serveForm(srv.handleDownloadsApplyStart, "/downloads/apply", nil); !strings.Contains(rec.Body.String(), "download tiering needs qBittorrent connected") {
+		t.Errorf("qBittorrent not set up:\n%s", rec.Body.String())
 	}
 }
