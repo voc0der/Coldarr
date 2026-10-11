@@ -299,6 +299,17 @@ func (s *Server) newEngine() (*engine.Engine, error) {
 	return engine.New(s.currentConfig(), s.connStore)
 }
 
+// downloadsEnabled reports whether qBittorrent is connected - what every
+// download-tiering page, setting and task waits on before it appears, so a
+// library-only setup never sees any of them.
+func (s *Server) downloadsEnabled() bool {
+	if s.connStore == nil {
+		return false
+	}
+	_, source := s.connStore.Effective(secrets.LoginApp)
+	return source != secrets.SourceNone
+}
+
 // updateTiers applies fn to the current tier list, validates the result,
 // persists it to coldarr.yaml, and swaps it into the live config, all
 // under lock so concurrent requests can't interleave a read-modify-write.

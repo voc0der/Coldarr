@@ -378,9 +378,13 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 }
 
 // BuildPlan runs the planner over an inventory. It performs no writes.
+// Only library tiers are offered as sources and destinations - downloads
+// tiers are qBittorrent's - but usage still covers every path, so a
+// library path sharing a disk with a downloads path is planned as the one
+// capacity pool it is.
 func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error) {
 	return planner.Build(planner.Input{
-		Tiers:    inv.Tiers,
+		Tiers:    model.TiersIn(inv.Tiers, model.DomainLibrary),
 		Usage:    inv.UsableUsage(),
 		VolumeOf: inv.VolumeOf(),
 		Items:    inv.Items,

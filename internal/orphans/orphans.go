@@ -125,6 +125,12 @@ func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient
 	}
 
 	for _, tier := range tiers {
+		// A downloads tier holds qBittorrent's torrents, none of which
+		// Radarr, Sonarr or Jellyfin know about: walked against their
+		// paths alone, every download on it would look orphaned.
+		if tier.IsDownloads() {
+			continue
+		}
 		for _, path := range tier.Paths {
 			if err := diskusage.CheckPath(path, tier.RequireMount); err != nil {
 				next.Warnings = append(next.Warnings, fmt.Sprintf("skipping %s: %v", path, err))

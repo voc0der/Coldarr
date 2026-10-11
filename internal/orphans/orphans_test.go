@@ -415,6 +415,26 @@ func TestRefresh_IgnoresLooseFiles(t *testing.T) {
 	}
 }
 
+// TestRefresh_LeavesDownloadsTiersAlone: nothing Radarr, Sonarr or Jellyfin
+// knows explains a torrent, so walking a downloads tier against them alone
+// would call every download on it an orphan.
+func TestRefresh_LeavesDownloadsTiersAlone(t *testing.T) {
+	seedDir := t.TempDir()
+	mustMkdir(t, filepath.Join(seedDir, "Seeding.Torrent"))
+
+	s, err := Load(t.TempDir() + "/orphans.json")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tiers := []model.Tier{{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{seedDir}}}
+	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if snap := s.Get(); len(snap.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want the downloads tier left alone", snap.Candidates)
+	}
+}
+
 // TestRefresh_UnreadableFolderFailsTheScan pins the all-or-nothing rule
 // for the walk itself: a folder that can't be read partway through fails
 // the whole scan, rather than publishing a result with a hole in it or a

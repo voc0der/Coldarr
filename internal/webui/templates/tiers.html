@@ -11,7 +11,7 @@
 {{range .Tiers}}
 <div class="card">
   <div class="btn-row" style="justify-content: space-between">
-    <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{if eq (print .Tier.Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Tier.Role}}</span></h2>
+    <h2 style="margin:0">{{.Tier.Name}} <span class="badge badge-muted">{{if eq (print .Tier.Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Tier.Role}}</span>{{if .Tier.IsDownloads}} <span class="badge badge-muted">{{template "icon-download"}} downloads</span>{{end}}</h2>
     <div class="btn-row">
       <a class="btn" href="/settings/tiers/{{.Tier.Name}}/edit">{{template "icon-pencil"}} Edit</a>
       <form method="post" action="/settings/tiers/{{.Tier.Name}}/delete" onsubmit="return confirm('Delete storage tier {{.Tier.Name}}? This does not delete any media.')">
@@ -20,8 +20,13 @@
     </div>
   </div>
   <p class="hint">
+    {{if .Tier.IsDownloads}}
+    {{if eq (print .Tier.Role) "cold"}}seed storage &middot; target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}}{{else}}download drive{{end}} &middot;
+    {{if .Tier.AllowDeletes}}<span class="text-warn">not read-only - Coldarr may delete orphaned files here</span>{{else}}read-only{{end}} &middot;
+    {{else}}
     media: {{range .Tier.Media}}{{.}} {{end}} &middot;
     {{if eq (print .Tier.Role) "cold"}}target {{pct .Tier.TargetUsedPercent}} / max {{pct .Tier.MaxUsedPercent}}{{else}}reclaim max {{pct .EffectiveHotMaxPercent}} {{if .UsesDefaultHotMax}}(default){{else}}(configured){{end}}{{end}} &middot;
+    {{end}}
     {{if .Tier.RequireMount}}requires its own mounted drive{{else}}no mount check{{end}}
   </p>
   <table>

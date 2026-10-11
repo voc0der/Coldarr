@@ -10,22 +10,34 @@
     <input type="text" id="name" name="name" value="{{.Tier.Name}}" required>
   </div>
 
+  {{if .ShowDomain}}
+  <div>
+    <label for="domain">Used for</label>
+    <select id="domain" name="domain" onchange="coldarrToggleTierFields()">
+      <option value="library" {{if not .Tier.IsDownloads}}selected{{end}}>Library (Radarr/Sonarr)</option>
+      <option value="downloads" {{if .Tier.IsDownloads}}selected{{end}}>Downloads (qBittorrent)</option>
+    </select>
+    <div class="hint">A downloads tier holds qBittorrent's downloads. Hot is the drive downloads land on; cold is seed storage that finished downloads move to once they've settled.</div>
+  </div>
+  {{end}}
+
   <div>
     <label for="role">Role</label>
-    <select id="role" name="role" onchange="coldarrToggleColdFields()">
+    <select id="role" name="role" onchange="coldarrToggleTierFields()">
       <option value="hot" {{if eq (print .Tier.Role) "hot"}}selected{{end}}>hot (primary storage)</option>
       <option value="cold" {{if eq (print .Tier.Role) "cold"}}selected{{end}}>cold (overflow storage)</option>
     </select>
-    <div class="hint">Hot storage is never steered toward a target usage level. Its max only limits grow-risk items reclaimed from cold storage.</div>
+    <div class="hint" id="coldarr-library-role-hint">Hot storage is never steered toward a target usage level. Its max only limits grow-risk items reclaimed from cold storage.</div>
   </div>
 
   <div>
     <label for="paths">Paths (one per line)</label>
     <textarea id="paths" name="paths" placeholder="/data/media/movies">{{.PathsText}}</textarea>
-    <div class="hint">Must be absolute paths, and must match what Radarr/Sonarr see internally.</div>
+    <div class="hint" id="coldarr-library-paths-hint">Must be absolute paths, and must match what Radarr/Sonarr see internally.</div>
+    <div class="hint" id="coldarr-downloads-paths-hint">Must be absolute paths, exactly as qBittorrent sees them (e.g. <code>/seed</code>), and mounted into Coldarr at those same paths. Downloads saved in a folder below one of these paths count as on this tier.</div>
   </div>
 
-  <div>
+  <div id="coldarr-media-field">
     <label>Media types</label>
     <div class="checkbox-row">
       <input type="checkbox" id="media_movie" name="media_movie" {{if .HasMovie}}checked{{end}}>
@@ -43,7 +55,7 @@
     <div class="hint">The cold-tier fill goal Coldarr actively packs toward.</div>
   </div>
 
-  <div>
+  <div id="coldarr-max-field">
     <label for="max">Max used %</label>
     <input type="number" id="max" name="max_used_percent" step="0.1" min="0" max="100" value="{{.Tier.MaxUsedPercent}}">
     <div class="hint" id="coldarr-hot-max-hint">
@@ -59,6 +71,15 @@
     <label for="require_mount" style="font-weight:400">Require these paths to be on their own mounted drive, not the system disk</label>
   </div>
 
+  <fieldset id="coldarr-access-field" class="tier-access">
+    <legend>Access</legend>
+    <label class="radio-row"><input type="radio" name="access" value="read_only" {{if not .Tier.AllowDeletes}}checked{{end}} onchange="coldarrToggleTierFields()"> Read-only</label>
+    <label class="radio-row"><input type="radio" name="access" value="allow_deletes" {{if .Tier.AllowDeletes}}checked{{end}} onchange="coldarrToggleTierFields()"> Not read-only: Coldarr may delete orphaned files here</label>
+    <div class="alert alert-warn" id="coldarr-access-warning">
+      Coldarr will be able to delete files in these folders. The Orphaned Storage page offers a Delete button for anything here that qBittorrent doesn't know about, and what you delete there is gone for good. Coldarr only deletes when you click it, and the folders must also be mounted read-write into Coldarr's container.
+    </div>
+  </fieldset>
+
   <div class="btn-row">
     <button type="submit" class="btn btn-primary">{{if .Editing}}Save changes{{else}}Add storage tier{{end}}</button>
     <a class="btn" href="/settings/tiers">Cancel</a>
@@ -66,17 +87,37 @@
 </form>
 
 <script>
-  function coldarrToggleColdFields() {
-    var isCold = document.getElementById("role").value === "cold";
-    document.getElementById("coldarr-target-field").style.display = isCold ? "block" : "none";
-    // Disabled (not just hidden) so a hot tier's irrelevant target is
-    // excluded from constraint validation and submission. Max remains
-    // visible and enabled for both roles because both roles enforce it.
-    document.getElementById("target").disabled = !isCold;
-    document.getElementById("max").min = isCold ? "0.01" : "0";
-    document.getElementById("coldarr-hot-max-hint").style.display = isCold ? "none" : "block";
-    document.getElementById("coldarr-cold-max-hint").style.display = isCold ? "block" : "none";
+  function coldarrShow(id, on) {
+    document.getElementById(id).style.display = on ? "block" : "none";
   }
-  coldarrToggleColdFields();
+  function coldarrToggleTierFields() {
+    var domain = document.getElementById("domain");
+    var downloads = !!domain && domain.value === "downloads";
+    var isCold = document.getElementById("role").value === "cold";
+    // Hidden fields are disabled too, not just hidden, so a value that
+    // doesn't apply is neither validated nor submitted.
+    coldarrShow("coldarr-media-field", !downloads);
+    document.getElementById("media_movie").disabled = downloads;
+    document.getElementById("media_tv").disabled = downloads;
+    coldarrShow("coldarr-target-field", isCold);
+    document.getElementById("target").disabled = !isCold;
+    // Nothing is reclaimed onto a download drive, so its max would do
+    // nothing; every other tier enforces one, hot library tiers included.
+    var hasMax = isCold || !downloads;
+    var max = document.getElementById("max");
+    coldarrShow("coldarr-max-field", hasMax);
+    max.disabled = !hasMax;
+    max.min = isCold ? "0.01" : "0";
+    coldarrShow("coldarr-hot-max-hint", !isCold);
+    coldarrShow("coldarr-cold-max-hint", isCold);
+    coldarrShow("coldarr-library-role-hint", !downloads);
+    coldarrShow("coldarr-library-paths-hint", !downloads);
+    coldarrShow("coldarr-downloads-paths-hint", downloads);
+    coldarrShow("coldarr-access-field", downloads);
+    var allow = document.querySelector('input[name="access"][value="allow_deletes"]');
+    coldarrShow("coldarr-access-warning", downloads && allow.checked);
+    document.querySelectorAll('input[name="access"]').forEach(function (el) { el.disabled = !downloads; });
+  }
+  coldarrToggleTierFields();
 </script>
 {{end}}

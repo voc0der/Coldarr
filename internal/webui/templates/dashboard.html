@@ -38,7 +38,7 @@
 {{range .Rows}}
 <tr>
   <td><span class="icon-label">{{template "icon-hdd"}} {{.TierName}}{{if .SharedColorClass}} <span class="tier-link {{.SharedColorClass}}" title="Shares a disk with: {{range .SharesVolumeWith}}{{.}} {{end}}">{{template "icon-link"}}</span>{{end}}</span></td>
-  <td><span class="badge badge-muted">{{if eq (print .Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Role}}</span></td>
+  <td><span class="badge badge-muted">{{if eq (print .Role) "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.Role}}</span>{{if .IsDownloads}} <span class="badge badge-muted" title="Holds qBittorrent downloads">{{template "icon-download"}} downloads</span>{{end}}</td>
   <td class="mono">{{.Path}}</td>
   {{if .Available}}
   {{if .UsedPercentOver}}
@@ -49,6 +49,8 @@
   <td>{{gb .TotalBytes}}</td>
   {{if .HasTarget}}
   <td class="muted">{{pct .TargetPercent}} / {{pct .MaxPercent}}</td>
+  {{else if .IsDownloads}}
+  <td class="muted">downloads land here</td>
   {{else}}
   <td class="muted">reclaim max {{pct .MaxPercent}} {{if .UsesDefaultMax}}(default){{else}}(configured){{end}}</td>
   {{end}}

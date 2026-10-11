@@ -12,6 +12,7 @@ import (
 type tierRow struct {
 	TierName         string
 	Role             model.TierRole
+	IsDownloads      bool
 	Path             string
 	Available        bool
 	UsedBytes        int64
@@ -139,6 +140,7 @@ func dashboardTierRow(tier model.Tier, path string) tierRow {
 	return tierRow{
 		TierName:       tier.Name,
 		Role:           tier.Role,
+		IsDownloads:    tier.IsDownloads(),
 		Path:           path,
 		HasTarget:      tier.Role == model.RoleCold,
 		TargetPercent:  tier.TargetUsedPercent,

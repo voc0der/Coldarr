@@ -49,6 +49,30 @@ func TestTierUsage(t *testing.T) {
 	}
 }
 
+// TestTierUsage_DownloadsTiers: downloads tiers are labeled as such, and a
+// download drive shows no reclaim ceiling - nothing is reclaimed onto it.
+func TestTierUsage_DownloadsTiers(t *testing.T) {
+	ssd := model.Tier{Name: "ssd", Domain: model.DomainDownloads, Role: model.RoleHot, Paths: []string{"/downloads"}}
+	seed := model.Tier{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}, TargetUsedPercent: 92, MaxUsedPercent: 97}
+	inv := &engine.Inventory{
+		Tiers: []model.Tier{ssd, seed},
+		PathStatus: map[string]engine.PathStatus{
+			"/downloads": {Tier: ssd, Path: "/downloads", Usage: diskusage.Usage{TotalBytes: 100, UsedBytes: 40, FreeBytes: 60, UsedPercent: 40}},
+			"/seed":      {Tier: seed, Path: "/seed", Err: fmt.Errorf("path does not exist")},
+		},
+	}
+	var buf bytes.Buffer
+	TierUsage(&buf, inv)
+	out := buf.String()
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 || !strings.Contains(lines[1], "hot (downloads)") || strings.Contains(lines[1], "97.0") {
+		t.Errorf("download drive row = %q, want it labeled with no reclaim ceiling", lines[1])
+	}
+	if !strings.Contains(lines[2], "cold (downloads)") || !strings.Contains(lines[2], "92.0") || !strings.Contains(lines[2], "UNAVAILABLE") {
+		t.Errorf("seed storage row = %q, want it labeled with its target and the failure", lines[2])
+	}
+}
+
 func TestTierUsage_PreservesFractionalThresholds(t *testing.T) {
 	inv := testInventory()
 	inv.Tiers[0].MaxUsedPercent = 96.5

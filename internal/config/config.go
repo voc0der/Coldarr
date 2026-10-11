@@ -320,17 +320,19 @@ func applyDefaults(cfg *Config) {
 }
 
 // ValidateTiers checks tiers for structural correctness (unique names,
-// absolute non-overlapping paths, valid roles/media types/thresholds). If
-// requireHotAndCold is true, it also requires at least one tier of each
-// role - appropriate when about to build a plan, not appropriate while a
-// fresh install is still being configured one tier at a time through the
-// GUI.
+// absolute non-overlapping paths, valid domains/roles/media types/
+// thresholds). If requireHotAndCold is true, it also requires at least one
+// tier of each role in every domain that has tiers at all - appropriate
+// when about to build a plan, not appropriate while a fresh install is
+// still being configured one tier at a time through the GUI. A domain
+// nobody uses needs nothing: a library-only config is as valid as ever.
 func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 	if requireHotAndCold && len(tiers) == 0 {
 		return fmt.Errorf("at least one tier must be configured")
 	}
 
-	var haveHot, haveCold bool
+	type roles struct{ hot, cold bool }
+	domains := map[model.TierDomain]*roles{}
 	seenNames := map[string]bool{}
 	seenPaths := map[string]string{}
 
@@ -343,11 +345,19 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 		}
 		seenNames[t.Name] = true
 
+		domain := t.EffectiveDomain()
+		if domain != model.DomainLibrary && domain != model.DomainDownloads {
+			return fmt.Errorf("tier %q: domain must be %q or %q, got %q", t.Name, model.DomainLibrary, model.DomainDownloads, t.Domain)
+		}
+		if domains[domain] == nil {
+			domains[domain] = &roles{}
+		}
+
 		switch t.Role {
 		case model.RoleHot:
-			haveHot = true
+			domains[domain].hot = true
 		case model.RoleCold:
-			haveCold = true
+			domains[domain].cold = true
 		default:
 			return fmt.Errorf("tier %q: role must be %q or %q, got %q", t.Name, model.RoleHot, model.RoleCold, t.Role)
 		}
@@ -365,12 +375,21 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 			seenPaths[p] = t.Name
 		}
 
-		if len(t.Media) == 0 {
-			return fmt.Errorf("tier %q: must configure at least one media type (movie, tv)", t.Name)
-		}
-		for _, mt := range t.Media {
-			if mt != model.Movie && mt != model.TV {
-				return fmt.Errorf("tier %q: unknown media type %q", t.Name, mt)
+		if domain == model.DomainDownloads {
+			if len(t.Media) > 0 {
+				return fmt.Errorf("tier %q: media_types only applies to library tiers - a downloads tier holds any torrent", t.Name)
+			}
+		} else {
+			if len(t.Media) == 0 {
+				return fmt.Errorf("tier %q: must configure at least one media type (movie, tv)", t.Name)
+			}
+			for _, mt := range t.Media {
+				if mt != model.Movie && mt != model.TV {
+					return fmt.Errorf("tier %q: unknown media type %q", t.Name, mt)
+				}
+			}
+			if t.AllowDeletes {
+				return fmt.Errorf("tier %q: allow_deletes only applies to downloads tiers - Coldarr never deletes library files", t.Name)
 			}
 		}
 
@@ -393,11 +412,19 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 	}
 
 	if requireHotAndCold {
-		if !haveHot {
-			return fmt.Errorf("at least one tier with role %q is required", model.RoleHot)
-		}
-		if !haveCold {
-			return fmt.Errorf("at least one tier with role %q is required", model.RoleCold)
+		// Checked in a fixed order, so the same config always reports the
+		// same problem first.
+		for _, domain := range []model.TierDomain{model.DomainLibrary, model.DomainDownloads} {
+			have, used := domains[domain]
+			if !used {
+				continue
+			}
+			if !have.hot {
+				return fmt.Errorf("at least one %s tier with role %q is required", domain, model.RoleHot)
+			}
+			if !have.cold {
+				return fmt.Errorf("at least one %s tier with role %q is required", domain, model.RoleCold)
+			}
 		}
 	}
 

@@ -426,6 +426,96 @@ func TestValidateTiers_StructuralErrors(t *testing.T) {
 	}
 }
 
+// TestValidateTiers_Domains: downloads tiers hold any torrent, so they take
+// no media types, and only they may allow deletes. Each domain in use needs
+// its own hot and cold tier, while a domain nobody uses needs nothing - so
+// every library-only config from before domains existed stays valid.
+func TestValidateTiers_Domains(t *testing.T) {
+	hot := model.Tier{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie}}
+	cold := model.Tier{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.Movie}, MaxUsedPercent: 95, TargetUsedPercent: 90}
+	ssd := model.Tier{Name: "ssd", Domain: model.DomainDownloads, Role: model.RoleHot, Paths: []string{"/downloads"}}
+	seed := model.Tier{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}, MaxUsedPercent: 97, TargetUsedPercent: 92, AllowDeletes: true}
+
+	for name, tiers := range map[string][]model.Tier{
+		"library only":   {hot, cold},
+		"downloads only": {ssd, seed},
+		"both":           {hot, cold, ssd, seed},
+	} {
+		if err := ValidateTiers(tiers, true); err != nil {
+			t.Errorf("%s: ValidateTiers = %v, want nil", name, err)
+		}
+	}
+
+	explicit := hot
+	explicit.Domain = model.DomainLibrary
+	if err := ValidateTiers([]model.Tier{explicit, cold}, true); err != nil {
+		t.Errorf("an explicit library domain = %v, want nil", err)
+	}
+
+	withMedia := ssd
+	withMedia.Media = []model.MediaType{model.Movie}
+	deletable := hot
+	deletable.AllowDeletes = true
+	odd := ssd
+	odd.Domain = "music"
+
+	tests := []struct {
+		name    string
+		tiers   []model.Tier
+		wantErr string
+	}{
+		{name: "media types on a downloads tier", tiers: []model.Tier{withMedia}, wantErr: "media_types only applies to library tiers"},
+		{name: "deletes on a library tier", tiers: []model.Tier{deletable}, wantErr: "never deletes library files"},
+		{name: "unknown domain", tiers: []model.Tier{odd}, wantErr: `domain must be "library" or "downloads", got "music"`},
+		{name: "downloads without seed storage", tiers: []model.Tier{hot, cold, ssd}, wantErr: `at least one downloads tier with role "cold"`},
+		{name: "downloads without a download drive", tiers: []model.Tier{seed}, wantErr: `at least one downloads tier with role "hot"`},
+		{name: "a path in both domains", tiers: []model.Tier{hot, func() model.Tier { s := seed; s.Paths = []string{"/hot"}; return s }()}, wantErr: `path "/hot" used by both tier "hot" and tier "seed"`},
+	}
+	for _, tt := range tests {
+		if err := ValidateTiers(tt.tiers, true); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: ValidateTiers = %v, want an error containing %q", tt.name, err, tt.wantErr)
+		}
+	}
+
+	// Mid-setup through the GUI, a lone downloads tier is fine.
+	if err := ValidateTiers([]model.Tier{ssd}, false); err != nil {
+		t.Errorf("a lone downloads tier while configuring = %v, want nil", err)
+	}
+}
+
+// TestSave_OmitsDomainForLibraryTiers: a config saved through the GUI keeps
+// looking the way it did before domains existed - no domain or
+// allow_deletes keys on library tiers - while downloads tiers say what
+// they are.
+func TestSave_OmitsDomainForLibraryTiers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coldarr.yaml")
+	cfg := &Config{Tiers: []model.Tier{
+		{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie}},
+		{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}, MaxUsedPercent: 97, TargetUsedPercent: 92},
+	}}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), "domain:"); got != 1 || !strings.Contains(string(raw), "domain: downloads") {
+		t.Errorf("saved YAML has %d domain keys, want only the downloads tier's:\n%s", got, raw)
+	}
+	if strings.Contains(string(raw), "allow_deletes") || strings.Count(string(raw), "media_types") != 1 {
+		t.Errorf("saved YAML should omit unset allow_deletes and the downloads tier's media types:\n%s", raw)
+	}
+
+	loaded, err := LoadForServer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Tiers[1].IsDownloads() || loaded.Tiers[0].IsDownloads() {
+		t.Errorf("round trip lost the domains: %+v", loaded.Tiers)
+	}
+}
+
 // TestValidateScheduler_NamesTheBrokenTask: a scheduler error has to say
 // which task's schedule is wrong, or an operator editing coldarr.yaml by
 // hand is left to guess among five near-identical blocks.
