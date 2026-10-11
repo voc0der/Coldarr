@@ -430,8 +430,9 @@ func dirSize(path string) (int64, error) {
 // it from the snapshot. Every guard is re-checked against the present,
 // since a scan can be hours old:
 //
-//   - path must be exactly an entry the last scan listed in a download
-//     folder - never an arbitrary path from a form;
+//   - requested must be exactly an entry the last scan listed in a
+//     download folder, and from then on only the scan's own copy of the
+//     path is used - never the one from the form;
 //   - its tier must still be a downloads tier marked as not read-only,
 //     with path strictly inside one of its paths;
 //   - that tier path must pass its storage check, so nothing is deleted
@@ -439,22 +440,23 @@ func dirSize(path string) (int64, error) {
 //     whatever is mounted there instead);
 //   - and, asked afresh, no configured service may know path, or anything
 //     inside it - a download added since the scan may be using it.
-func (s *Store) DeleteDownload(path string, src Sources, tiers []model.Tier) (Candidate, error) {
+func (s *Store) DeleteDownload(requested string, src Sources, tiers []model.Tier) (Candidate, error) {
 	if src.Qbit == nil {
 		return Candidate{}, fmt.Errorf("qBittorrent isn't connected, so there's no telling what in its download folders is orphaned")
 	}
-	path = filepath.Clean(path)
+	requested = filepath.Clean(requested)
 
 	var found *Candidate
 	for _, c := range s.Get().Candidates {
-		if c.IsDownloads() && c.Path == path {
+		if c.IsDownloads() && c.Path == requested {
 			found = &c
 			break
 		}
 	}
 	if found == nil {
-		return Candidate{}, fmt.Errorf("%s isn't on the list from the last scan of the download folders - scan again", path)
+		return Candidate{}, fmt.Errorf("%s isn't on the list from the last scan of the download folders - scan again", requested)
 	}
+	path := found.Path
 
 	var tier *model.Tier
 	for i := range tiers {
