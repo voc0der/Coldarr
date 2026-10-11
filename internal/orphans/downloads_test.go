@@ -215,6 +215,18 @@ func deletableFixture(t *testing.T, allowDeletes bool) (*Store, *fakeQbit, []mod
 	return s, qb, tiers, dl
 }
 
+// TestRefresh_LeavesReadOnlyDownloadFoldersUnwritten: the scan tests
+// whether it can write to a tier path by writing to it, so it skips a
+// downloads tier marked read-only - Coldarr writes nothing there.
+func TestRefresh_LeavesReadOnlyDownloadFoldersUnwritten(t *testing.T) {
+	for _, allowDeletes := range []bool{false, true} {
+		s, _, _, dl := deletableFixture(t, allowDeletes)
+		if _, probed := s.Get().TierWritable[dl]; probed != allowDeletes {
+			t.Errorf("allow_deletes %v: write-tested = %v, want %v", allowDeletes, probed, allowDeletes)
+		}
+	}
+}
+
 func TestDeleteDownload(t *testing.T) {
 	s, qb, tiers, dl := deletableFixture(t, true)
 	src := Sources{Qbit: qbit.NewClient(qb.URL, qbit.Auth{})}

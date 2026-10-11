@@ -25,7 +25,7 @@
 {{if .Tiers}}
 <div class="card">
   <h2 style="margin-top:0">Tier writability</h2>
-  <p class="hint">Whether Coldarr could actually write to each tier path as of the last scan, tested directly rather than trusted from mount flags alone.</p>
+  <p class="hint">Whether Coldarr could actually write to each tier path as of the last scan, tested directly rather than trusted from mount flags alone.{{if .ReadOnlyDownloads}} Downloads tiers marked read-only aren't tested - Coldarr writes nothing to them.{{end}}</p>
   <table>
   <thead><tr><th>Path</th><th>Status</th></tr></thead>
   <tbody>

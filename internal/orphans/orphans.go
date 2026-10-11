@@ -180,6 +180,11 @@ func (s *Store) Refresh(src Sources, tiers []model.Tier) error {
 			}
 			next.Candidates = append(next.Candidates, candidates...)
 
+			// A downloads tier marked read-only is never written to, not
+			// even to test it - nothing will be deleted from it anyway.
+			if tier.IsDownloads() && !tier.AllowDeletes {
+				continue
+			}
 			writable, reason := probeWritable(path)
 			next.TierWritable[path] = writable
 			if reason != "" {
