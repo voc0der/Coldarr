@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/vocoder/coldarr/internal/engine"
 	"github.com/vocoder/coldarr/internal/notify"
+	"github.com/vocoder/coldarr/internal/orphans"
 	"github.com/vocoder/coldarr/internal/scheduler"
 )
 
@@ -56,6 +60,12 @@ type schedulerData struct {
 	RefreshLinks scheduleFormView
 	ScanCutoffs  scheduleFormView
 	ScanOrphans  scheduleFormView
+	// ShowDownloads lists the download-tiering tasks - only once
+	// qBittorrent is connected.
+	ShowDownloads  bool
+	RunTorrentPlan scheduleFormView
+	ScanTrackers   scheduleFormView
+	ExpireSeeds    scheduleFormView
 }
 
 type omitDayView struct {
@@ -100,7 +110,7 @@ func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule
 		view.ShowRunNow, view.RunNowLabel = true, "Refresh now"
 	case "scan_cutoffs":
 		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
-	case "scan_orphans":
+	case "scan_orphans", taskScanTrackers:
 		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
 	}
 	if !lastRun.IsZero() {
@@ -129,8 +139,18 @@ func (s *Server) schedulerData() schedulerData {
 		ScanCutoffs: s.scheduleView("scan_cutoffs", "Scan Quality Cutoffs",
 			`Checks which movies/series have a file that doesn't meet its quality profile's upgrade cutoff, so scoring can keep those on hot storage (Radarr/Sonarr are still going to replace that file). This calls Radarr/Sonarr's own wanted/cutoff lookup, which can be slow on a large library - that's exactly why it only ever runs here, on a schedule (or via "Scan now" below), never live on a Dashboard/Plan page view. Until this has run at least once, every item is treated as cutoff-met.`,
 			cfg.Scheduler.ScanCutoffs, s.getLastRanScanCutoffs()),
+		ShowDownloads: s.downloadsEnabled(),
+		RunTorrentPlan: s.scheduleView(taskRunTorrentPlan, "Move Settled Downloads",
+			`Moves downloads that have finished and sat on the download drive for the settle time to seed storage, one at a time, and gives each the seed label once it has landed - identical to clicking "Move these downloads" on the Downloads page, just unattended. Runs after Run the Plan by default; the two never run at once.`,
+			cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).LastRan),
+		ScanTrackers: s.scheduleView(taskScanTrackers, "Scan Torrent Trackers",
+			`Looks up which trackers each download announces to, so its seeding requirement (Settings > Downloads) can be worked out. qBittorrent answers one download per request, so this only ever runs here, on a schedule (or via "Scan now" below), and only looks up downloads it hasn't seen before. Until a download's trackers have been scanned, it never counts as done seeding.`,
+			cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).LastRan),
+		ExpireSeeds: s.scheduleView(taskExpireSeeds, "Remove Finished Seeds",
+			`Scans trackers, then reports or removes downloads whose seeding is done - whichever the removal mode under Settings > Downloads says (it's off until you choose). Every run that removes anything sends a summary naming what went, whether or not notifications are verbose.`,
+			cfg.Scheduler.ExpireSeeds, s.taskState(taskExpireSeeds).LastRan),
 		ScanOrphans: s.scheduleView("scan_orphans", "Scan for Orphaned Storage",
-			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, or Jellyfin still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers). This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
+			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers) - and, with qBittorrent connected, every file and folder in the download folders it doesn't know about. This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
 			cfg.Scheduler.ScanOrphans, s.getLastRanScanOrphans()),
 	}
 }
@@ -141,7 +161,7 @@ func (s *Server) handleSchedulerPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 	task := r.PathValue("task")
-	if task != "omit-days" && task != "run_plan" && task != "rescan_cold" && task != "refresh_links" && task != "scan_cutoffs" && task != "scan_orphans" {
+	if task != "omit-days" && !slices.Contains(scheduledTasks, task) {
 		http.NotFound(w, r)
 		return
 	}
@@ -204,6 +224,16 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanOrphans.Label, data.ScanOrphans.Hint, data.ScanOrphans.LastRan
 			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
 			data.ScanOrphans = submitted
+		case taskRunTorrentPlan:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.RunTorrentPlan.Label, data.RunTorrentPlan.Hint, data.RunTorrentPlan.LastRan
+			data.RunTorrentPlan = submitted
+		case taskScanTrackers:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanTrackers.Label, data.ScanTrackers.Hint, data.ScanTrackers.LastRan
+			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
+			data.ScanTrackers = submitted
+		case taskExpireSeeds:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ExpireSeeds.Label, data.ExpireSeeds.Hint, data.ExpireSeeds.LastRan
+			data.ExpireSeeds = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return
@@ -243,12 +273,13 @@ func (s *Server) runScheduledPlan(now time.Time) {
 	}
 
 	// Same reasoning as the in-flight guard above, but for moves running
-	// inside Radarr/Sonarr themselves - which survive Coldarr restarts,
-	// making them invisible to currentRun. Skip without recordPlanRan so
-	// the tick retries once they've drained, exactly like the guard above;
-	// startApply would also refuse, but checking here avoids building (and
-	// half-acting on) a plan from mid-move disk numbers at all.
-	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+	// inside Radarr/Sonarr or qBittorrent themselves - which survive
+	// Coldarr restarts, making them invisible to currentRun. Skip without
+	// recordPlanRan so the tick retries once they've drained, exactly like
+	// the guard above; startApply would also refuse, but checking here
+	// avoids building (and half-acting on) a plan from mid-move disk
+	// numbers at all.
+	if busy, detail, err := eng.MovesInFlight(); err != nil {
 		log.Printf("scheduler: run-plan: %v - skipping this tick", err)
 		return
 	} else if busy {
@@ -545,16 +576,49 @@ func (s *Server) runScheduledScanOrphans(now time.Time) {
 		return
 	}
 
-	if err := s.orphanStore.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient(), eng.Cfg.Tiers); err != nil {
+	if err := s.orphanStore.Refresh(orphanSources(eng), eng.Cfg.Tiers); err != nil {
 		log.Printf("scheduler: scan-orphaned-storage: %v", err)
 		n.Summary("Orphaned storage scan failed", err.Error(), notify.LevelFailure)
 		return
 	}
 
 	snap := s.orphanStore.Get()
+	var library, downloads []orphans.Candidate
+	for _, c := range snap.Candidates {
+		if c.IsDownloads() {
+			downloads = append(downloads, c)
+		} else {
+			library = append(library, c)
+		}
+	}
+	if eng.Qbit == nil {
+		n.Summary("Orphaned storage scan finished",
+			fmt.Sprintf("%s folder(s) found with no matching service record", n.Bold(strconv.Itoa(len(library)))),
+			notify.LevelSuccess)
+		return
+	}
+
+	// Leftovers in the download folders are what download tiering can
+	// leave behind - a download removed without its files, a move that
+	// didn't finish - so they're called out on their own, and listed one
+	// by one when verbose.
+	level := notify.LevelSuccess
+	if len(downloads) > 0 {
+		level = notify.LevelWarning
+	}
 	n.Summary("Orphaned storage scan finished",
-		fmt.Sprintf("%s folder(s) found with no matching service record", n.Bold(strconv.Itoa(len(snap.Candidates)))),
-		notify.LevelSuccess)
+		fmt.Sprintf("%s folder(s) in library folders and %s item(s) in download folders found with no matching service record",
+			n.Bold(strconv.Itoa(len(library))), n.Bold(strconv.Itoa(len(downloads)))),
+		level)
+	for _, c := range downloads {
+		n.Item("Orphaned download "+filepath.Base(c.Path), fmt.Sprintf("%s (%s) in %s", n.Code(c.Path), n.Bold(fmt.Sprintf("%.1f GB", float64(c.SizeBytes)/(1<<30))), n.Bold(c.TierName)), notify.LevelWarning)
+	}
+}
+
+// orphanSources is every service whose content counts as known to the
+// orphan scan.
+func orphanSources(eng *engine.Engine) orphans.Sources {
+	return orphans.Sources{Radarr: eng.Radarr, Sonarr: eng.Sonarr, Lidarr: eng.Lidarr, Jellyfin: eng.JellyfinClient(), Qbit: eng.Qbit}
 }
 
 // scanOrphansNow acquires scanOrphansMu (like a scheduled run, best-effort
@@ -573,7 +637,7 @@ func (s *Server) scanOrphansNow() error {
 
 	eng, err := s.newEngine()
 	if err == nil {
-		err = s.orphanStore.Refresh(eng.Radarr, eng.Sonarr, eng.JellyfinClient(), eng.Cfg.Tiers)
+		err = s.orphanStore.Refresh(orphanSources(eng), eng.Cfg.Tiers)
 	}
 	if err != nil {
 		return err
@@ -597,5 +661,64 @@ func (s *Server) handleScanOrphansNow(w http.ResponseWriter, r *http.Request) {
 
 	data := s.schedulerData()
 	data.Saved = "Orphaned storage scan finished."
+	s.render(w, "settings_scheduler", data)
+}
+
+// runScheduledScanTrackers refreshes internal/trackercache. Only called
+// from tick() when scheduler.Due says it's time.
+func (s *Server) runScheduledScanTrackers(now time.Time) {
+	if !s.scanTrackersMu.TryLock() {
+		log.Printf("scheduler: scan-torrent-trackers is due, but a previous scan is still running - skipping this tick")
+		return
+	}
+	defer s.scanTrackersMu.Unlock()
+
+	s.recordTaskRan(taskScanTrackers, now)
+	n := s.notifier()
+	eng, err := s.newEngine()
+	if err == nil {
+		var looked int
+		looked, err = eng.ScanTrackers(now)
+		if err == nil {
+			n.Summary("Tracker scan finished",
+				fmt.Sprintf("%s download(s) looked up, %s tracker(s) known", n.Bold(strconv.Itoa(looked)), n.Bold(strconv.Itoa(len(eng.Trackers.Get().Seen)))),
+				notify.LevelSuccess)
+			return
+		}
+	}
+	log.Printf("scheduler: scan-torrent-trackers: %v", err)
+	n.Summary("Tracker scan failed", err.Error(), notify.LevelFailure)
+}
+
+// scanTrackersNow runs the tracker scan by hand - from the Scheduler page
+// or the Seeding rules card - under the same lock as a scheduled one, and
+// counts as the task's run.
+func (s *Server) scanTrackersNow() (int, error) {
+	if !s.scanTrackersMu.TryLock() {
+		return 0, fmt.Errorf("a tracker scan is already in progress - try again shortly")
+	}
+	defer s.scanTrackersMu.Unlock()
+
+	eng, err := s.newEngine()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	looked, err := eng.ScanTrackers(now)
+	if err != nil {
+		return looked, err
+	}
+	s.recordTaskRan(taskScanTrackers, now)
+	return looked, nil
+}
+
+func (s *Server) handleScanTrackersNow(w http.ResponseWriter, r *http.Request) {
+	looked, err := s.scanTrackersNow()
+	data := s.schedulerData()
+	if err != nil {
+		data.ScanTrackers.Error = err.Error()
+	} else {
+		data.Saved = fmt.Sprintf("Tracker scan finished - %d download(s) looked up.", looked)
+	}
 	s.render(w, "settings_scheduler", data)
 }

@@ -42,6 +42,10 @@ type Server struct {
 	// separate requests while it runs in the background.
 	applyMu    sync.Mutex
 	currentRun *applyRun
+	// currentDownloadsRun is the downloads counterpart of currentRun,
+	// under the same lock: both kinds of apply hold the mover lock, so
+	// only one of either ever runs at a time.
+	currentDownloadsRun *downloadsRun
 
 	// verifyMu guards currentVerify the same way applyMu guards
 	// currentRun - only one size-verification run in flight at a time,
@@ -73,6 +77,10 @@ type Server struct {
 	// checked by runScheduledPlan: unlike quality cutoffs, an unattended
 	// apply has no need for fresh orphan data.
 	scanOrphansMu sync.Mutex
+	// scanTrackersMu is rescanMu's counterpart for "Scan Torrent
+	// Trackers" - also taken by the downloads tasks that refresh trackers
+	// before acting, so two scans never hit qBittorrent at once.
+	scanTrackersMu sync.Mutex
 
 	authMu       sync.Mutex
 	authSessions map[string]authSession
@@ -100,10 +108,6 @@ type applyRun struct {
 }
 
 func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server, error) {
-	pages, err := parseTemplates()
-	if err != nil {
-		return nil, err
-	}
 	linkCache, err := linkcache.Load(linkCachePath(cfgPath))
 	if err != nil {
 		return nil, err
@@ -124,9 +128,11 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		orphanStore:    orphanStore,
 		schedState:     schedState,
 		schedStatePath: schedulerStatePath(cfgPath),
-		pages:          pages,
 		authSessions:   map[string]authSession{},
 		oidcStates:     map[string]oidcLoginState{},
+	}
+	if s.pages, err = parseTemplatesWith(s.navState); err != nil {
+		return nil, err
 	}
 
 	if !s.effectiveOIDCConfig().Enabled {
@@ -231,6 +237,15 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/tiers/{name}", s.handleTierUpdate)
 	mux.HandleFunc("POST /settings/tiers/{name}/delete", s.handleTierDelete)
 
+	mux.HandleFunc("GET /settings/downloads", s.handleDownloadsSettingsPage)
+	mux.HandleFunc("POST /settings/downloads/moving", s.handleDownloadsMovingSave)
+	mux.HandleFunc("POST /settings/downloads/labels", s.handleDownloadsLabelsSave)
+	mux.HandleFunc("POST /settings/downloads/seeding", s.handleDownloadsSeedingSave)
+	mux.HandleFunc("POST /settings/downloads/trackers", s.handleDownloadsTrackerSave)
+	mux.HandleFunc("POST /settings/downloads/trackers/delete", s.handleDownloadsTrackerDelete)
+	mux.HandleFunc("POST /settings/downloads/trackers/scan", s.handleDownloadsTrackerScan)
+	mux.HandleFunc("POST /settings/downloads/removal", s.handleDownloadsRemovalSave)
+
 	mux.HandleFunc("GET /settings/notifications", s.handleNotificationsPage)
 	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
 	mux.HandleFunc("POST /settings/notifications/test", s.handleNotificationsTest)
@@ -240,10 +255,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/scheduler/refresh_links/run", s.handleRefreshLinksNow)
 	mux.HandleFunc("POST /settings/scheduler/scan_cutoffs/run", s.handleScanCutoffsNow)
 	mux.HandleFunc("POST /settings/scheduler/scan_orphans/run", s.handleScanOrphansNow)
+	mux.HandleFunc("POST /settings/scheduler/scan_trackers/run", s.handleScanTrackersNow)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
 
 	mux.HandleFunc("GET /settings/orphans", s.handleOrphansPage)
 	mux.HandleFunc("POST /settings/orphans/scan", s.handleOrphansScanNow)
+	mux.HandleFunc("POST /settings/orphans/delete", s.handleOrphanDelete)
 
 	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
 	mux.HandleFunc("POST /settings/auth", s.handleAuthSave)
@@ -266,6 +283,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /plan/apply/status", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/plan", http.StatusMovedPermanently)
 	})
+
+	mux.HandleFunc("GET /downloads", s.handleDownloadsPage)
+	mux.HandleFunc("POST /downloads/apply", s.handleDownloadsApplyStart)
+	mux.HandleFunc("GET /downloads/apply/status/partial", s.handleDownloadsApplyStatusPartial)
+	mux.HandleFunc("POST /downloads/remove", s.handleDownloadsRemove)
 
 	mux.HandleFunc("GET /history", s.handleHistoryPage)
 	mux.HandleFunc("POST /history/verify", s.handleVerifyStart)
@@ -297,6 +319,28 @@ func (s *Server) currentConfig() *config.Config {
 
 func (s *Server) newEngine() (*engine.Engine, error) {
 	return engine.New(s.currentConfig(), s.connStore)
+}
+
+// navState works out which parts of the GUI apply right now - see
+// navState. The library pages show unless this is a downloads-only
+// install: qBittorrent connected and no library tier. Radarr or Sonarr
+// being connected doesn't count - download tiering asks them about imports
+// too.
+func (s *Server) navState() navState {
+	downloads := s.downloadsEnabled()
+	library := !downloads || len(model.TiersIn(s.currentConfig().Tiers, model.DomainLibrary)) > 0
+	return navState{Library: library, Downloads: downloads}
+}
+
+// downloadsEnabled reports whether qBittorrent is connected - what every
+// download-tiering page, setting and task waits on before it appears, so a
+// library-only setup never sees any of them.
+func (s *Server) downloadsEnabled() bool {
+	if s.connStore == nil {
+		return false
+	}
+	_, source := s.connStore.Effective(secrets.LoginApp)
+	return source != secrets.SourceNone
 }
 
 // updateTiers applies fn to the current tier list, validates the result,
@@ -334,6 +378,28 @@ func (s *Server) updateNotifications(verbose, markdown bool, tag string) error {
 	updated.Notifications.Verbose = verbose
 	updated.Notifications.Markdown = markdown
 	updated.Notifications.Tag = tag
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		return err
+	}
+	s.cfg = &updated
+	return nil
+}
+
+// updateTorrents applies fn to a copy of the download-tiering settings,
+// validates the result, persists it, and swaps it into the live config,
+// under the same lock discipline as updateTiers.
+func (s *Server) updateTorrents(fn func(*config.TorrentsConfig)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := *s.cfg
+	torrents := updated.Torrents
+	torrents.Labels = append([]config.LabelRule(nil), torrents.Labels...)
+	fn(&torrents)
+	if err := config.ValidateTorrents(torrents); err != nil {
+		return err
+	}
+	updated.Torrents = torrents
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		return err
 	}
@@ -417,6 +483,16 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.ScanOrphans, s.getLastRunScanOrphans(), now) {
 		s.runScheduledScanOrphans(now)
 	}
+	// Trackers first: the downloads tasks after it read what it found.
+	if scheduler.Due(cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).Anchor, now) {
+		s.runScheduledScanTrackers(now)
+	}
+	if scheduler.Due(cfg.Scheduler.ExpireSeeds, s.taskState(taskExpireSeeds).Anchor, now) {
+		s.runScheduledExpireSeeds(now)
+	}
+	if scheduler.Due(cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).Anchor, now) {
+		s.runScheduledDownloadsPlan(now)
+	}
 }
 
 // updateWeeklyOmitDays persists the page-level scheduler blackout. It does
@@ -441,8 +517,7 @@ func (s *Server) updateWeeklyOmitDays(days []scheduler.Weekday) error {
 }
 
 // updateSchedule validates and persists a single named task's schedule
-// ("run_plan", "rescan_cold", "refresh_links", "scan_cutoffs", or
-// "scan_orphans"), then re-arms that task (see scheduler.Arm) - whether
+// (one of scheduledTasks), then re-arms that task (see scheduler.Arm) - whether
 // enabling, disabling, or just adjusting the time - so saving a schedule
 // can never itself trigger an immediate unattended run as a surprise side
 // effect. This does not touch the "last ran" fact shown on the settings
@@ -479,6 +554,12 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 		updated.Scheduler.ScanCutoffs = sched
 	case taskScanOrphans:
 		updated.Scheduler.ScanOrphans = sched
+	case taskRunTorrentPlan:
+		updated.Scheduler.RunTorrentPlan = sched
+	case taskScanTrackers:
+		updated.Scheduler.ScanTrackers = sched
+	case taskExpireSeeds:
+		updated.Scheduler.ExpireSeeds = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()

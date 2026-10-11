@@ -17,7 +17,7 @@ type applyProgressView struct {
 	Resolved  int
 }
 
-func buildApplyProgress(snap mover.ProgressSnapshot, now time.Time) applyProgressView {
+func buildApplyProgress[E mover.Entry](snap mover.RunSnapshot[E], now time.Time) applyProgressView {
 	estimate := snap.Estimate(now)
 	view := applyProgressView{
 		Percent: estimate.Percent,
@@ -26,7 +26,7 @@ func buildApplyProgress(snap mover.ProgressSnapshot, now time.Time) applyProgres
 	}
 	var totalBytes float64
 	for _, e := range snap.Entries {
-		totalBytes += float64(max(0, e.Entry.Item.SizeBytes))
+		totalBytes += float64(max(0, e.Entry.MoveSize()))
 		if e.Status == mover.StatusDone || e.Status == mover.StatusFailed {
 			view.Resolved++
 		}

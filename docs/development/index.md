@@ -32,7 +32,8 @@ moves the number. See [Contributing](contributing.md#coverage).
 
 Every package has tests, including `cmd/coldarr` (run through its real
 command line) and the `internal/webui` handlers (driven with `httptest`
-against fake Radarr/Sonarr/Jellyfin servers and a fake OIDC provider). What
+against fake Radarr/Sonarr/Lidarr/Jellyfin/qBittorrent servers and a fake
+OIDC provider). What
 tests can't tell you is how a page looks - `internal/webui` is a set of Go
 `html/template` pages with no JS framework, so verifying a UI change still
 means actually running the server and looking at it:
@@ -163,7 +164,8 @@ build and publish the Docker image. To ship a new version:
 - Plex support alongside Jellyfin
 - Jellyfin play-history/play-count and request-history (Jellyseerr/
   Overseerr) as scoring inputs (Favorites are already in)
-- Torrent client / seeding-state awareness
+- Download clients other than qBittorrent, ratio-based seeding rules, and
+  sending downloads to different seed drives by label
 - Editing policy thresholds (tags, cooldown, score threshold) through the
   GUI, not just tiers/connections/notifications/scheduler
 - Translations for the web GUI - it's English-only today, with strings

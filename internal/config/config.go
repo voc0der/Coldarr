@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -98,10 +99,261 @@ type SchedulerConfig struct {
 	// Settings > Orphaned Storage page only ever shows the last scan's
 	// results.
 	ScanOrphans scheduler.Schedule `yaml:"scan_orphans"`
+	// RunTorrentPlan moves settled downloads from the download drive to
+	// seed storage - the downloads counterpart of RunPlan. Staggered after
+	// it by default: both hold the same apply lock, and a scheduled run
+	// that finds the lock taken simply tries again on the next tick.
+	RunTorrentPlan scheduler.Schedule `yaml:"run_torrent_plan"`
+	// ScanTrackers refreshes internal/trackercache - which trackers each
+	// download announces to, one qBittorrent request per download not yet
+	// known - so seeding requirements can be worked out. Never done on a
+	// page view, for the same reason as ScanCutoffs.
+	ScanTrackers scheduler.Schedule `yaml:"scan_trackers"`
+	// ExpireSeeds reports or removes downloads whose seeding is done,
+	// according to torrents.removal - scanning trackers first. Staggered
+	// before RunTorrentPlan, so a download that's done seeding on the
+	// download drive is removed rather than moved.
+	ExpireSeeds scheduler.Schedule `yaml:"expire_seeds"`
 }
 
 type AuthConfig struct {
 	OIDC OIDCAuthConfig `yaml:"oidc"`
+}
+
+// TorrentsConfig is download tiering: when Coldarr moves a finished
+// qBittorrent download from the download drive to seed storage, and which
+// downloads it acts on at all. It does nothing until qBittorrent is
+// connected and downloads tiers exist.
+type TorrentsConfig struct {
+	// SettleDays is how long a finished download stays on the download
+	// drive before it moves - time for Radarr/Sonarr/Lidarr to import it,
+	// and for anything else to finish reading it. Defaults to 3.
+	SettleDays int `yaml:"settle_days"`
+	// SeedLabel is the category a download is given once it has landed on
+	// seed storage - never before, so a move that fails part way never
+	// leaves a download labeled as archived while its data is still on
+	// the download drive. Defaults to "seed".
+	SeedLabel string `yaml:"seed_label"`
+	// AllowDisablingAutoTMM lets Coldarr switch off Automatic Torrent
+	// Management for a download it's about to move. A managed download's
+	// location follows its category, so qBittorrent would undo the move;
+	// without this, such downloads are held back and listed instead.
+	AllowDisablingAutoTMM bool `yaml:"allow_disabling_auto_tmm,omitempty"`
+	// Labels says what Coldarr does with downloads carrying each of
+	// qBittorrent's categories and tags. A label with no rule is left
+	// alone, so a category added in qBittorrent next month is never acted
+	// on until someone decides it should be.
+	Labels []LabelRule `yaml:"labels,omitempty"`
+	// Seeding is how long downloads must seed before their trackers are
+	// satisfied - what eventually makes one removable.
+	Seeding SeedingConfig `yaml:"seeding"`
+	// Removal is whether Coldarr removes downloads whose seeding is done.
+	Removal RemovalConfig `yaml:"removal"`
+}
+
+// RemovalMode is how far Coldarr goes with downloads whose seeding is done.
+type RemovalMode string
+
+const (
+	// RemovalOff, the default, never removes anything.
+	RemovalOff RemovalMode = "off"
+	// RemovalReport lists what would be removed - on the Downloads page,
+	// and in a notification when the task runs - and removes nothing. A
+	// separate step from RemovalRemove on purpose: turning removal on
+	// should show what it would do before it does any of it.
+	RemovalReport RemovalMode = "report"
+	// RemovalRemove removes them from qBittorrent, with their files.
+	RemovalRemove RemovalMode = "remove"
+)
+
+// RemovalConfig is whether, and how far, Coldarr removes downloads whose
+// seeding is done.
+type RemovalConfig struct {
+	// Mode is off (the default when unset), report, or remove.
+	Mode RemovalMode `yaml:"mode,omitempty"`
+	// MaxPerRun caps how many downloads one run removes: a mistaken rule
+	// should cost a handful of downloads and a notification, not the
+	// drive. Defaults to 25.
+	MaxPerRun int `yaml:"max_per_run,omitempty"`
+}
+
+// EffectiveMode returns Mode, off when unset.
+func (c RemovalConfig) EffectiveMode() RemovalMode {
+	if c.Mode == "" {
+		return RemovalOff
+	}
+	return c.Mode
+}
+
+// Limit returns MaxPerRun, or the default 25 when unset.
+func (c RemovalConfig) Limit() int {
+	if c.MaxPerRun <= 0 {
+		return 25
+	}
+	return c.MaxPerRun
+}
+
+// SeedingConfig is each tracker's seeding requirement: a default for every
+// tracker, and overrides for particular ones.
+type SeedingConfig struct {
+	// MinSeedDays is the requirement for any tracker without an override.
+	// 0 - the default - means forever: such downloads are never done, so
+	// an incomplete setup errs toward keeping things.
+	MinSeedDays int `yaml:"min_seed_days"`
+	// GraceDays is added to every requirement as a margin: Coldarr can't
+	// see a tracker's own count of seeding time, only an approximation of
+	// it (see internal/torrents). Defaults to 7; nil means unset.
+	GraceDays *int `yaml:"grace_days,omitempty"`
+	// Overrides set the requirement for particular trackers.
+	Overrides []TrackerOverride `yaml:"overrides,omitempty"`
+}
+
+// Grace returns GraceDays, or the default 7 when unset.
+func (c SeedingConfig) Grace() int {
+	if c.GraceDays == nil {
+		return 7
+	}
+	return *c.GraceDays
+}
+
+// TrackerOverride sets one tracker's seeding requirement. Host matches the
+// tracker's own host and any subdomain of it, so "example.org" covers
+// "tracker.example.org" too; the most specific override wins.
+type TrackerOverride struct {
+	Host string `yaml:"host"`
+	// MinSeedDays is this tracker's requirement; 0 means forever.
+	MinSeedDays int `yaml:"min_seed_days"`
+}
+
+// NormalizeTrackerHost reduces whatever someone typed or pasted - a bare
+// host, or a whole announce URL, passkey and all - to the lower-case host
+// an override is keyed by. Nothing past the host is ever kept.
+func NormalizeTrackerHost(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	}
+	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	if host, _, ok := strings.Cut(raw, ":"); ok && !strings.HasPrefix(raw, "[") {
+		raw = host
+	}
+	return strings.Trim(raw, ".")
+}
+
+// LabelAction is what a label rule tells Coldarr to do.
+type LabelAction string
+
+const (
+	// LabelMove means downloads with this label move to seed storage once
+	// they've settled, and are Coldarr's to manage from then on.
+	LabelMove LabelAction = "move"
+	// LabelIgnore means downloads with this label are never touched, even
+	// if another of their labels says to move them. Their bytes still
+	// count toward each drive's usage.
+	LabelIgnore LabelAction = "ignore"
+)
+
+// ImportApps are the *arr apps a label can name as the one that imports
+// its downloads.
+var ImportApps = []string{"radarr", "sonarr", "lidarr"}
+
+// LabelRule is one category or tag and what Coldarr does with it.
+type LabelRule struct {
+	Label  string      `yaml:"label"`
+	Action LabelAction `yaml:"action"`
+	// ImportedBy names the app that imports downloads with this label -
+	// radarr, sonarr or lidarr. A download it hasn't imported yet stays on
+	// the download drive, since moving it would break the import. Empty
+	// for labels no *arr app imports (manual downloads, say), which move
+	// without asking anyone.
+	ImportedBy string `yaml:"imported_by,omitempty"`
+}
+
+// Rule returns the rule for label, if there is one.
+func (c TorrentsConfig) Rule(label string) (LabelRule, bool) {
+	for _, r := range c.Labels {
+		if r.Label == label {
+			return r, true
+		}
+	}
+	return LabelRule{}, false
+}
+
+// ValidateTorrents checks the download-tiering settings - invoked wherever
+// config is loaded, and again before saving a change made through the web
+// GUI.
+func ValidateTorrents(cfg TorrentsConfig) error {
+	if cfg.SettleDays < 0 {
+		return fmt.Errorf("torrents.settle_days must not be negative, got %d", cfg.SettleDays)
+	}
+	if strings.TrimSpace(cfg.SeedLabel) != cfg.SeedLabel {
+		return fmt.Errorf("torrents.seed_label must not start or end with spaces, got %q", cfg.SeedLabel)
+	}
+	seen := map[string]bool{}
+	for _, r := range cfg.Labels {
+		if r.Label == "" || strings.TrimSpace(r.Label) != r.Label {
+			return fmt.Errorf("torrents.labels: a label must be a non-empty name without surrounding spaces, got %q", r.Label)
+		}
+		if seen[r.Label] {
+			return fmt.Errorf("torrents.labels: %q is listed twice", r.Label)
+		}
+		seen[r.Label] = true
+		switch r.Action {
+		case LabelMove:
+		case LabelIgnore:
+			if r.ImportedBy != "" {
+				return fmt.Errorf("torrents.labels: %q is ignored, so nothing imports it - drop imported_by", r.Label)
+			}
+		default:
+			return fmt.Errorf("torrents.labels: %q: action must be %q or %q, got %q", r.Label, LabelMove, LabelIgnore, r.Action)
+		}
+		if r.ImportedBy != "" && !slices.Contains(ImportApps, r.ImportedBy) {
+			return fmt.Errorf("torrents.labels: %q: imported_by must be one of %s, got %q", r.Label, strings.Join(ImportApps, ", "), r.ImportedBy)
+		}
+		if r.Label == cfg.SeedLabel && (r.Action != LabelMove || r.ImportedBy != "") {
+			return fmt.Errorf("torrents.labels: %q is the seed label Coldarr gives downloads on seed storage, so it can only be a plain move label", r.Label)
+		}
+	}
+	if err := validateSeeding(cfg.Seeding); err != nil {
+		return err
+	}
+	switch cfg.Removal.EffectiveMode() {
+	case RemovalOff, RemovalReport, RemovalRemove:
+	default:
+		return fmt.Errorf("torrents.removal.mode must be %q, %q or %q, got %q", RemovalOff, RemovalReport, RemovalRemove, cfg.Removal.Mode)
+	}
+	if cfg.Removal.MaxPerRun < 0 {
+		return fmt.Errorf("torrents.removal.max_per_run must not be negative, got %d", cfg.Removal.MaxPerRun)
+	}
+	return nil
+}
+
+func validateSeeding(cfg SeedingConfig) error {
+	if cfg.MinSeedDays < 0 {
+		return fmt.Errorf("torrents.seeding.min_seed_days must not be negative, got %d", cfg.MinSeedDays)
+	}
+	if cfg.Grace() < 0 {
+		return fmt.Errorf("torrents.seeding.grace_days must not be negative, got %d", cfg.Grace())
+	}
+	seen := map[string]bool{}
+	for _, o := range cfg.Overrides {
+		if o.Host == "" || NormalizeTrackerHost(o.Host) != o.Host {
+			return fmt.Errorf("torrents.seeding.overrides: %q isn't a tracker host - use just the host, like tracker.example.org", o.Host)
+		}
+		if seen[o.Host] {
+			return fmt.Errorf("torrents.seeding.overrides: %q is listed twice", o.Host)
+		}
+		seen[o.Host] = true
+		if o.MinSeedDays < 0 {
+			return fmt.Errorf("torrents.seeding.overrides: %q: min_seed_days must not be negative, got %d", o.Host, o.MinSeedDays)
+		}
+	}
+	return nil
 }
 
 type OIDCAuthConfig struct {
@@ -118,6 +370,7 @@ type OIDCAuthConfig struct {
 type Config struct {
 	Tiers         []model.Tier        `yaml:"tiers"`
 	Policy        PolicyConfig        `yaml:"policy"`
+	Torrents      TorrentsConfig      `yaml:"torrents"`
 	History       HistoryConfig       `yaml:"history"`
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Scheduler     SchedulerConfig     `yaml:"scheduler"`
@@ -137,6 +390,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := ValidateScheduler(cfg.Scheduler); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := ValidateTorrents(cfg.Torrents); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
@@ -169,6 +425,9 @@ func LoadForServer(path string) (*Config, error) {
 	if err := ValidateScheduler(cfg.Scheduler); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	if err := ValidateTorrents(cfg.Torrents); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	log.Printf("config: loaded %d tier(s) from %s: %v", len(cfg.Tiers), path, tierNames(cfg.Tiers))
 	return cfg, nil
 }
@@ -195,6 +454,15 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	}
 	if err := scheduler.Validate(cfg.ScanOrphans); err != nil {
 		return fmt.Errorf("scheduler.scan_orphans: %w", err)
+	}
+	if err := scheduler.Validate(cfg.RunTorrentPlan); err != nil {
+		return fmt.Errorf("scheduler.run_torrent_plan: %w", err)
+	}
+	if err := scheduler.Validate(cfg.ScanTrackers); err != nil {
+		return fmt.Errorf("scheduler.scan_trackers: %w", err)
+	}
+	if err := scheduler.Validate(cfg.ExpireSeeds); err != nil {
+		return fmt.Errorf("scheduler.expire_seeds: %w", err)
 	}
 	return nil
 }
@@ -306,11 +574,20 @@ func applyDefaults(cfg *Config) {
 	if cfg.Auth.OIDC.TokenAuthMethod == "" {
 		cfg.Auth.OIDC.TokenAuthMethod = "auto"
 	}
+	if cfg.Torrents.SettleDays == 0 {
+		cfg.Torrents.SettleDays = 3
+	}
+	if cfg.Torrents.SeedLabel == "" {
+		cfg.Torrents.SeedLabel = "seed"
+	}
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")
 	applyScheduleDefaults(&cfg.Scheduler.RefreshLinks, "01:00")
 	applyScheduleDefaults(&cfg.Scheduler.ScanCutoffs, "00:30")
 	applyScheduleDefaults(&cfg.Scheduler.ScanOrphans, "00:45")
+	applyScheduleDefaults(&cfg.Scheduler.RunTorrentPlan, "04:30")
+	applyScheduleDefaults(&cfg.Scheduler.ScanTrackers, "04:00")
+	applyScheduleDefaults(&cfg.Scheduler.ExpireSeeds, "04:15")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {
@@ -320,17 +597,19 @@ func applyDefaults(cfg *Config) {
 }
 
 // ValidateTiers checks tiers for structural correctness (unique names,
-// absolute non-overlapping paths, valid roles/media types/thresholds). If
-// requireHotAndCold is true, it also requires at least one tier of each
-// role - appropriate when about to build a plan, not appropriate while a
-// fresh install is still being configured one tier at a time through the
-// GUI.
+// absolute non-overlapping paths, valid domains/roles/media types/
+// thresholds). If requireHotAndCold is true, it also requires at least one
+// tier of each role in every domain that has tiers at all - appropriate
+// when about to build a plan, not appropriate while a fresh install is
+// still being configured one tier at a time through the GUI. A domain
+// nobody uses needs nothing: a library-only config is as valid as ever.
 func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 	if requireHotAndCold && len(tiers) == 0 {
 		return fmt.Errorf("at least one tier must be configured")
 	}
 
-	var haveHot, haveCold bool
+	type roles struct{ hot, cold bool }
+	domains := map[model.TierDomain]*roles{}
 	seenNames := map[string]bool{}
 	seenPaths := map[string]string{}
 
@@ -343,11 +622,19 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 		}
 		seenNames[t.Name] = true
 
+		domain := t.EffectiveDomain()
+		if domain != model.DomainLibrary && domain != model.DomainDownloads {
+			return fmt.Errorf("tier %q: domain must be %q or %q, got %q", t.Name, model.DomainLibrary, model.DomainDownloads, t.Domain)
+		}
+		if domains[domain] == nil {
+			domains[domain] = &roles{}
+		}
+
 		switch t.Role {
 		case model.RoleHot:
-			haveHot = true
+			domains[domain].hot = true
 		case model.RoleCold:
-			haveCold = true
+			domains[domain].cold = true
 		default:
 			return fmt.Errorf("tier %q: role must be %q or %q, got %q", t.Name, model.RoleHot, model.RoleCold, t.Role)
 		}
@@ -365,12 +652,21 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 			seenPaths[p] = t.Name
 		}
 
-		if len(t.Media) == 0 {
-			return fmt.Errorf("tier %q: must configure at least one media type (movie, tv)", t.Name)
-		}
-		for _, mt := range t.Media {
-			if mt != model.Movie && mt != model.TV {
-				return fmt.Errorf("tier %q: unknown media type %q", t.Name, mt)
+		if domain == model.DomainDownloads {
+			if len(t.Media) > 0 {
+				return fmt.Errorf("tier %q: media_types only applies to library tiers - a downloads tier holds any torrent", t.Name)
+			}
+		} else {
+			if len(t.Media) == 0 {
+				return fmt.Errorf("tier %q: must configure at least one media type (movie, tv)", t.Name)
+			}
+			for _, mt := range t.Media {
+				if mt != model.Movie && mt != model.TV {
+					return fmt.Errorf("tier %q: unknown media type %q", t.Name, mt)
+				}
+			}
+			if t.AllowDeletes {
+				return fmt.Errorf("tier %q: allow_deletes only applies to downloads tiers - Coldarr never deletes library files", t.Name)
 			}
 		}
 
@@ -393,11 +689,19 @@ func ValidateTiers(tiers []model.Tier, requireHotAndCold bool) error {
 	}
 
 	if requireHotAndCold {
-		if !haveHot {
-			return fmt.Errorf("at least one tier with role %q is required", model.RoleHot)
-		}
-		if !haveCold {
-			return fmt.Errorf("at least one tier with role %q is required", model.RoleCold)
+		// Checked in a fixed order, so the same config always reports the
+		// same problem first.
+		for _, domain := range []model.TierDomain{model.DomainLibrary, model.DomainDownloads} {
+			have, used := domains[domain]
+			if !used {
+				continue
+			}
+			if !have.hot {
+				return fmt.Errorf("at least one %s tier with role %q is required", domain, model.RoleHot)
+			}
+			if !have.cold {
+				return fmt.Errorf("at least one %s tier with role %q is required", domain, model.RoleCold)
+			}
 		}
 	}
 

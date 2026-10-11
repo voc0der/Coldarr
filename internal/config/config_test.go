@@ -426,6 +426,238 @@ func TestValidateTiers_StructuralErrors(t *testing.T) {
 	}
 }
 
+// TestValidateTiers_Domains: downloads tiers hold any torrent, so they take
+// no media types, and only they may allow deletes. Each domain in use needs
+// its own hot and cold tier, while a domain nobody uses needs nothing - so
+// every library-only config from before domains existed stays valid.
+func TestValidateTiers_Domains(t *testing.T) {
+	hot := model.Tier{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie}}
+	cold := model.Tier{Name: "cold", Role: model.RoleCold, Paths: []string{"/cold"}, Media: []model.MediaType{model.Movie}, MaxUsedPercent: 95, TargetUsedPercent: 90}
+	ssd := model.Tier{Name: "ssd", Domain: model.DomainDownloads, Role: model.RoleHot, Paths: []string{"/downloads"}}
+	seed := model.Tier{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}, MaxUsedPercent: 97, TargetUsedPercent: 92, AllowDeletes: true}
+
+	for name, tiers := range map[string][]model.Tier{
+		"library only":   {hot, cold},
+		"downloads only": {ssd, seed},
+		"both":           {hot, cold, ssd, seed},
+	} {
+		if err := ValidateTiers(tiers, true); err != nil {
+			t.Errorf("%s: ValidateTiers = %v, want nil", name, err)
+		}
+	}
+
+	explicit := hot
+	explicit.Domain = model.DomainLibrary
+	if err := ValidateTiers([]model.Tier{explicit, cold}, true); err != nil {
+		t.Errorf("an explicit library domain = %v, want nil", err)
+	}
+
+	withMedia := ssd
+	withMedia.Media = []model.MediaType{model.Movie}
+	deletable := hot
+	deletable.AllowDeletes = true
+	odd := ssd
+	odd.Domain = "music"
+
+	tests := []struct {
+		name    string
+		tiers   []model.Tier
+		wantErr string
+	}{
+		{name: "media types on a downloads tier", tiers: []model.Tier{withMedia}, wantErr: "media_types only applies to library tiers"},
+		{name: "deletes on a library tier", tiers: []model.Tier{deletable}, wantErr: "never deletes library files"},
+		{name: "unknown domain", tiers: []model.Tier{odd}, wantErr: `domain must be "library" or "downloads", got "music"`},
+		{name: "downloads without seed storage", tiers: []model.Tier{hot, cold, ssd}, wantErr: `at least one downloads tier with role "cold"`},
+		{name: "downloads without a download drive", tiers: []model.Tier{seed}, wantErr: `at least one downloads tier with role "hot"`},
+		{name: "a path in both domains", tiers: []model.Tier{hot, func() model.Tier { s := seed; s.Paths = []string{"/hot"}; return s }()}, wantErr: `path "/hot" used by both tier "hot" and tier "seed"`},
+	}
+	for _, tt := range tests {
+		if err := ValidateTiers(tt.tiers, true); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: ValidateTiers = %v, want an error containing %q", tt.name, err, tt.wantErr)
+		}
+	}
+
+	// Mid-setup through the GUI, a lone downloads tier is fine.
+	if err := ValidateTiers([]model.Tier{ssd}, false); err != nil {
+		t.Errorf("a lone downloads tier while configuring = %v, want nil", err)
+	}
+}
+
+// TestSave_OmitsDomainForLibraryTiers: a config saved through the GUI keeps
+// looking the way it did before domains existed - no domain or
+// allow_deletes keys on library tiers - while downloads tiers say what
+// they are.
+func TestSave_OmitsDomainForLibraryTiers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coldarr.yaml")
+	cfg := &Config{Tiers: []model.Tier{
+		{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie}},
+		{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{"/seed"}, MaxUsedPercent: 97, TargetUsedPercent: 92},
+	}}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), "domain:"); got != 1 || !strings.Contains(string(raw), "domain: downloads") {
+		t.Errorf("saved YAML has %d domain keys, want only the downloads tier's:\n%s", got, raw)
+	}
+	if strings.Contains(string(raw), "allow_deletes") || strings.Count(string(raw), "media_types") != 1 {
+		t.Errorf("saved YAML should omit unset allow_deletes and the downloads tier's media types:\n%s", raw)
+	}
+
+	loaded, err := LoadForServer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Tiers[1].IsDownloads() || loaded.Tiers[0].IsDownloads() {
+		t.Errorf("round trip lost the domains: %+v", loaded.Tiers)
+	}
+}
+
+func TestApplyDefaults_Torrents(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if cfg.Torrents.SettleDays != 3 || cfg.Torrents.SeedLabel != "seed" || cfg.Torrents.AllowDisablingAutoTMM || len(cfg.Torrents.Labels) != 0 {
+		t.Fatalf("torrent defaults = %+v, want a 3-day settle, the seed label, AutoTMM left alone and no label rules", cfg.Torrents)
+	}
+
+	cfg = &Config{Torrents: TorrentsConfig{SettleDays: 7, SeedLabel: "archive"}}
+	applyDefaults(cfg)
+	if cfg.Torrents.SettleDays != 7 || cfg.Torrents.SeedLabel != "archive" {
+		t.Fatalf("explicit torrent settings were overwritten: %+v", cfg.Torrents)
+	}
+}
+
+func TestValidateTorrents(t *testing.T) {
+	valid := TorrentsConfig{SettleDays: 3, SeedLabel: "seed", Labels: []LabelRule{
+		{Label: "movies", Action: LabelMove, ImportedBy: "radarr"},
+		{Label: "music", Action: LabelMove, ImportedBy: "lidarr"},
+		{Label: "manual", Action: LabelMove},
+		{Label: "transfer", Action: LabelIgnore},
+		{Label: "seed", Action: LabelMove},
+	}}
+	if err := ValidateTorrents(valid); err != nil {
+		t.Fatalf("ValidateTorrents(valid) = %v", err)
+	}
+	if r, ok := valid.Rule("music"); !ok || r.ImportedBy != "lidarr" {
+		t.Errorf("Rule(music) = %+v, %v", r, ok)
+	}
+	if _, ok := valid.Rule("nope"); ok {
+		t.Error("Rule(nope) should find nothing")
+	}
+
+	tests := []struct {
+		name    string
+		edit    func(*TorrentsConfig)
+		wantErr string
+	}{
+		{name: "negative settle", edit: func(c *TorrentsConfig) { c.SettleDays = -1 }, wantErr: "settle_days must not be negative"},
+		{name: "padded seed label", edit: func(c *TorrentsConfig) { c.SeedLabel = " seed" }, wantErr: "seed_label must not start or end with spaces"},
+		{name: "empty label", edit: func(c *TorrentsConfig) { c.Labels = append(c.Labels, LabelRule{Action: LabelMove}) }, wantErr: "non-empty name"},
+		{name: "duplicate label", edit: func(c *TorrentsConfig) { c.Labels = append(c.Labels, LabelRule{Label: "movies", Action: LabelIgnore}) }, wantErr: `"movies" is listed twice`},
+		{name: "unknown action", edit: func(c *TorrentsConfig) { c.Labels[0].Action = "keep" }, wantErr: `action must be "move" or "ignore"`},
+		{name: "ignored but imported", edit: func(c *TorrentsConfig) { c.Labels[3].ImportedBy = "radarr" }, wantErr: "drop imported_by"},
+		{name: "unknown importer", edit: func(c *TorrentsConfig) { c.Labels[0].ImportedBy = "readarr" }, wantErr: "imported_by must be one of radarr, sonarr, lidarr"},
+		{name: "ignored seed label", edit: func(c *TorrentsConfig) { c.Labels[4].Action = LabelIgnore }, wantErr: "seed label"},
+		{name: "imported seed label", edit: func(c *TorrentsConfig) { c.Labels[4].ImportedBy = "sonarr" }, wantErr: "seed label"},
+	}
+	for _, tt := range tests {
+		cfg := valid
+		cfg.Labels = append([]LabelRule(nil), valid.Labels...)
+		tt.edit(&cfg)
+		if err := ValidateTorrents(cfg); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: ValidateTorrents = %v, want an error containing %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestValidateSeeding(t *testing.T) {
+	seven, negative := 7, -1
+	valid := TorrentsConfig{SeedLabel: "seed", Seeding: SeedingConfig{MinSeedDays: 14, GraceDays: &seven, Overrides: []TrackerOverride{{Host: "tracker.example.org", MinSeedDays: 21}, {Host: "example.net"}}}}
+	if err := ValidateTorrents(valid); err != nil {
+		t.Fatalf("ValidateTorrents(valid) = %v", err)
+	}
+	if (SeedingConfig{}).Grace() != 7 || valid.Seeding.Grace() != 7 {
+		t.Error("an unset grace defaults to 7")
+	}
+	zero := 0
+	if (SeedingConfig{GraceDays: &zero}).Grace() != 0 {
+		t.Error("an explicit zero grace is kept")
+	}
+
+	tests := []struct {
+		name    string
+		edit    func(*SeedingConfig)
+		wantErr string
+	}{
+		{name: "negative default", edit: func(c *SeedingConfig) { c.MinSeedDays = -1 }, wantErr: "min_seed_days must not be negative"},
+		{name: "negative grace", edit: func(c *SeedingConfig) { c.GraceDays = &negative }, wantErr: "grace_days must not be negative"},
+		{name: "a URL, not a host", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "https://tracker.example.org/announce" }, wantErr: "isn't a tracker host"},
+		{name: "upper case", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "Tracker.example.org" }, wantErr: "isn't a tracker host"},
+		{name: "empty host", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "" }, wantErr: "isn't a tracker host"},
+		{name: "twice", edit: func(c *SeedingConfig) { c.Overrides[1].Host = "tracker.example.org" }, wantErr: "listed twice"},
+		{name: "negative override", edit: func(c *SeedingConfig) { c.Overrides[0].MinSeedDays = -2 }, wantErr: "min_seed_days must not be negative, got -2"},
+	}
+	for _, tt := range tests {
+		cfg := valid
+		cfg.Seeding.Overrides = append([]TrackerOverride(nil), valid.Seeding.Overrides...)
+		tt.edit(&cfg.Seeding)
+		if err := ValidateTorrents(cfg); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: err = %v, want %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestRemovalConfig(t *testing.T) {
+	var unset RemovalConfig
+	if unset.EffectiveMode() != RemovalOff || unset.Limit() != 25 {
+		t.Errorf("unset removal = %q, %d; want off and 25", unset.EffectiveMode(), unset.Limit())
+	}
+	set := RemovalConfig{Mode: RemovalRemove, MaxPerRun: 5}
+	if set.EffectiveMode() != RemovalRemove || set.Limit() != 5 {
+		t.Errorf("set removal = %q, %d", set.EffectiveMode(), set.Limit())
+	}
+	for _, bad := range []RemovalConfig{{Mode: "delete"}, {MaxPerRun: -1}} {
+		if err := ValidateTorrents(TorrentsConfig{SeedLabel: "seed", Removal: bad}); err == nil || !strings.Contains(err.Error(), "torrents.removal") {
+			t.Errorf("%+v: err = %v", bad, err)
+		}
+	}
+}
+
+func TestNormalizeTrackerHost(t *testing.T) {
+	for raw, want := range map[string]string{
+		"tracker.example.org":                          "tracker.example.org",
+		"  Tracker.Example.ORG ":                       "tracker.example.org",
+		"https://tracker.example.org/announce/PASSKEY": "tracker.example.org",
+		"udp://tracker.example.org:1337/announce":      "tracker.example.org",
+		"http://user:pass@tracker.example.org/a?b=c":   "tracker.example.org",
+		"tracker.example.org.":                         "tracker.example.org",
+		"":                                             "",
+	} {
+		if got := NormalizeTrackerHost(raw); got != want {
+			t.Errorf("NormalizeTrackerHost(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// TestLoad_RejectsInvalidTorrents: a hand-edited label rule that makes no
+// sense stops the load, naming the setting, rather than being guessed at.
+func TestLoad_RejectsInvalidTorrents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coldarr.yaml")
+	raw := "tiers:\n  - name: hot\n    role: hot\n    paths: [/hot]\n    media_types: [movie]\n  - name: cold\n    role: cold\n    paths: [/cold]\n    media_types: [movie]\n    max_used_percent: 95\ntorrents:\n  labels:\n    - label: movies\n      action: shuffle\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "torrents.labels") {
+		t.Errorf("Load = %v, want the bad label rule named", err)
+	}
+	if _, err := LoadForServer(path); err == nil || !strings.Contains(err.Error(), "torrents.labels") {
+		t.Errorf("LoadForServer = %v, want the bad label rule named", err)
+	}
+}
+
 // TestValidateScheduler_NamesTheBrokenTask: a scheduler error has to say
 // which task's schedule is wrong, or an operator editing coldarr.yaml by
 // hand is left to guess among five near-identical blocks.

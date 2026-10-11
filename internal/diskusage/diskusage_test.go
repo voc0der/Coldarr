@@ -273,3 +273,28 @@ func TestCheckPath_PathBeneathAFile(t *testing.T) {
 		t.Errorf("CheckPath error = %v, should not suggest a missing drive", err)
 	}
 }
+
+func TestUsagePlusAndVolumes(t *testing.T) {
+	u := Usage{UsedBytes: 60, FreeBytes: 40}
+	if got := u.Plus(30); got.UsedBytes != 90 || got.FreeBytes != 10 || got.UsedPercent != 90 {
+		t.Errorf("Plus(30) = %+v", got)
+	}
+	if got := u.Plus(-100); got.UsedBytes != 0 || got.FreeBytes != 140 {
+		t.Errorf("Plus(-100) = %+v, want used floored at zero", got)
+	}
+	if got := u.Plus(100); got.FreeBytes != 0 {
+		t.Errorf("Plus(100) = %+v, want free floored at zero", got)
+	}
+
+	vols := GroupVolumes(map[string]uint64{"/a": 1, "/b": 1, "/c": 2})
+	usage := map[string]Usage{"/a": u, "/b": u, "/c": u, "/d": u}
+	vols.Apply(usage, "/a", 10)
+	vols.Apply(usage, "/d", 5) // no known device: just itself
+	if usage["/a"].UsedBytes != 70 || usage["/b"].UsedBytes != 70 || usage["/c"].UsedBytes != 60 || usage["/d"].UsedBytes != 65 {
+		t.Errorf("usage after Apply = %+v, want /a and /b moved together", usage)
+	}
+	vols.Apply(usage, "/missing", 10) // a path with no usage is skipped
+	if _, ok := usage["/missing"]; ok {
+		t.Error("Apply must not invent usage for an unknown path")
+	}
+}

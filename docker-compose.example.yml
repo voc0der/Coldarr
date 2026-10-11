@@ -62,6 +62,15 @@ services:
       # SONARR_API_KEY: ${SONARR_API_KEY}
       # JELLYFIN_URL: http://jellyfin:8096
       # JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      # Optional - download tiering (see the docs' "Downloads and seeding").
+      # The URL alone works if qBittorrent's WebUI skips authentication for
+      # Coldarr's address; otherwise an API key (qBittorrent 5.2+) or a login.
+      # QBITTORRENT_URL: http://qbittorrent:8080
+      # QBITTORRENT_API_KEY: ${QBITTORRENT_API_KEY}
+      # QBITTORRENT_USERNAME: admin
+      # QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD}
+      # LIDARR_URL: http://lidarr:8686
+      # LIDARR_API_KEY: ${LIDARR_API_KEY}
     volumes:
       # Everything Coldarr persists lives here: coldarr.yaml, the
       # encrypted connection store + its key, and the move-history log.
@@ -79,6 +88,12 @@ services:
       - /data/media:/data/media:ro
       - /mnt/sat1:/mnt/sat1:ro
       - /mnt/sat2:/mnt/sat2:ro
+      # Optional - download tiering: the download drive and seed storage, at
+      # the SAME paths qBittorrent uses. qBittorrent does the moving, so :ro
+      # is fine - unless you mark a downloads tier as not read-only to delete
+      # orphaned files from the Orphaned Storage page.
+      # - /mnt/ssd/downloads:/downloads:ro
+      # - /mnt/seed:/seed:ro
     restart: unless-stopped
     # If radarr/sonarr/jellyfin are containers in this same compose
     # project, put coldarr on their network instead of using service

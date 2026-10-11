@@ -17,21 +17,30 @@ import (
 
 	"github.com/vocoder/coldarr/internal/arrapi"
 	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/conncheck"
 	"github.com/vocoder/coldarr/internal/cutoffcache"
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/history"
+	"github.com/vocoder/coldarr/internal/importcache"
 	"github.com/vocoder/coldarr/internal/jellyfin"
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/mover"
 	"github.com/vocoder/coldarr/internal/planner"
+	"github.com/vocoder/coldarr/internal/qbit"
 	"github.com/vocoder/coldarr/internal/scoring"
 	"github.com/vocoder/coldarr/internal/secrets"
+	"github.com/vocoder/coldarr/internal/trackercache"
 )
 
 type Engine struct {
-	Cfg     *config.Config
-	Radarr  *arrapi.RadarrClient
-	Sonarr  *arrapi.SonarrClient
+	Cfg    *config.Config
+	Radarr *arrapi.RadarrClient
+	Sonarr *arrapi.SonarrClient
+	// Lidarr and Qbit are only used for download tiers: Coldarr doesn't
+	// tier music libraries, and asks Lidarr only whether it has imported a
+	// music download. Either is nil when not configured.
+	Lidarr  *arrapi.LidarrClient
+	Qbit    *qbit.Client
 	History *history.Store
 	// CutoffCache holds which items have an unmet quality-profile cutoff
 	// (see internal/cutoffcache) - read in BuildInventory, but never
@@ -41,7 +50,18 @@ type Engine struct {
 	// "Scan Quality Cutoffs" scheduled task or its manual "Scan now"
 	// trigger. A cache that's never been refreshed just means every item
 	// is treated as cutoff-met, same as before this feature existed.
-	CutoffCache  *cutoffcache.Store
+	CutoffCache *cutoffcache.Store
+	// Imports remembers which downloads an *arr app has confirmed
+	// importing (see internal/importcache) - asked once per download, never
+	// again once confirmed.
+	Imports *importcache.Store
+	// DownloadLog records what Coldarr has had qBittorrent do - moves,
+	// relabels, removals.
+	DownloadLog *history.DownloadLog
+	// Trackers remembers each download's tracker hosts (see
+	// internal/trackercache) - read on every downloads inventory, but only
+	// ever refreshed by ScanTrackers.
+	Trackers     *trackercache.Store
 	jellyfinConn secrets.Connection
 	jellyfinOK   bool
 }
@@ -61,6 +81,12 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 	if conn, source := connStore.Effective("sonarr"); source != secrets.SourceNone {
 		e.Sonarr = arrapi.NewSonarrClient(conn.URL, conn.APIKey)
 	}
+	if conn, source := connStore.Effective("lidarr"); source != secrets.SourceNone {
+		e.Lidarr = arrapi.NewLidarrClient(conn.URL, conn.APIKey)
+	}
+	if conn, source := connStore.Effective("qbittorrent"); source != secrets.SourceNone {
+		e.Qbit = conncheck.QbitClient(conn)
+	}
 	if conn, source := connStore.Effective("jellyfin"); source != secrets.SourceNone && conn.Enabled {
 		e.jellyfinConn = conn
 		e.jellyfinOK = true
@@ -77,6 +103,24 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 		return nil, err
 	}
 	e.CutoffCache = cutoffCache
+
+	imports, err := importcache.Load(filepath.Join(filepath.Dir(cfg.History.Path), "coldarr-imports.json"))
+	if err != nil {
+		return nil, err
+	}
+	e.Imports = imports
+
+	downloadLog, err := history.LoadDownloadLog(filepath.Join(filepath.Dir(cfg.History.Path), "coldarr-download-history.json"))
+	if err != nil {
+		return nil, err
+	}
+	e.DownloadLog = downloadLog
+
+	trackers, err := trackercache.Load(filepath.Join(filepath.Dir(cfg.History.Path), "coldarr-trackers.json"))
+	if err != nil {
+		return nil, err
+	}
+	e.Trackers = trackers
 
 	return e, nil
 }
@@ -110,6 +154,33 @@ func (e *Engine) CheckStorage() error {
 		return fmt.Errorf("storage unavailable, refusing to move anything until every tier path checks healthy - %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// checkPaths checks and measures every configured tier path, library and
+// downloads alike. A path that fails is reported, not dropped: callers
+// treat it as unusable, never as empty.
+func (e *Engine) checkPaths() map[string]PathStatus {
+	out := map[string]PathStatus{}
+	for _, tier := range e.Cfg.Tiers {
+		for _, path := range tier.Paths {
+			status := PathStatus{Tier: tier, Path: path}
+
+			if err := diskusage.CheckPath(path, tier.RequireMount); err != nil {
+				status.Err = err
+			} else if u, err := diskusage.Stat(path); err != nil {
+				status.Err = err
+			} else {
+				status.Usage = u
+				if dev, err := diskusage.DeviceID(path); err == nil {
+					status.DeviceID = dev
+					status.DeviceIDKnown = true
+				}
+			}
+
+			out[path] = status
+		}
+	}
+	return out
 }
 
 // ArrMovesInFlight reports whether Radarr or Sonarr is still executing (or
@@ -185,6 +256,10 @@ type Inventory struct {
 	// deliberately fatal instead: without that snapshot, Coldarr cannot
 	// know which items must be kept on hot storage.
 	Warnings []string
+	// Reserved is, per usable tier path, how many more bytes downloads
+	// still in progress will write to its disk (see reservations). The
+	// planner treats that space as already used.
+	Reserved map[string]int64
 }
 
 // UsableUsage returns usage for only the paths that passed their
@@ -262,40 +337,31 @@ func (inv *Inventory) SharedVolumePaths(path string) []string {
 func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 	inv := &Inventory{
 		Tiers:      e.Cfg.Tiers,
-		PathStatus: map[string]PathStatus{},
-	}
-
-	for _, tier := range e.Cfg.Tiers {
-		for _, path := range tier.Paths {
-			status := PathStatus{Tier: tier, Path: path}
-
-			if err := diskusage.CheckPath(path, tier.RequireMount); err != nil {
-				status.Err = err
-			} else if u, err := diskusage.Stat(path); err != nil {
-				status.Err = err
-			} else {
-				status.Usage = u
-				if dev, err := diskusage.DeviceID(path); err == nil {
-					status.DeviceID = dev
-					status.DeviceIDKnown = true
-				}
-			}
-
-			inv.PathStatus[path] = status
-		}
+		PathStatus: e.checkPaths(),
 	}
 
 	// Radarr, Sonarr, and Jellyfin are independent backends, so fetch all
 	// three concurrently - sequentially they'd add up to three backends'
-	// worth of network latency on every plan/dashboard page load.
+	// worth of network latency on every plan/dashboard page load. So is
+	// qBittorrent, read for the downloads still in progress.
 	var (
 		movies, series       []model.MediaItem
 		moviesErr, seriesErr error
 		favorites            map[string]bool
 		favoritesErr         error
+		downloads            []qbit.Torrent
+		downloadsErr         error
 	)
 
 	var wg sync.WaitGroup
+
+	if e.Qbit != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			downloads, downloadsErr = e.Qbit.Torrents()
+		}()
+	}
 
 	if e.Radarr != nil {
 		wg.Add(1)
@@ -342,6 +408,15 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 	items = append(items, movies...)
 	items = append(items, series...)
 
+	// Not fatal: a plan or apply refuses on its own when qBittorrent can't
+	// be reached (see MovesInFlight), and the dashboard has no use for
+	// the reservations.
+	if downloadsErr != nil {
+		inv.Warnings = append(inv.Warnings, fmt.Sprintf("Couldn't read qBittorrent's downloads, so space they're still due to write isn't held back: %v", downloadsErr))
+	} else {
+		inv.Reserved = reservations(downloads, inv.PathStatus)
+	}
+
 	cutoffSnap := e.CutoffCache.Get()
 	if cutoffSnap.RefreshedAt.IsZero() && (e.Radarr != nil || e.Sonarr != nil) {
 		inv.Warnings = append(inv.Warnings, `Quality-cutoff status has never been scanned - items whose file doesn't meet its quality profile's cutoff won't be kept on hot storage for that reason yet. Enable or manually run "Scan Quality Cutoffs" under Settings > Scheduler.`)
@@ -365,16 +440,28 @@ func (e *Engine) BuildInventory(now time.Time) (*Inventory, error) {
 }
 
 // BuildPlan runs the planner over an inventory. It performs no writes.
+// Only library tiers are offered as sources and destinations - downloads
+// tiers are qBittorrent's - but usage still covers every path, so a
+// library path sharing a disk with a downloads path is planned as the one
+// capacity pool it is.
+//
+// Space that downloads still in progress will write is treated as already
+// used (see Inventory.Reserved), so the projected usage includes it.
 func (e *Engine) BuildPlan(inv *Inventory, now time.Time) (*planner.Plan, error) {
-	return planner.Build(planner.Input{
-		Tiers:    inv.Tiers,
-		Usage:    inv.UsableUsage(),
+	plan, err := planner.Build(planner.Input{
+		Tiers:    model.TiersIn(inv.Tiers, model.DomainLibrary),
+		Usage:    applyReservations(inv.UsableUsage(), inv.Reserved),
 		VolumeOf: inv.VolumeOf(),
 		Items:    inv.Items,
 		History:  e.History,
 		Policy:   e.Cfg.Policy,
 		Now:      now,
 	})
+	if err != nil {
+		return nil, err
+	}
+	plan.Warnings = append(plan.Warnings, reservationNotes(inv.Reserved, inv.Tiers)...)
+	return plan, nil
 }
 
 // Movers returns a mover.Movers configured with production settle-timing

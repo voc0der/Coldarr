@@ -1,13 +1,16 @@
 # Connections
 
-Radarr/Sonarr/Jellyfin connection info (URL + API key) is **not** part of
-`coldarr.yaml`. It's stored encrypted at rest, alongside the config file,
-in `connections.enc.json` (with a random key auto-generated on first run
-at `.coldarr.key` next to it). You can set/inspect it three ways, in order
-of precedence:
+Connection info for Radarr, Sonarr, Lidarr, Jellyfin, and qBittorrent (a
+URL plus an API key or login) is **not** part of `coldarr.yaml`. It's
+stored encrypted at rest, alongside the config file, in
+`connections.enc.json` (with a random key auto-generated on first run at
+`.coldarr.key` next to it). You can set/inspect it three ways, in order of
+precedence:
 
 1. **Environment variables** - `RADARR_URL` / `RADARR_API_KEY` (and
-   `SONARR_*`, `JELLYFIN_*`, plus `JELLYFIN_ENABLED`). If set, these
+   `SONARR_*`, `LIDARR_*`, `JELLYFIN_*`, plus `JELLYFIN_ENABLED`), and
+   `QBITTORRENT_URL` with `QBITTORRENT_API_KEY` or
+   `QBITTORRENT_USERNAME` / `QBITTORRENT_PASSWORD`. If set, these
    always win, regardless of what's stored - useful for infra-as-code
    deployments that don't want to touch the GUI at all.
 2. **The web GUI's Connections page** (**Settings > Connections**) - fill in
@@ -17,6 +20,20 @@ of precedence:
 3. **The CLI**: `coldarr connections set/list/test/delete` - see the
    [CLI guide](../usage/cli.md#setting-up-connections).
 
+Radarr and Sonarr are what Coldarr tiers. The rest are optional:
+
+- **Jellyfin** keeps Favorites on hot storage and refreshes moved items - see
+  [Jellyfin](jellyfin.md).
+- **qBittorrent** turns on download tiering: finished downloads move from the
+  download drive to seed storage once they've settled, and can be removed
+  once their trackers' seeding requirements are met - see
+  [Downloads and seeding](downloads.md). It signs in with an API key
+  (qBittorrent 5.2+), a WebUI username and password, or neither, if its
+  WebUI skips authentication for Coldarr's address.
+- **Lidarr** is only used for download tiering. Coldarr doesn't move music
+  libraries; it asks Lidarr whether a music download has been imported before
+  moving that download.
+
 *Threat model:* this protects against the connection file leaking through
 casual exposure (pasted into a support thread, an accidentally-committed
 volume backup) - not against an attacker who already has read access to
@@ -25,7 +42,7 @@ ciphertext on the same volume.
 
 ## External URLs
 
-Each connection on the Connections page also takes an optional external URL.
+Radarr, Sonarr, and Jellyfin each also take an optional external URL.
 It's used only to build the clickable links in the Plan and History pages'
 Links column - e.g. a public hostname your reverse proxy exposes instead of
 the connection URL. Left blank, links fall back to the connection URL. The

@@ -30,14 +30,36 @@ var pageNames = []string{
 	"settings_notifications",
 	"settings_scheduler",
 	"settings_orphans",
+	"settings_downloads",
 	"plan",
+	"downloads",
 	"history",
 	"verify_status",
 	"login",
 }
 
+// navState says which parts of the GUI apply to this install: library
+// tiering, download tiering, or both. Pages for the part that doesn't apply
+// stay out of sight, so a library-only setup looks exactly as it did before
+// downloads tiering existed.
+type navState struct {
+	// Library shows the library pages - Plan and History.
+	Library bool
+	// Downloads shows the downloads page and settings.
+	Downloads bool
+}
+
+// parseTemplates parses every page with a nav that shows only the library
+// pages - what tests that build a Server by hand get.
 func parseTemplates() (map[string]*template.Template, error) {
+	return parseTemplatesWith(func() navState { return navState{Library: true} })
+}
+
+// parseTemplatesWith parses every page, with nav answering what the layout
+// and settings pages ask about this install.
+func parseTemplatesWith(nav func() navState) (map[string]*template.Template, error) {
 	funcs := template.FuncMap{
+		"nav": nav,
 		"gb": func(bytes int64) string {
 			return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))
 		},

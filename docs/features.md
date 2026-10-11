@@ -13,9 +13,12 @@ it.
   downloading right now.
 - Anything that looks safe to move gets ranked coldest-and-biggest-first, and
   cold drives get packed toward a usage target you set.
-- It never touches a file directly. It asks Radarr/Sonarr to do the move
-  (their own bulk-move API), so their database never drifts out of sync with
-  what's actually on disk.
+- It never moves a file itself. It asks Radarr/Sonarr to do the move
+  (their own bulk-move API) - or qBittorrent, for downloads - so their
+  database never drifts out of sync with what's actually on disk. Finished
+  seeds you've chosen to have removed go through qBittorrent too. The only
+  files Coldarr deletes itself are orphaned files in a download folder
+  you've marked as not read-only, when you click Delete on them.
 - Moves happen one at a time per physical drive, and Coldarr waits for each
   one to actually land before starting the next. Firing a dozen simultaneous
   multi-GB transfers at one NAS is a great way to hang it - this happened
@@ -23,6 +26,27 @@ it.
 - Everything's dry-run by default. `report` and `plan` (or the dashboard/plan
   page in the GUI) never touch anything. `apply` asks you to confirm first,
   or skip the prompt with `-y` for cron.
+
+## Downloads, too
+
+Connect qBittorrent and Coldarr runs your download drive as a revolving
+door:
+
+- Downloads land on fast storage and are left alone while they download.
+- Once one has finished, sat for a few days, and been imported by
+  whichever of Radarr/Sonarr/Lidarr you've said imports its label, it moves
+  to a cheap, large seed drive - one at a time, each confirmed before the
+  next - and gets a `seed` label once it has landed.
+- Tell it how long each tracker wants downloads seeded, and once one is
+  done, it can be cleared out - report-only first if you like, never
+  touching a download nobody imported, one sharing files with another that
+  still needs them, or anything near your library.
+- Orphaned Storage checks the download folders against qBittorrent file by
+  file, so leftovers from removed downloads or unfinished moves show up.
+
+Cross-seeds move together, labels you haven't set up are left alone, and
+nothing moves while qBittorrent is still moving something. See
+[Downloads and seeding](configuration/downloads.md).
 
 ## Why bother splitting hot/cold at all
 
@@ -69,7 +93,9 @@ every run - scheduled or manual - sends you a one-line summary. Flip on
 Verbose if you also want a ping per item, not just the summary; it's off by
 default so a big move doesn't spam you.
 
-**Settings > Scheduler** adds five jobs, all off until you turn them on:
+**Settings > Scheduler** adds five jobs, all off until you turn them on
+(and three more for downloads, with qBittorrent connected - see
+[Downloads and seeding](configuration/downloads.md#scheduled-tasks)):
 
 - **Run the Plan** - does exactly what clicking Apply does, just on a
   schedule (every N hours, or daily at a time you pick). No cron entry to
@@ -86,8 +112,8 @@ default so a big move doesn't spam you.
   Radarr/Sonarr are still going to replace them. Run the Plan always does
   this first anyway, so its data is current even with this job off.
 - **Scan for Orphaned Storage** - walks your tier paths for folders nothing
-  in Radarr, Sonarr, or Jellyfin tracks anymore, and lists them on the
-  Orphaned Storage page.
+  in Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent tracks anymore, and
+  lists them on the Orphaned Storage page.
 
 Pick one or more **Weekly Omit Days** at the top of the page to create a
 recurring blackout for every automatic job. For example, a daily 1:00am Run
@@ -103,4 +129,4 @@ again.
 
 - No Plex - Jellyfin only, for now
 - No watch-history/play-count scoring - Favorites are in, that's it
-- No torrent-client awareness
+- qBittorrent is the only download client it works with

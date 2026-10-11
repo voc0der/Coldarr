@@ -13,6 +13,7 @@ import (
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 func TestTierEditForm_HotMaxRemainsVisibleAndSubmitted(t *testing.T) {
@@ -29,7 +30,7 @@ func TestTierEditForm_HotMaxRemainsVisibleAndSubmitted(t *testing.T) {
 	if !strings.Contains(page, `id="max" name="max_used_percent" step="0.1" min="0" max="100" value="93"`) {
 		t.Fatalf("hot edit form does not expose its configured max_used_percent: %s", page)
 	}
-	if strings.Contains(page, `document.getElementById("max").disabled`) {
+	if strings.Contains(page, `document.getElementById("max").disabled`) || !strings.Contains(page, `var hasMax = isCold || !downloads;`) {
 		t.Fatal("hot edit form disables max_used_percent, so the browser would omit the YAML override on save")
 	}
 	if !strings.Contains(page, `document.getElementById("target").disabled = !isCold`) {
@@ -378,5 +379,75 @@ func TestTiersPage_FlagsMissingPathsAndSharedDisks(t *testing.T) {
 	srv.handleTiersPage(rec, httptest.NewRequest(http.MethodGet, "/settings/tiers", nil))
 	if body := rec.Body.String(); !strings.Contains(body, "shares a disk") || !strings.Contains(body, "is the drive mounted?") {
 		t.Errorf("tiers page should flag the shared disk and the missing path:\n%s", body)
+	}
+}
+
+// TestTierForm_DownloadsTiers: the choice between a library and a
+// downloads tier only appears once qBittorrent is connected. A downloads
+// tier drops media types (and a hot one its unused max), and allows
+// deletes only on an explicit choice - anything else leaves it read-only.
+func TestTierForm_DownloadsTiers(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	page := func() string {
+		rec := httptest.NewRecorder()
+		srv.handleTierNewForm(rec, httptest.NewRequest(http.MethodGet, "/settings/tiers/new", nil))
+		return rec.Body.String()
+	}
+	if strings.Contains(page(), `name="domain"`) {
+		t.Fatal("without qBittorrent connected, the tier form should not offer downloads tiers")
+	}
+	if err := srv.connStore.Set("qbittorrent", secrets.Connection{URL: "http://qbittorrent:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page(), `name="domain"`) {
+		t.Fatal("with qBittorrent connected, the tier form should offer downloads tiers")
+	}
+
+	ssd, seed := t.TempDir(), t.TempDir()
+	rec := serveForm(srv.handleTierCreate, "/settings/tiers", url.Values{
+		"name": {"ssd"}, "domain": {"downloads"}, "role": {"hot"}, "paths": {ssd},
+		"media_movie": {"on"}, "max_used_percent": {"80"}, "access": {"bogus"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("create ssd = %d:\n%s", rec.Code, rec.Body.String())
+	}
+	rec = serveForm(srv.handleTierCreate, "/settings/tiers", coldTierForm("seed", seed, map[string]string{"domain": "downloads", "access": "allow_deletes"}))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("create seed = %d:\n%s", rec.Code, rec.Body.String())
+	}
+
+	tiers := srv.currentConfig().Tiers
+	if got := tiers[0]; !got.IsDownloads() || len(got.Media) != 0 || got.MaxUsedPercent != 0 || got.AllowDeletes {
+		t.Errorf("ssd = %+v, want a read-only downloads tier with no media types or max", got)
+	}
+	if got := tiers[1]; !got.IsDownloads() || len(got.Media) != 0 || got.MaxUsedPercent != 95 || !got.AllowDeletes {
+		t.Errorf("seed = %+v, want a deletable downloads tier keeping its max", got)
+	}
+
+	// A library tier can't be made deletable, even by a crafted form.
+	rec = serveForm(srv.handleTierCreate, "/settings/tiers", coldTierForm("sat", t.TempDir(), map[string]string{"access": "allow_deletes"}))
+	if rec.Code != http.StatusSeeOther || srv.currentConfig().Tiers[2].AllowDeletes || srv.currentConfig().Tiers[2].IsDownloads() {
+		t.Errorf("a library tier came back %+v, want it saved read-only", srv.currentConfig().Tiers[2])
+	}
+
+	// The list says which tiers hold downloads and which allow deletes.
+	list := httptest.NewRecorder()
+	srv.handleTiersPage(list, httptest.NewRequest(http.MethodGet, "/settings/tiers", nil))
+	body := list.Body.String()
+	if strings.Count(body, "> downloads</span>") != 2 || !strings.Contains(body, "Coldarr may delete orphaned files here") || !strings.Contains(body, "download drive") {
+		t.Errorf("tiers page doesn't describe the downloads tiers:\n%s", body)
+	}
+
+	// Editing a downloads tier keeps offering the choice even if
+	// qBittorrent is disconnected meanwhile.
+	if err := srv.connStore.Delete("qbittorrent"); err != nil {
+		t.Fatal(err)
+	}
+	editRec := httptest.NewRecorder()
+	editReq := httptest.NewRequest(http.MethodGet, "/settings/tiers/seed/edit", nil)
+	editReq.SetPathValue("name", "seed")
+	srv.handleTierEditForm(editRec, editReq)
+	if edit := editRec.Body.String(); !strings.Contains(edit, `<option value="downloads" selected>`) || !strings.Contains(edit, `value="allow_deletes" checked`) {
+		t.Errorf("editing a downloads tier should show its domain and access:\n%s", edit)
 	}
 }

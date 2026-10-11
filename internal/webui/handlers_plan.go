@@ -49,13 +49,13 @@ func (s *Server) buildPlanData() planData {
 		return data
 	}
 
-	// A plan computed while Radarr/Sonarr are still physically executing
-	// earlier move commands is built from mid-move disk numbers - it will
-	// happily propose stuffing a drive whose real free space is already
-	// spoken for. Refuse to show one at all rather than show one with a
-	// caveat: an operator (or the scheduler) acting on it is exactly how
-	// destinations get overfilled.
-	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+	// A plan computed while Radarr/Sonarr (or qBittorrent) are still
+	// physically executing earlier moves is built from mid-move disk
+	// numbers - it will happily propose stuffing a drive whose real free
+	// space is already spoken for. Refuse to show one at all rather than
+	// show one with a caveat: an operator (or the scheduler) acting on it
+	// is exactly how destinations get overfilled.
+	if busy, detail, err := eng.MovesInFlight(); err != nil {
 		data.Error = err.Error()
 		return data
 	} else if busy {
@@ -210,12 +210,12 @@ func (s *Server) handleApplyStart(w http.ResponseWriter, r *http.Request) {
 // mover.Progress supports any number of independent waiters.
 func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *planner.Plan, startUserDataRestore bool) (*mover.Progress, error) {
 	// The flock below only guards against a concurrently *running* Coldarr
-	// apply - it dies with Coldarr's process, while move commands already
-	// handed to Radarr/Sonarr keep physically copying on their own. This
-	// check is what actually prevents starting a new run on top of a
-	// previous run's still-in-flight moves after a crash or restart. A
-	// failed check refuses the apply rather than assuming idle.
-	if busy, detail, err := eng.ArrMovesInFlight(); err != nil {
+	// apply - it dies with Coldarr's process, while moves already handed
+	// to Radarr/Sonarr or qBittorrent keep physically copying on their
+	// own. This check is what actually prevents starting a new run on top
+	// of a previous run's still-in-flight moves after a crash or restart.
+	// A failed check refuses the apply rather than assuming idle.
+	if busy, detail, err := eng.MovesInFlight(); err != nil {
 		return nil, err
 	} else if busy {
 		return nil, fmt.Errorf("refusing to apply: %s", detail)
@@ -276,14 +276,15 @@ func (s *Server) startApply(eng *engine.Engine, inv *engine.Inventory, plan *pla
 	return progress, nil
 }
 
-// applyInFlight reports whether an apply run is still occupying the mover
-// lock, and is the single answer both the manual "Apply this plan" button
-// and the scheduler gate on. See applyRun.active for why the moves being
-// done is not the same question.
+// applyInFlight reports whether an apply run - library or downloads - is
+// still occupying the mover lock, and is the single answer every Apply
+// button and scheduled task gates on. See applyRun.active for why the
+// moves being done is not the same question.
 func (s *Server) applyInFlight() bool {
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	return s.currentRun != nil && s.currentRun.active.Load()
+	return (s.currentRun != nil && s.currentRun.active.Load()) ||
+		(s.currentDownloadsRun != nil && s.currentDownloadsRun.active.Load())
 }
 
 type applyStatusEntryView struct {
@@ -294,6 +295,13 @@ type applyStatusEntryView struct {
 }
 
 type applyStatusData struct {
+	// PollURL is where the status panel polls for updates while running.
+	PollURL string
+	// OneAtATime words a run that moves strictly one item at a time - a
+	// downloads run - rather than one per destination volume.
+	OneAtATime bool
+	// Note is a line about the run beyond its moves, if any.
+	Note    string
 	NoRun   bool
 	Running bool
 	// SyncingJellyfin is the tail end of a run: every move has landed, but
@@ -333,7 +341,7 @@ func (s *Server) currentApplyStatus() applyStatusData {
 	// Running tracks the whole run, not just the moves - see applyRun.active.
 	// Finished stays keyed on the moves themselves, since that is the time
 	// the table below is reporting.
-	data := applyStatusData{Running: run.active.Load(), Progress: buildApplyProgress(snap, time.Now())}
+	data := applyStatusData{PollURL: "/plan/apply/status/partial", Running: run.active.Load(), Progress: buildApplyProgress(snap, time.Now())}
 	if snap.Done {
 		data.Finished = snap.Finished.Format("2006-01-02 15:04")
 		data.SyncingJellyfin = data.Running

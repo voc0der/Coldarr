@@ -24,9 +24,9 @@ func TestConnectionsCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connections list: %v", err)
 	}
-	for _, app := range []string{"radarr", "sonarr", "jellyfin"} {
-		if !strings.Contains(out, app) || strings.Count(out, "not configured") != 3 {
-			t.Fatalf("list on a fresh install = %q, want all three not configured", out)
+	for _, app := range []string{"radarr", "sonarr", "lidarr", "jellyfin", "qbittorrent"} {
+		if !strings.Contains(out, app) || strings.Count(out, "not configured") != 5 {
+			t.Fatalf("list on a fresh install = %q, want all five not configured", out)
 		}
 	}
 
@@ -74,11 +74,15 @@ func TestConnectionsCommands_RejectBadInput(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{args: []string{"set", "lidarr", "--url", "http://lidarr:8686", "--api-key", "k"}, wantErr: `unknown app "lidarr"`},
+		{args: []string{"set", "plex", "--url", "http://plex:32400", "--api-key", "k"}, wantErr: `unknown app "plex"`},
 		{args: []string{"set", "radarr", "--api-key", "k"}, wantErr: "--url and --api-key are required"},
 		{args: []string{"set", "radarr", "--url", "http://radarr:7878"}, wantErr: "--url and --api-key are required"},
-		{args: []string{"test", "lidarr"}, wantErr: `unknown app "lidarr"`},
-		{args: []string{"delete", "lidarr"}, wantErr: `unknown app "lidarr"`},
+		{args: []string{"set", "lidarr", "--url", "http://lidarr:8686"}, wantErr: "--url and --api-key are required"},
+		{args: []string{"set", "radarr", "--url", "http://radarr:7878", "--api-key", "k", "--username", "u"}, wantErr: "only for qbittorrent"},
+		{args: []string{"set", "qbittorrent", "--username", "admin"}, wantErr: "--url is required"},
+		{args: []string{"set", "qbittorrent", "--url", "http://qbittorrent:8080", "--password", "p"}, wantErr: "--password needs --username"},
+		{args: []string{"test", "plex"}, wantErr: `unknown app "plex"`},
+		{args: []string{"delete", "plex"}, wantErr: `unknown app "plex"`},
 		{args: []string{"set"}, wantErr: "accepts 1 arg"},
 	}
 	for _, tt := range tests {
@@ -127,5 +131,30 @@ func TestConnectionsSet_KeepsTheExternalURL(t *testing.T) {
 	}
 	if got, _ := reloaded.Get("radarr"); got != (secrets.Connection{URL: "http://radarr:7878", APIKey: "new", Enabled: true, ExternalURL: "https://radarr.example.com"}) {
 		t.Fatalf("stored radarr = %+v, want the new URL and key with the External URL kept", got)
+	}
+}
+
+// TestConnectionsSet_Qbittorrent: qBittorrent saves with a URL alone or with
+// a login, and `list` shows the username but never the password.
+func TestConnectionsSet_Qbittorrent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "coldarr.yaml")
+	if out, err := runColdarr(t, "--config", cfgPath, "connections", "set", "qbittorrent", "--url", "http://qbittorrent:8080", "--username", "admin", "--password", "hunter2"); err != nil || !strings.Contains(out, "saved qbittorrent connection") {
+		t.Fatalf("connections set qbittorrent = (%q, %v)", out, err)
+	}
+	out, err := runColdarr(t, "--config", cfgPath, "connections", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "http://qbittorrent:8080 (source: stored, enabled: true, key: (none), login: admin)") || strings.Contains(out, "hunter2") {
+		t.Errorf("list = %q, want the login named and the password never printed", out)
+	}
+
+	store, err := secrets.LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.Get("qbittorrent"); got.Username != "admin" || got.Password != "hunter2" {
+		t.Errorf("stored = %+v", got)
 	}
 }

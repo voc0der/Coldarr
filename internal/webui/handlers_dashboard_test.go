@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
 )
@@ -119,4 +120,52 @@ func TestDashboard_ShowsWhyTheLibraryCouldNotBeRead(t *testing.T) {
 			t.Fatalf("dashboard should explain the unreadable history:\n%s", rec.Body.String())
 		}
 	})
+}
+
+// TestDashboard_Downloads: with download tiering set up, the dashboard sums
+// up the downloads and lists qBittorrent; seed storage that ignored content
+// alone fills past its max is flagged as such. A downloads-only install
+// shows no library counts.
+func TestDashboard_Downloads(t *testing.T) {
+	srv := newDownloadsTestServer(t)
+	srv.qb.add(t, finishedDownload("a1", "Ready.ISO", "manual", srv.ssd))
+	recent := finishedDownload("a2", "Fresh.ISO", "manual", srv.ssd)
+	recent.CompletionOn = time.Now().Unix()
+	srv.qb.add(t, recent)
+	srv.qb.add(t, finishedDownload("a3", "Parked", "seed", srv.seed))
+	srv.qb.add(t, finishedDownload("a4", "Unimported", "movies", srv.ssd))
+	srv.qb.add(t, fakeTorrent{Hash: "a5", Name: "Partial", Category: "manual", SavePath: srv.ssd, State: "downloading", Progress: 0.5, AmountLeft: 100})
+
+	rec := httptest.NewRecorder()
+	srv.handleDashboard(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{"qBittorrent", "ready to move", "on seed storage", "held back"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "library items") {
+		t.Error("a downloads-only install shows no library counts")
+	}
+	if strings.Contains(body, "full of content Coldarr can't move") {
+		t.Error("seed storage holding only Coldarr's downloads isn't wedged")
+	}
+
+	// Seed storage capped below what's already there, with none of it
+	// Coldarr's to move.
+	srv.cfg.Tiers[1].MaxUsedPercent = 0.0001
+	srv.cfg.Tiers[1].TargetUsedPercent = 0.0001
+	rec = httptest.NewRecorder()
+	srv.handleDashboard(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "full of content Coldarr can't move") {
+		t.Errorf("seed storage full of unmanaged content should be flagged:\n%s", rec.Body.String())
+	}
+
+	// qBittorrent down: the rest of the dashboard still shows.
+	srv.qb.Close()
+	rec = httptest.NewRecorder()
+	srv.handleDashboard(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "Couldn&#39;t read downloads") || !strings.Contains(rec.Body.String(), "Storage tiers") {
+		t.Errorf("a qBittorrent failure should be a warning on an otherwise working dashboard:\n%s", rec.Body.String())
+	}
 }

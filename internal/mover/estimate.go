@@ -23,12 +23,12 @@ type movePace struct {
 	count        int
 }
 
-func (p *movePace) observe(e EntryProgress) {
-	seconds := e.Finished.Sub(e.Started).Seconds()
+func (p *movePace) observe(size int64, started, finished time.Time) {
+	seconds := finished.Sub(started).Seconds()
 	p.seconds += seconds
 	p.count++
-	if e.Entry.Item.SizeBytes > 0 {
-		p.bytes += float64(e.Entry.Item.SizeBytes)
+	if size > 0 {
+		p.bytes += float64(size)
 		p.sizedSeconds += seconds
 	}
 }
@@ -48,7 +48,7 @@ func (p movePace) duration(size int64) float64 {
 // learns its own pace, falling back to the run's average until it has a sample.
 // Serial queues add; parallel volumes take the longest queue; dependent phases
 // add again. No disk reads or requests are made when the UI polls this snapshot.
-func (s ProgressSnapshot) Estimate(now time.Time) Estimate {
+func (s RunSnapshot[E]) Estimate(now time.Time) Estimate {
 	end := now
 	if s.Done {
 		end = s.Finished
@@ -68,19 +68,19 @@ func (s ProgressSnapshot) Estimate(now time.Time) Estimate {
 	var totalBytes float64
 	var sizedCount int
 	for _, e := range s.Entries {
-		if e.Entry.Item.SizeBytes > 0 {
-			totalBytes += float64(e.Entry.Item.SizeBytes)
+		if size := e.Entry.MoveSize(); size > 0 {
+			totalBytes += float64(size)
 			sizedCount++
 		}
 		// Rejections and skipped prerequisites must not look like fast copies.
 		if e.Status != StatusDone || e.Started.IsZero() || !e.Finished.After(e.Started) {
 			continue
 		}
-		overall.observe(e)
+		overall.observe(e.Entry.MoveSize(), e.Started, e.Finished)
 		if byVolume[e.volume] == nil {
 			byVolume[e.volume] = &movePace{}
 		}
-		byVolume[e.volume].observe(e)
+		byVolume[e.volume].observe(e.Entry.MoveSize(), e.Started, e.Finished)
 	}
 
 	// Assign unknown-size items the average planned size for percentage only;
@@ -93,7 +93,7 @@ func (s ProgressSnapshot) Estimate(now time.Time) Estimate {
 	queues := map[int]map[string]float64{}
 	estimate.Known = overall.count > 0
 	for _, e := range s.Entries {
-		weight := float64(e.Entry.Item.SizeBytes)
+		weight := float64(e.Entry.MoveSize())
 		if weight <= 0 {
 			weight = unknownWeight
 		}
@@ -107,7 +107,7 @@ func (s ProgressSnapshot) Estimate(now time.Time) Estimate {
 		if local := byVolume[e.volume]; local != nil {
 			pace = *local
 		}
-		seconds := pace.duration(e.Entry.Item.SizeBytes)
+		seconds := pace.duration(e.Entry.MoveSize())
 		if seconds <= 0 {
 			estimate.Known = false
 			continue
@@ -121,10 +121,10 @@ func (s ProgressSnapshot) Estimate(now time.Time) Estimate {
 				estimate.Known = false
 			}
 		}
-		if queues[e.Entry.Phase] == nil {
-			queues[e.Entry.Phase] = map[string]float64{}
+		if queues[e.Entry.MovePhase()] == nil {
+			queues[e.Entry.MovePhase()] = map[string]float64{}
 		}
-		queues[e.Entry.Phase][e.volume] += max(0, seconds)
+		queues[e.Entry.MovePhase()][e.volume] += max(0, seconds)
 	}
 	if totalWeight > 0 {
 		estimate.Percent = min(99, int(100*resolvedWeight/totalWeight))

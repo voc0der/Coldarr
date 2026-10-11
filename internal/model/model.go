@@ -28,15 +28,30 @@ const (
 	DefaultHotMaxUsedPercent = 97.0
 )
 
+// TierDomain says what a tier holds: library media that Radarr/Sonarr
+// manage, or downloads that qBittorrent seeds. The two are tiered by
+// different rules and moved by different apps, but share everything about
+// storage itself - mount checks, usage, shared-volume detection.
+type TierDomain string
+
+const (
+	DomainLibrary   TierDomain = "library"
+	DomainDownloads TierDomain = "downloads"
+)
+
 // Tier is a named storage policy applied to one or more physical paths.
 // Each path is evaluated independently against the same thresholds - a
 // tier is a policy shared by a set of mount points, not a single pooled
 // volume.
 type Tier struct {
-	Name  string      `yaml:"name"`
-	Role  TierRole    `yaml:"role"`
-	Paths []string    `yaml:"paths"`
-	Media []MediaType `yaml:"media_types"`
+	Name string `yaml:"name"`
+	// Domain is empty for every tier written before downloads tiers
+	// existed, which means library - see EffectiveDomain.
+	Domain TierDomain `yaml:"domain,omitempty"`
+	Role   TierRole   `yaml:"role"`
+	Paths  []string   `yaml:"paths"`
+	// Media is only for library tiers: a downloads tier holds any torrent.
+	Media []MediaType `yaml:"media_types,omitempty"`
 	// TargetUsedPercent is only meaningful for cold tiers - the fill goal
 	// Coldarr actively packs toward. Hot tiers are never proactively
 	// packed toward a level, so leave this at zero there.
@@ -61,6 +76,35 @@ type Tier struct {
 	// a satellite drive being unmounted or never reaching the machine and
 	// Coldarr planning moves into the empty directory left behind.
 	RequireMount bool `yaml:"require_mount"`
+	// AllowDeletes marks a downloads tier as not read-only: Coldarr may
+	// delete files there that qBittorrent doesn't know about, when someone
+	// asks it to from the Orphaned Storage page. Off by default, and never
+	// allowed on a library tier - Coldarr deletes no library files.
+	AllowDeletes bool `yaml:"allow_deletes,omitempty"`
+}
+
+// EffectiveDomain returns the tier's domain, library when unset.
+func (t Tier) EffectiveDomain() TierDomain {
+	if t.Domain == "" {
+		return DomainLibrary
+	}
+	return t.Domain
+}
+
+// IsDownloads reports whether the tier holds qBittorrent downloads.
+func (t Tier) IsDownloads() bool {
+	return t.EffectiveDomain() == DomainDownloads
+}
+
+// TiersIn returns the tiers in domain d, in their configured order.
+func TiersIn(tiers []Tier, d TierDomain) []Tier {
+	var out []Tier
+	for _, t := range tiers {
+		if t.EffectiveDomain() == d {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // EffectiveMaxUsedPercent returns the tier's configured hard ceiling. A hot

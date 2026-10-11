@@ -117,10 +117,14 @@ type tierFormData struct {
 	PathsText string
 	HasMovie  bool
 	HasTV     bool
+	// ShowDomain offers the choice between a library and a downloads tier
+	// - once qBittorrent is connected, or for a tier that's already
+	// downloads - so a library-only setup never sees it.
+	ShowDomain bool
 }
 
 func (s *Server) handleTierNewForm(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "tier_form", tierFormData{Title: "Add storage tier"})
+	s.render(w, "tier_form", tierFormData{Title: "Add storage tier", ShowDomain: s.downloadsEnabled()})
 }
 
 func (s *Server) handleTierEditForm(w http.ResponseWriter, r *http.Request) {
@@ -129,13 +133,14 @@ func (s *Server) handleTierEditForm(w http.ResponseWriter, r *http.Request) {
 	for _, t := range cfg.Tiers {
 		if t.Name == name {
 			s.render(w, "tier_form", tierFormData{
-				Title:     "Edit storage tier",
-				Editing:   true,
-				OrigName:  t.Name,
-				Tier:      t,
-				PathsText: strings.Join(t.Paths, "\n"),
-				HasMovie:  t.AcceptsMediaType(model.Movie),
-				HasTV:     t.AcceptsMediaType(model.TV),
+				Title:      "Edit storage tier",
+				Editing:    true,
+				OrigName:   t.Name,
+				Tier:       t,
+				PathsText:  strings.Join(t.Paths, "\n"),
+				HasMovie:   t.AcceptsMediaType(model.Movie),
+				HasTV:      t.AcceptsMediaType(model.TV),
+				ShowDomain: s.downloadsEnabled() || t.IsDownloads(),
 			})
 			return
 		}
@@ -152,6 +157,11 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 	}
 
 	role := model.TierRole(r.FormValue("role"))
+	// No domain field means the form didn't offer one: a library tier.
+	domain := model.TierDomain(r.FormValue("domain"))
+	if domain == model.DomainLibrary {
+		domain = ""
+	}
 
 	var paths []string
 	for _, line := range strings.Split(r.FormValue("paths"), "\n") {
@@ -161,20 +171,26 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 		}
 	}
 
+	// A downloads tier holds any torrent, so media types never apply, and
+	// only it can allow deletes - which takes an explicit choice: anything
+	// short of one, a missing field included, leaves it read-only.
 	var media []model.MediaType
-	if r.FormValue("media_movie") == "on" {
+	downloads := domain == model.DomainDownloads
+	if !downloads && r.FormValue("media_movie") == "on" {
 		media = append(media, model.Movie)
 	}
-	if r.FormValue("media_tv") == "on" {
+	if !downloads && r.FormValue("media_tv") == "on" {
 		media = append(media, model.TV)
 	}
 
 	tier := model.Tier{
 		Name:         name,
+		Domain:       domain,
 		Role:         role,
 		Paths:        paths,
 		Media:        media,
 		RequireMount: r.FormValue("require_mount") == "on",
+		AllowDeletes: downloads && r.FormValue("access") == "allow_deletes",
 	}
 
 	// The target only applies to cold tiers. Max applies to both: zero or a
@@ -189,9 +205,15 @@ func tierFromForm(r *http.Request) (model.Tier, error) {
 			return tier, err
 		}
 	}
-	max, err := parseOptionalPercent(r.FormValue("max_used_percent"), "max used percent")
-	if err != nil {
-		return tier, err
+	// Nothing is reclaimed onto a download drive, so its max is never
+	// offered, and never kept from a stray submission either.
+	var max float64
+	if role == model.RoleCold || !downloads {
+		var err error
+		max, err = parseOptionalPercent(r.FormValue("max_used_percent"), "max used percent")
+		if err != nil {
+			return tier, err
+		}
 	}
 
 	tier.TargetUsedPercent = target
@@ -211,23 +233,24 @@ func parseOptionalPercent(raw, label string) (float64, error) {
 	return v, nil
 }
 
-func tierFormFromRequest(title string, editing bool, origName string, r *http.Request, tier model.Tier, errMsg string) tierFormData {
+func (s *Server) tierFormFromRequest(title string, editing bool, origName string, r *http.Request, tier model.Tier, errMsg string) tierFormData {
 	return tierFormData{
-		Title:     title,
-		Error:     errMsg,
-		Editing:   editing,
-		OrigName:  origName,
-		Tier:      tier,
-		PathsText: r.FormValue("paths"),
-		HasMovie:  r.FormValue("media_movie") == "on",
-		HasTV:     r.FormValue("media_tv") == "on",
+		Title:      title,
+		Error:      errMsg,
+		Editing:    editing,
+		OrigName:   origName,
+		Tier:       tier,
+		PathsText:  r.FormValue("paths"),
+		HasMovie:   r.FormValue("media_movie") == "on",
+		HasTV:      r.FormValue("media_tv") == "on",
+		ShowDomain: s.downloadsEnabled() || tier.IsDownloads(),
 	}
 }
 
 func (s *Server) handleTierCreate(w http.ResponseWriter, r *http.Request) {
 	tier, err := tierFromForm(r)
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
+		s.render(w, "tier_form", s.tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
 		return
 	}
 
@@ -240,7 +263,7 @@ func (s *Server) handleTierCreate(w http.ResponseWriter, r *http.Request) {
 		return append(tiers, tier), nil
 	})
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
+		s.render(w, "tier_form", s.tierFormFromRequest("Add storage tier", false, "", r, tier, err.Error()))
 		return
 	}
 
@@ -252,7 +275,7 @@ func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
 
 	tier, err := tierFromForm(r)
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
+		s.render(w, "tier_form", s.tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
 		return
 	}
 
@@ -276,7 +299,7 @@ func (s *Server) handleTierUpdate(w http.ResponseWriter, r *http.Request) {
 		return out, nil
 	})
 	if err != nil {
-		s.render(w, "tier_form", tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
+		s.render(w, "tier_form", s.tierFormFromRequest("Edit storage tier", true, origName, r, tier, err.Error()))
 		return
 	}
 

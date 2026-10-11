@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -966,6 +967,66 @@ func TestBuildPlan_MovesAnEligibleItemToColdStorage(t *testing.T) {
 	}
 	if entry := plan.Entries[0]; entry.Item.Title != "Movie A" || entry.ToPath != coldDir || entry.ToTier != "cold" {
 		t.Fatalf("plan entry = %+v, want Movie A moved to %s", entry, coldDir)
+	}
+}
+
+// TestBuildPlan_NeverUsesDownloadsTiers: downloads tiers are qBittorrent's,
+// so the library plan neither moves anything onto seed storage, however
+// much room it has, nor treats a download drive as hot storage to move
+// things off - and doesn't warn about their paths either.
+func TestBuildPlan_NeverUsesDownloadsTiers(t *testing.T) {
+	root := t.TempDir()
+	hotDir, coldDir, dlDir, seedDir := filepath.Join(root, "hot"), filepath.Join(root, "cold"), filepath.Join(root, "downloads"), filepath.Join(root, "seed")
+	for _, d := range []string{hotDir, coldDir, dlDir, seedDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	movie := func(id int, title, rootDir string) string {
+		return `{"id": ` + strconv.Itoa(id) + `, "title": "` + title + `", "path": "` + filepath.Join(rootDir, title) + `", "rootFolderPath": "` + rootDir + `", "hasFile": true, "monitored": true, "added": "2020-01-01T00:00:00Z", "sizeOnDisk": 5000000, "status": "released"}`
+	}
+	radarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/movie":
+			_, _ = w.Write([]byte(`[` + movie(1, "Movie A", hotDir) + `, ` + movie(2, "Movie B", dlDir) + `]`))
+		case "/api/v3/tag", "/api/v3/qualityprofile":
+			_, _ = w.Write([]byte(`[]`))
+		case "/api/v3/queue":
+			_, _ = w.Write([]byte(`{"records": []}`))
+		}
+	}))
+	defer radarr.Close()
+
+	e := &Engine{
+		Cfg: &config.Config{Tiers: []model.Tier{
+			{Name: "hot", Role: model.RoleHot, Paths: []string{hotDir}, Media: []model.MediaType{model.Movie}},
+			{Name: "cold", Role: model.RoleCold, Paths: []string{coldDir}, Media: []model.MediaType{model.Movie}, MaxUsedPercent: 99, TargetUsedPercent: 95},
+			{Name: "ssd", Domain: model.DomainDownloads, Role: model.RoleHot, Paths: []string{dlDir, filepath.Join(root, "missing")}},
+			{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{seedDir}, MaxUsedPercent: 100, TargetUsedPercent: 100},
+		}},
+		Radarr:  arrapi.NewRadarrClient(radarr.URL, "key"),
+		History: testHistory(t),
+	}
+
+	now := time.Now()
+	inv, err := e.BuildInventory(now)
+	if err != nil {
+		t.Fatalf("BuildInventory: %v", err)
+	}
+	if _, ok := inv.PathStatus[seedDir]; !ok {
+		t.Fatal("downloads tier paths should still be checked and measured")
+	}
+	plan, err := e.BuildPlan(inv, now)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Entries) != 1 || plan.Entries[0].Item.Title != "Movie A" || plan.Entries[0].ToPath != coldDir {
+		t.Fatalf("plan = %+v, want only Movie A, moved to the library cold tier", plan.Entries)
+	}
+	for _, w := range plan.Warnings {
+		if strings.Contains(w, "missing") || strings.Contains(w, dlDir) {
+			t.Errorf("the library plan warns about a downloads path: %q", w)
+		}
 	}
 }
 

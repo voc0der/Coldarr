@@ -1573,3 +1573,12 @@ func TestBuild_FavoriteScoredByRealPolicyIsReclaimed(t *testing.T) {
 		})
 	}
 }
+
+// TestMoveEntry_DescribesItselfToTheMover: the mover runs library and
+// download moves alike, seeing each entry only through these.
+func TestMoveEntry_DescribesItselfToTheMover(t *testing.T) {
+	e := MoveEntry{Item: model.MediaItem{Title: "Movie", SizeBytes: 42}, ToPath: "/cold", Phase: 2, MaxUsedPercent: 97}
+	if e.MoveTitle() != "Movie" || e.MoveSize() != 42 || e.MoveDestination() != "/cold" || e.MovePhase() != 2 || e.MoveCeiling() != 97 {
+		t.Errorf("mover view = %q, %d, %q, %d, %v", e.MoveTitle(), e.MoveSize(), e.MoveDestination(), e.MovePhase(), e.MoveCeiling())
+	}
+}

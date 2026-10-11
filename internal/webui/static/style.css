@@ -150,6 +150,7 @@ main {
 
 h1 { font-size: 1.4rem; margin: 0 0 1rem; }
 h2 { font-size: 1.1rem; margin: 2rem 0 0.75rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
 
 .section-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 2rem 0 0.75rem; }
 .section-header h2 { margin: 0; }
@@ -244,6 +245,7 @@ tbody tr:hover { background: var(--bg); }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
 .text-danger { color: var(--danger); font-weight: 600; }
+.text-warn { color: var(--warn); font-weight: 600; }
 
 .badge {
   display: inline-flex;
@@ -267,6 +269,7 @@ tbody tr:hover { background: var(--bg); }
 }
 .alert-error { background: var(--danger-bg); color: var(--danger); }
 .alert-ok { background: var(--ok-bg); color: var(--ok); }
+.alert-warn { background: var(--warn-bg); color: var(--warn); }
 
 form.stacked { display: flex; flex-direction: column; gap: 0.75rem; max-width: 480px; }
 label { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
@@ -287,6 +290,20 @@ input:focus, textarea:focus, select:focus {
 textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 5rem; }
 .checkbox-row { display: flex; align-items: center; gap: 0.5rem; }
 .checkbox-row input { width: auto; }
+.radio-row { display: flex; align-items: center; gap: 0.5rem; color: var(--fg); font-weight: 400; font-size: 0.9rem; }
+.radio-row input { width: auto; margin: 0; }
+
+fieldset.tier-access {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0.6rem 0.8rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+fieldset.tier-access legend { padding: 0 0.3rem; font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+fieldset.tier-access .alert { margin: 0.2rem 0 0; font-size: 0.82rem; line-height: 1.45; }
 
 .scheduler-followup {
   display: flex;

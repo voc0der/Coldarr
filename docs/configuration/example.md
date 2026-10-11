@@ -8,7 +8,8 @@ through the web interface and let Coldarr create the file.
 
 Connection credentials are configured separately; see [Connections](connections.md).
 See [Storage tiers](tiers.md) and [Scoring and Favorites](scoring.md) for how
-the policy is used.
+the policy is used, and [Downloads and seeding](downloads.md) for the
+commented-out download tiering section.
 
 ```yaml title="coldarr.example.yaml"
 --8<-- "coldarr.example.yaml"

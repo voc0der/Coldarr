@@ -13,7 +13,7 @@ import (
 func newConnectionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connections",
-		Short: "Manage Radarr/Sonarr/Jellyfin connections (stored encrypted, or set via env vars)",
+		Short: "Manage Radarr/Sonarr/Lidarr/Jellyfin/qBittorrent connections (stored encrypted, or set via env vars)",
 	}
 	cmd.AddCommand(newConnectionsListCmd())
 	cmd.AddCommand(newConnectionsSetCmd())
@@ -35,14 +35,25 @@ func newConnectionsListCmd() *cobra.Command {
 			for _, app := range conncheck.Apps {
 				conn, source := store.Effective(app)
 				if source == secrets.SourceNone {
-					fmt.Printf("%-10s not configured\n", app)
+					fmt.Printf("%-12s not configured\n", app)
 					continue
 				}
-				fmt.Printf("%-10s %s (source: %s, enabled: %v, key: %s)\n", app, conn.URL, source, conn.Enabled, maskKey(conn.APIKey))
+				login := ""
+				if app == secrets.LoginApp {
+					login = fmt.Sprintf(", login: %s", orNone(conn.Username))
+				}
+				fmt.Printf("%-12s %s (source: %s, enabled: %v, key: %s%s)\n", app, conn.URL, source, conn.Enabled, maskKey(conn.APIKey), login)
 			}
 			return nil
 		},
 	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
 }
 
 func maskKey(key string) string {
@@ -56,20 +67,35 @@ func maskKey(key string) string {
 }
 
 func newConnectionsSetCmd() *cobra.Command {
-	var url, apiKey string
+	var url, apiKey, username, password string
 	var disabled bool
 
 	cmd := &cobra.Command{
-		Use:   "set <radarr|sonarr|jellyfin>",
+		Use:   "set <" + strings.Join(conncheck.Apps, "|") + ">",
 		Short: "Store connection info for an app, encrypted",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app := args[0]
 			if !conncheck.Valid(app) {
-				return fmt.Errorf("unknown app %q (expected radarr, sonarr, or jellyfin)", app)
+				return fmt.Errorf("unknown app %q (expected one of %s)", app, strings.Join(conncheck.Apps, ", "))
 			}
-			if url == "" || apiKey == "" {
-				return fmt.Errorf("--url and --api-key are required")
+			// qBittorrent can be reachable with a URL alone (its WebUI can
+			// skip authentication), and signs in with a login rather than
+			// needing an API key; every other app needs its key.
+			if app == secrets.LoginApp {
+				if url == "" {
+					return fmt.Errorf("--url is required")
+				}
+				if password != "" && username == "" {
+					return fmt.Errorf("--password needs --username")
+				}
+			} else {
+				if url == "" || apiKey == "" {
+					return fmt.Errorf("--url and --api-key are required")
+				}
+				if username != "" || password != "" {
+					return fmt.Errorf("--username and --password are only for qbittorrent")
+				}
 			}
 
 			store, err := connectionsStore()
@@ -81,6 +107,7 @@ func newConnectionsSetCmd() *cobra.Command {
 			// so the External URL - set only in the web GUI - survives.
 			conn, _ := store.Get(app)
 			conn.URL, conn.APIKey, conn.Enabled = url, apiKey, !disabled
+			conn.Username, conn.Password = username, password
 			if err := store.Set(app, conn); err != nil {
 				return err
 			}
@@ -89,14 +116,16 @@ func newConnectionsSetCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "", "base URL, e.g. http://radarr:7878")
-	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "store but mark disabled (jellyfin only - radarr/sonarr are enabled whenever configured)")
+	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key (optional for qbittorrent, which needs 5.2+ for keys)")
+	cmd.Flags().StringVar(&username, "username", "", "WebUI username (qbittorrent only - leave out if its WebUI skips authentication)")
+	cmd.Flags().StringVar(&password, "password", "", "WebUI password (qbittorrent only)")
+	cmd.Flags().BoolVar(&disabled, "disabled", false, "store but mark disabled (jellyfin only - every other app is enabled whenever configured)")
 	return cmd
 }
 
 func newConnectionsTestCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "test <radarr|sonarr|jellyfin>",
+		Use:   "test <" + strings.Join(conncheck.Apps, "|") + ">",
 		Short: "Test the currently effective connection for an app",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -127,7 +156,7 @@ func newConnectionsTestCmd() *cobra.Command {
 
 func newConnectionsDeleteCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "delete <radarr|sonarr|jellyfin>",
+		Use:   "delete <" + strings.Join(conncheck.Apps, "|") + ">",
 		Short: "Remove a stored connection",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

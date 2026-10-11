@@ -1,11 +1,18 @@
 // Package orphans finds folders sitting on a configured tier path that no
-// longer correspond to anything Radarr, Sonarr, or Jellyfin still tracks -
-// a movie deleted from Radarr whose folder was never cleaned up, a failed
-// or partial import, a leftover from a prior reorganization. "Known" means
-// known to any configured service, not just the two Arr apps: a Jellyfin
-// library can legitimately hold content (home videos, directly-added
-// media) that never touches Radarr/Sonarr, so that alone doesn't make it
-// an orphan.
+// longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin or
+// qBittorrent still tracks - a movie deleted from Radarr whose folder was
+// never cleaned up, a failed or partial import, a leftover from a prior
+// reorganization, a download removed from qBittorrent without its files.
+// "Known" means known to any configured service, not just the two Arr
+// apps: a Jellyfin library can legitimately hold content (home videos,
+// directly-added media) that never touches Radarr/Sonarr, so that alone
+// doesn't make it an orphan.
+//
+// Download folders (downloads tiers) are compared against qBittorrent entry
+// by entry, loose files included, since a single-file download is a file
+// sitting directly in the folder. They're the one place Coldarr can delete
+// what it finds, and only when someone asks it to, for a tier marked as
+// not read-only (see DeleteDownload).
 //
 // The scan walks every configured tier's paths on disk, which can be slow
 // on a large or slow (archival, near-full) cold tier - exactly the kind of
@@ -17,10 +24,12 @@ package orphans
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +37,7 @@ import (
 	"github.com/vocoder/coldarr/internal/diskusage"
 	"github.com/vocoder/coldarr/internal/jellyfin"
 	"github.com/vocoder/coldarr/internal/model"
+	"github.com/vocoder/coldarr/internal/qbit"
 )
 
 // Candidate is one folder found on a tier path that doesn't correspond to
@@ -37,6 +47,17 @@ type Candidate struct {
 	TierName  string         `json:"tier_name"`
 	TierRole  model.TierRole `json:"tier_role"`
 	SizeBytes int64          `json:"size_bytes"`
+	// Domain is which kind of tier it was found on - empty, meaning
+	// library, in a cache written before downloads tiers existed.
+	Domain model.TierDomain `json:"domain,omitempty"`
+	// File marks a loose file rather than a folder - only ever found in a
+	// download folder.
+	File bool `json:"file,omitempty"`
+}
+
+// IsDownloads reports whether the candidate is in a download folder.
+func (c Candidate) IsDownloads() bool {
+	return c.Domain == model.DomainDownloads
 }
 
 // Snapshot is a point-in-time result of the last scan.
@@ -102,17 +123,30 @@ func (s *Store) Get() Snapshot {
 	return s.snap
 }
 
+// Sources are the services whose content counts as known. Any of them may
+// be nil - that app isn't configured.
+type Sources struct {
+	Radarr   *arrapi.RadarrClient
+	Sonarr   *arrapi.SonarrClient
+	Lidarr   *arrapi.LidarrClient
+	Jellyfin *jellyfin.Client
+	Qbit     *qbit.Client
+}
+
 // Refresh walks every configured tier's paths and reports every folder
-// that doesn't correspond to a path any configured service (Radarr,
-// Sonarr, Jellyfin) still tracks. Skips whichever client is nil (that app
-// isn't configured) when building the known-path set, matching
-// cutoffcache/linkcache's pattern. A tier path failing its existence/mount
-// check is recorded as a warning and skipped, not an error; any other
-// failure (a service unreachable, a directory unreadable partway through
-// a walk) fails the whole refresh and leaves the stored snapshot
-// unchanged, matching cutoffcache/linkcache's all-or-nothing behavior.
-func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient, jf *jellyfin.Client, tiers []model.Tier) error {
-	known, err := knownPaths(radarr, sonarr, jf)
+// that doesn't correspond to a path any configured service still tracks -
+// and, in download folders, every loose file too. Skips whichever client
+// is nil (that app isn't configured) when building the known-path set,
+// matching cutoffcache/linkcache's pattern. Download folders are skipped,
+// with a warning, when qBittorrent isn't connected: nothing else accounts
+// for downloads, so every one of them would look orphaned. A tier path
+// failing its existence/mount check is recorded as a warning and skipped,
+// not an error; any other failure (a service unreachable, a directory
+// unreadable partway through a walk) fails the whole refresh and leaves
+// the stored snapshot unchanged, matching cutoffcache/linkcache's
+// all-or-nothing behavior.
+func (s *Store) Refresh(src Sources, tiers []model.Tier) error {
+	known, err := knownPaths(src)
 	if err != nil {
 		return err
 	}
@@ -126,17 +160,31 @@ func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient
 
 	for _, tier := range tiers {
 		for _, path := range tier.Paths {
+			if tier.IsDownloads() && src.Qbit == nil {
+				next.Warnings = append(next.Warnings, fmt.Sprintf("skipping %s: qBittorrent isn't connected, so there's nothing to tell its downloads from orphans", path))
+				continue
+			}
 			if err := diskusage.CheckPath(path, tier.RequireMount); err != nil {
 				next.Warnings = append(next.Warnings, fmt.Sprintf("skipping %s: %v", path, err))
 				continue
 			}
 
-			candidates, err := scanPath(path, tier, known, ancestors)
+			var candidates []Candidate
+			if tier.IsDownloads() {
+				candidates, err = scanDownloads(path, tier, known, ancestors)
+			} else {
+				candidates, err = scanPath(path, tier, known, ancestors)
+			}
 			if err != nil {
 				return fmt.Errorf("scanning %s: %w", path, err)
 			}
 			next.Candidates = append(next.Candidates, candidates...)
 
+			// A downloads tier marked read-only is never written to, not
+			// even to test it - nothing will be deleted from it anyway.
+			if tier.IsDownloads() && !tier.AllowDeletes {
+				continue
+			}
 			writable, reason := probeWritable(path)
 			next.TierWritable[path] = writable
 			if reason != "" {
@@ -156,8 +204,9 @@ func (s *Store) Refresh(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient
 // list (not /wanted/cutoff) is the same fast call Dashboard/Plan already
 // make every load - only the filesystem walk in Refresh is the expensive
 // part this package exists to keep off the request path.
-func knownPaths(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient, jf *jellyfin.Client) (map[string]bool, error) {
+func knownPaths(src Sources) (map[string]bool, error) {
 	known := map[string]bool{}
+	radarr, sonarr, jf := src.Radarr, src.Sonarr, src.Jellyfin
 
 	if radarr != nil {
 		movies, err := radarr.FetchMovies()
@@ -189,7 +238,60 @@ func knownPaths(radarr *arrapi.RadarrClient, sonarr *arrapi.SonarrClient, jf *je
 		}
 	}
 
+	if src.Lidarr != nil {
+		paths, err := src.Lidarr.ArtistPaths()
+		if err != nil {
+			return nil, fmt.Errorf("fetching lidarr artists: %w", err)
+		}
+		for _, p := range paths {
+			known[filepath.Clean(p)] = true
+		}
+	}
+
+	if src.Qbit != nil {
+		if err := addDownloads(src.Qbit, known); err != nil {
+			return nil, err
+		}
+	}
+
 	return known, nil
+}
+
+// addDownloads adds what every qBittorrent download occupies to known: its
+// content path - the root folder of a multi-file download, or the file of
+// a single-file one. A download saved with no folder of its own
+// (qBittorrent's "Don't create subfolder" layout) reports its save folder
+// as its content, which would claim everything else in that folder too, so
+// for those the top-level entries of its actual files are added instead.
+func addDownloads(c *qbit.Client, known map[string]bool) error {
+	list, err := c.Torrents()
+	if err != nil {
+		return fmt.Errorf("fetching qbittorrent downloads: %w", err)
+	}
+	for _, t := range list {
+		if t.ContentPath == "" {
+			continue
+		}
+		content, save := filepath.Clean(t.ContentPath), filepath.Clean(t.SavePath)
+		if content != save {
+			known[content] = true
+			continue
+		}
+		names, err := c.FileNames(t.Hash)
+		if errors.Is(err, qbit.ErrNotFound) {
+			continue // removed since it was listed
+		}
+		if err != nil {
+			return fmt.Errorf("fetching the files of qbittorrent download %q: %w", t.Name, err)
+		}
+		for _, name := range names {
+			top := strings.SplitN(filepath.ToSlash(name), "/", 2)[0]
+			if top != "" && top != "." && top != ".." {
+				known[filepath.Join(save, top)] = true
+			}
+		}
+	}
+	return nil
 }
 
 // ancestorDirs returns every directory that is a strict ancestor of some
@@ -247,8 +349,58 @@ func scanPath(path string, tier model.Tier, known, ancestors map[string]bool) ([
 				TierName:  tier.Name,
 				TierRole:  tier.Role,
 				SizeBytes: size,
+				Domain:    tier.Domain,
 			})
 		}
+	}
+	return candidates, nil
+}
+
+// incompleteSuffix is what qBittorrent appends to a file it hasn't
+// finished downloading, when set to - the file on disk is name.!qB while
+// qBittorrent still reports it as name.
+const incompleteSuffix = ".!qB"
+
+// scanDownloads walks a download folder the way scanPath walks a library
+// folder, except that every entry is judged, files included: a single-file
+// download is just a file in the folder, so a leftover one is too.
+// Symlinks are judged as entries, never followed.
+func scanDownloads(path string, tier model.Tier, known, ancestors map[string]bool) ([]Candidate, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var candidates []Candidate
+	for _, entry := range entries {
+		child := filepath.Join(path, entry.Name())
+		switch {
+		case known[child]:
+			continue
+		case strings.HasSuffix(entry.Name(), incompleteSuffix) && known[strings.TrimSuffix(child, incompleteSuffix)]:
+			continue
+		case entry.IsDir() && ancestors[child]:
+			sub, err := scanDownloads(child, tier, known, ancestors)
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, sub...)
+			continue
+		}
+
+		c := Candidate{Path: child, TierName: tier.Name, TierRole: tier.Role, Domain: model.DomainDownloads, File: !entry.IsDir()}
+		if entry.IsDir() {
+			if c.SizeBytes, err = dirSize(child); err != nil {
+				return nil, fmt.Errorf("sizing %s: %w", child, err)
+			}
+		} else {
+			info, err := entry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("sizing %s: %w", child, err)
+			}
+			c.SizeBytes = info.Size()
+		}
+		candidates = append(candidates, c)
 	}
 	return candidates, nil
 }
@@ -271,6 +423,95 @@ func dirSize(path string) (int64, error) {
 		return nil
 	})
 	return total, err
+}
+
+// DeleteDownload deletes one entry the last scan found in a download
+// folder - the only thing Coldarr ever deletes from disk itself - and drops
+// it from the snapshot. Every guard is re-checked against the present,
+// since a scan can be hours old:
+//
+//   - requested must be exactly an entry the last scan listed in a
+//     download folder, and from then on only the scan's own copy of the
+//     path is used - never the one from the form;
+//   - its tier must still be a downloads tier marked as not read-only,
+//     with path strictly inside one of its paths;
+//   - that tier path must pass its storage check, so nothing is deleted
+//     from an empty mountpoint left by a missing drive (or worse, from
+//     whatever is mounted there instead);
+//   - and, asked afresh, no configured service may know path, or anything
+//     inside it - a download added since the scan may be using it.
+func (s *Store) DeleteDownload(requested string, src Sources, tiers []model.Tier) (Candidate, error) {
+	if src.Qbit == nil {
+		return Candidate{}, fmt.Errorf("qBittorrent isn't connected, so there's no telling what in its download folders is orphaned")
+	}
+	requested = filepath.Clean(requested)
+
+	var found *Candidate
+	for _, c := range s.Get().Candidates {
+		if c.IsDownloads() && c.Path == requested {
+			found = &c
+			break
+		}
+	}
+	if found == nil {
+		return Candidate{}, fmt.Errorf("%s isn't on the list from the last scan of the download folders - scan again", requested)
+	}
+	path := found.Path
+
+	var tier *model.Tier
+	for i := range tiers {
+		if tiers[i].Name == found.TierName {
+			tier = &tiers[i]
+			break
+		}
+	}
+	if tier == nil || !tier.IsDownloads() {
+		return Candidate{}, fmt.Errorf("the tier %s was found in is no longer a downloads tier", path)
+	}
+	if !tier.AllowDeletes {
+		return Candidate{}, fmt.Errorf("tier %q is read-only - mark it as not read-only under Settings > Storage tiers to delete from it", tier.Name)
+	}
+	root := ""
+	for _, p := range tier.Paths {
+		if p = filepath.Clean(p); strings.HasPrefix(path, p+string(filepath.Separator)) {
+			root = p
+			break
+		}
+	}
+	if root == "" {
+		return Candidate{}, fmt.Errorf("%s isn't inside any of tier %q's paths", path, tier.Name)
+	}
+	if err := diskusage.CheckPath(root, tier.RequireMount); err != nil {
+		return Candidate{}, fmt.Errorf("refusing to delete from %s: %w", root, err)
+	}
+
+	known, err := knownPaths(src)
+	if err != nil {
+		return Candidate{}, fmt.Errorf("checking %s is still orphaned: %w", path, err)
+	}
+	for k := range known {
+		if k == path || strings.HasPrefix(k, path+string(filepath.Separator)) || strings.HasPrefix(path, k+string(filepath.Separator)) {
+			return Candidate{}, fmt.Errorf("%s is in use now (%s) - nothing was deleted", path, k)
+		}
+	}
+	if _, err := os.Lstat(path); err != nil {
+		return Candidate{}, fmt.Errorf("checking %s: %w", path, err)
+	}
+
+	if err := os.RemoveAll(path); err != nil {
+		return Candidate{}, fmt.Errorf("deleting %s: %w", path, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.snap.Candidates[:0:0]
+	for _, c := range s.snap.Candidates {
+		if c.Path != path {
+			kept = append(kept, c)
+		}
+	}
+	s.snap.Candidates = kept
+	return *found, s.save()
 }
 
 // probeWritable attempts to create and remove a small marker file in dir,

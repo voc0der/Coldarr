@@ -141,7 +141,9 @@ func newAuthTestServer(t *testing.T, oidcEnabled bool) *Server {
 	if err != nil {
 		t.Fatalf("secrets.LoadOrCreate: %v", err)
 	}
-	cfg := &config.Config{}
+	// History's directory is where every cache an engine keeps goes - in
+	// the test's own temp dir, never the package directory.
+	cfg := &config.Config{History: config.HistoryConfig{Path: filepath.Join(dir, "history.json")}}
 	if oidcEnabled {
 		cfg.Auth.OIDC = config.OIDCAuthConfig{
 			Enabled:       true,

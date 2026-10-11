@@ -26,12 +26,12 @@ func newApplyCmd() *cobra.Command {
 				return err
 			}
 
-			// Refuse before even building the plan: move commands already
-			// running inside Radarr/Sonarr (from a previous apply, even
-			// one whose Coldarr process is long gone) mean current disk
-			// numbers are mid-move garbage and new moves would overlap
-			// in-flight writes.
-			if busy, detail, err := e.ArrMovesInFlight(); err != nil {
+			// Refuse before even building the plan: moves already running
+			// inside Radarr/Sonarr or qBittorrent (from a previous apply,
+			// even one whose Coldarr process is long gone) mean current
+			// disk numbers are mid-move garbage and new moves would
+			// overlap in-flight writes.
+			if busy, detail, err := e.MovesInFlight(); err != nil {
 				return err
 			} else if busy {
 				return fmt.Errorf("refusing to plan or apply: %s", detail)

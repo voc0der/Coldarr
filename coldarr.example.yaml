@@ -4,11 +4,11 @@
 # entirely and configure tiers through the web GUI - `coldarr serve`
 # creates one for you as you go).
 #
-# Radarr/Sonarr/Jellyfin connection info does NOT live here - it's stored
-# encrypted, separately, via the GUI's Connections page, the
-# `coldarr connections set` CLI command, or RADARR_URL/RADARR_API_KEY
-# (SONARR_*, JELLYFIN_*) environment variables, which always take
-# precedence over whatever is stored. See README.md.
+# Connection info (Radarr, Sonarr, Lidarr, Jellyfin, qBittorrent) does NOT
+# live here - it's stored encrypted, separately, via the GUI's Connections
+# page, the `coldarr connections set` CLI command, or RADARR_URL/
+# RADARR_API_KEY (SONARR_*, LIDARR_*, JELLYFIN_*, QBITTORRENT_*) environment
+# variables, which always take precedence over whatever is stored.
 #
 # Values in this file can still reference environment variables, e.g.
 # ${SOME_VAR}, for anything below.
@@ -98,6 +98,42 @@ policy:
 
 history:
   path: ./coldarr-history.json
+
+# Optional download tiering, with qBittorrent connected: finished downloads
+# move from the download drive to seed storage once they've settled, and
+# can be removed once their trackers' seeding requirements are met. Add two
+# tiers with `domain: downloads` - mounted into Coldarr at the same paths
+# qBittorrent uses - and uncomment below. See the docs' "Downloads and
+# seeding" page.
+#
+#  - name: download-ssd        # (under tiers:)
+#    domain: downloads
+#    role: hot
+#    paths: [/downloads]
+#
+#  - name: seed
+#    domain: downloads
+#    role: cold
+#    paths: [/seed]
+#    target_used_percent: 92
+#    max_used_percent: 97
+#    require_mount: true
+#
+# torrents:
+#   settle_days: 3
+#   seed_label: seed           # given only once a move has landed
+#   labels:                    # labels with no rule are left alone
+#     - {label: movies, action: move, imported_by: radarr}
+#     - {label: tv, action: move, imported_by: sonarr}
+#     - {label: transfer, action: ignore}
+#   seeding:
+#     min_seed_days: 0         # 0 = forever: nothing is done until you say so
+#     grace_days: 7
+#     overrides:
+#       - {host: tracker.example.org, min_seed_days: 14}
+#   removal:
+#     mode: off                # off, report, or remove
+#     max_per_run: 25
 
 # Optional web GUI authentication. Client secret is stored encrypted
 # alongside connection credentials, not in this YAML. Environment variables

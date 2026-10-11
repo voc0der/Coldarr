@@ -43,18 +43,26 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 	for _, tier := range inv.Tiers {
 		targetCol := "-"
 		maxCol := fmt.Sprintf("%.1f", tier.EffectiveMaxUsedPercent())
-		if tier.Role == model.RoleCold {
+		roleCol := string(tier.Role)
+		switch {
+		case tier.Role == model.RoleCold:
 			targetCol = fmt.Sprintf("%.1f", tier.TargetUsedPercent)
-		} else if tier.MaxUsedPercent == 0 {
+		case tier.IsDownloads():
+			// Nothing is ever reclaimed onto a download drive.
+			maxCol = "-"
+		case tier.MaxUsedPercent == 0:
 			maxCol += " (default)"
-		} else {
+		default:
 			maxCol += " (configured)"
+		}
+		if tier.IsDownloads() {
+			roleCol += " (downloads)"
 		}
 		for _, path := range tier.Paths {
 			status := inv.PathStatus[path]
 			if status.Err != nil {
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t-\t-\t-\t-\t%s\t%s\tUNAVAILABLE: %v\n",
-					tier.Name, tier.Role, path, targetCol, maxCol, status.Err)
+					tier.Name, roleCol, path, targetCol, maxCol, status.Err)
 				continue
 			}
 			u := status.Usage
@@ -63,7 +71,7 @@ func TierUsage(w io.Writer, inv *engine.Inventory) {
 				statusCol = fmt.Sprintf("ok (shares a disk with %s)", strings.Join(siblings, ", "))
 			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%.1f\t%s\t%s\t%s\n",
-				tier.Name, tier.Role, path, fmtGBu(u.UsedBytes), fmtGBu(u.FreeBytes), fmtGBu(u.TotalBytes),
+				tier.Name, roleCol, path, fmtGBu(u.UsedBytes), fmtGBu(u.FreeBytes), fmtGBu(u.TotalBytes),
 				u.UsedPercent, targetCol, maxCol, statusCol)
 		}
 	}

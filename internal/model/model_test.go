@@ -53,3 +53,22 @@ func TestTier_EffectiveMaxUsedPercent(t *testing.T) {
 		}
 	}
 }
+
+func TestTierDomains(t *testing.T) {
+	legacy := Tier{Name: "hot"}
+	if legacy.EffectiveDomain() != DomainLibrary || legacy.IsDownloads() {
+		t.Errorf("a tier without a domain = %q, want library", legacy.EffectiveDomain())
+	}
+	seed := Tier{Name: "seed", Domain: DomainDownloads}
+	if !seed.IsDownloads() {
+		t.Error("a downloads tier should report it")
+	}
+
+	tiers := []Tier{legacy, seed, {Name: "cold", Domain: DomainLibrary}}
+	if got := TiersIn(tiers, DomainLibrary); len(got) != 2 || got[0].Name != "hot" || got[1].Name != "cold" {
+		t.Errorf("TiersIn(library) = %+v, want hot then cold", got)
+	}
+	if got := TiersIn(tiers, DomainDownloads); len(got) != 1 || got[0].Name != "seed" {
+		t.Errorf("TiersIn(downloads) = %+v, want seed", got)
+	}
+}

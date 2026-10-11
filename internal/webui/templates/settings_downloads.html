@@ -1,0 +1,180 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Downloads</h1>
+<p class="muted">How Coldarr treats qBittorrent's downloads on your downloads tiers. A finished download sits on the download drive for the settle time, then moves to seed storage and gets the seed label. Downloads still in progress are never moved, and neither is anything without a label set to move.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+<div class="card">
+  <h2 style="margin-top:0">Moving</h2>
+  <form class="stacked" method="post" action="/settings/downloads/moving">
+    <div>
+      <label for="settle_days">Settle time (days)</label>
+      <input type="number" id="settle_days" name="settle_days" min="1" step="1" value="{{.SettleDays}}">
+      <p class="hint">How long a finished download stays on the download drive before it moves - time for Radarr/Sonarr/Lidarr to import it.</p>
+    </div>
+    <div>
+      <label for="seed_label">Seed label</label>
+      <input type="text" id="seed_label" name="seed_label" list="qbit-categories" value="{{.SeedLabel}}">
+      <datalist id="qbit-categories">{{range .Categories}}<option value="{{.}}">{{end}}</datalist>
+      <p class="hint">The category a download gets once it has landed on seed storage - only then, so a move that fails never leaves a download labeled as moved. Coldarr creates it in qBittorrent if it's missing.</p>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="allow_disabling_auto_tmm" name="allow_disabling_auto_tmm" {{if .AllowDisablingAutoTMM}}checked{{end}}>
+      <label for="allow_disabling_auto_tmm" style="font-weight:400">Turn off Automatic Torrent Management for downloads Coldarr moves</label>
+    </div>
+    <p class="hint" style="margin-top:-0.4rem">qBittorrent keeps a download with Automatic Torrent Management on in its category's folder, so it would undo a move. Left unticked, such downloads stay put and show on the Downloads page.</p>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Labels</h2>
+  <p class="hint">What Coldarr does with downloads carrying each of qBittorrent's categories and tags. A download moves only if one of its labels says to, and never if one says to leave it alone. A label with no rule - including one you add in qBittorrent later - is left alone until you give it one. Pick the app that imports a label's downloads, and Coldarr waits until that app has imported each download before moving it.</p>
+  {{if .LabelsError}}<div class="alert alert-warn">{{.LabelsError}}</div>{{end}}
+  {{if .Labels}}
+  <form method="post" action="/settings/downloads/labels">
+    <div class="overflow-table">
+    <table>
+    <thead><tr><th>Label</th><th>In qBittorrent</th><th>Coldarr</th><th>Imported by</th></tr></thead>
+    <tbody>
+    {{range .Labels}}
+    <tr>
+      <td class="mono">{{.Label}}<input type="hidden" name="label_{{.Index}}" value="{{.Label}}"></td>
+      <td>{{if .Where}}{{.Where}}{{else}}<span class="badge badge-warn">{{template "icon-alert-triangle"}} not in qBittorrent now</span>{{end}}{{if .IsSeedLabel}} <span class="badge badge-muted">seed label</span>{{end}}</td>
+      {{if .IsSeedLabel}}
+      <td class="muted" colspan="2">Managed - it's the seed label, which Coldarr gives downloads once they've landed on seed storage{{if .Action}}<input type="hidden" name="action_{{.Index}}" value="{{.Action}}">{{end}}</td>
+      {{else}}
+      <td>
+        <select name="action_{{.Index}}" aria-label="What Coldarr does with {{.Label}}" data-imported-by="imported_by_{{.Index}}" onchange="coldarrToggleImportedBy(this)">
+          <option value="" {{if eq .Action ""}}selected{{end}}>No rule - leave alone</option>
+          <option value="move" {{if eq .Action "move"}}selected{{end}}>Move to seed storage</option>
+          <option value="ignore" {{if eq .Action "ignore"}}selected{{end}}>Never touch</option>
+        </select>
+        {{if not .Where}}{{if .Action}}<label class="radio-row" style="margin-top:0.3rem"><input type="checkbox" name="remove_{{.Index}}"> Remove this rule</label>{{end}}{{end}}
+      </td>
+      <td>
+        <select name="imported_by_{{.Index}}" id="imported_by_{{.Index}}" aria-label="App that imports {{.Label}}">
+          <option value="" {{if eq .ImportedBy ""}}selected{{end}}>Nothing - move without asking</option>
+          {{$current := .ImportedBy}}{{range $.ImportApps}}<option value="{{.Value}}" {{if eq $current .Value}}selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </td>
+      {{end}}
+    </tr>
+    {{end}}
+    </tbody>
+    </table>
+    </div>
+    <div class="btn-row" style="margin-top:0.75rem">
+      <button type="submit" class="btn btn-primary">Save label rules</button>
+    </div>
+  </form>
+  <script>
+    // Only a label that moves downloads can be waiting on an import.
+    function coldarrToggleImportedBy(action) {
+      document.getElementById(action.dataset.importedBy).disabled = action.value !== "move";
+    }
+    document.querySelectorAll("select[data-imported-by]").forEach(coldarrToggleImportedBy);
+  </script>
+  {{else}}
+  <div class="empty-state">
+    {{template "icon-download"}}
+    <div class="title">No labels yet</div>
+    <p class="muted">Once qBittorrent has categories or tags, they're listed here to set up.</p>
+  </div>
+  {{end}}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Seeding rules</h2>
+  <p class="hint">How long a download must seed before its trackers are satisfied. Every tracker gets the default unless it has an override; a download that announces to several trackers has to satisfy the strictest. 0 days means forever - never done - which is the default, so nothing is ever treated as done until you say so.</p>
+  {{if .TrackerError}}<div class="alert alert-warn">{{.TrackerError}}</div>{{end}}
+  <form class="stacked" method="post" action="/settings/downloads/seeding">
+    <div>
+      <label for="min_seed_days">Default for every tracker (days)</label>
+      <input type="number" id="min_seed_days" name="min_seed_days" min="0" step="1" value="{{.DefaultSeedDays}}">
+    </div>
+    <div>
+      <label for="grace_days">Grace margin (days)</label>
+      <input type="number" id="grace_days" name="grace_days" min="0" step="1" value="{{.GraceDays}}">
+      <p class="hint">Added to every requirement. Coldarr can't see a tracker's own count of seeding time - it uses the smaller of qBittorrent's seeding time and the time since the download finished - so a margin keeps it on the safe side.</p>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+
+  <h3>Tracker overrides</h3>
+  {{if .Overrides}}
+  <div class="overflow-table">
+  <table>
+  <thead><tr><th>Tracker</th><th>Seed for</th><th>Downloads using it</th><th></th></tr></thead>
+  <tbody>
+  {{range .Overrides}}
+  <tr>
+    <td class="mono">{{.Host}}</td>
+    <td>{{if .Days}}{{.Days}} days{{else}}forever{{end}}</td>
+    <td>{{if .Downloads}}{{.Downloads}}{{else}}<span class="badge badge-muted" title="Kept until you remove it - downloads come and go">none right now</span>{{end}}</td>
+    <td>
+      <form method="post" action="/settings/downloads/trackers/delete" onsubmit="return confirm('Remove the override for {{.Host}}? Its downloads go back to the default.')">
+        <input type="hidden" name="host" value="{{.Host}}">
+        <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Remove</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+  </table>
+  </div>
+  {{else}}
+  <p class="muted">No overrides - every tracker gets the default.</p>
+  {{end}}
+  <form class="stacked" method="post" action="/settings/downloads/trackers" style="margin-top:0.75rem">
+    <div>
+      <label for="override_host">Tracker</label>
+      <input type="text" id="override_host" name="host" list="tracker-hosts" placeholder="tracker.example.org" autocomplete="off">
+      <datalist id="tracker-hosts">{{range .TrackerHosts}}<option value="{{.}}">{{end}}</datalist>
+      <p class="hint">Pick a tracker your downloads use, or type one. An override for example.org covers tracker.example.org too. Only the host is kept, even if you paste a whole announce URL.</p>
+    </div>
+    <div>
+      <label for="override_days">Seed for (days)</label>
+      <input type="number" id="override_days" name="min_seed_days" min="0" step="1" value="14">
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn">{{template "icon-plus"}} Save override</button>
+    </div>
+  </form>
+
+  <div class="btn-row" style="justify-content: space-between; margin-top:1rem">
+    <p class="muted" style="margin:0">{{if .TrackersScanned}}Trackers last scanned: {{.TrackersScanned}}{{else}}Trackers not scanned yet - until they are, no download counts as done seeding.{{end}}</p>
+    <form method="post" action="/settings/downloads/trackers/scan">
+      <button type="submit" class="btn">{{template "icon-play"}} Scan now</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Removing finished seeds</h2>
+  <p class="hint">Once a download is done seeding - see Seeding rules - Coldarr can remove it from qBittorrent, from either drive. It never removes a download with no seeding rule met, one Radarr/Sonarr/Lidarr hasn't confirmed importing, one sharing a folder with your library, or one still in use, and never deletes files another download still seeds - that one just leaves qBittorrent. Removals run from the Downloads page or the "Remove Finished Seeds" task.</p>
+  <form class="stacked" method="post" action="/settings/downloads/removal">
+    <fieldset class="tier-access">
+      <legend>Mode</legend>
+      <label class="radio-row"><input type="radio" name="mode" value="off" {{if eq .RemovalMode "off"}}checked{{end}}> Off - never remove anything</label>
+      <label class="radio-row"><input type="radio" name="mode" value="report" {{if eq .RemovalMode "report"}}checked{{end}}> Report only - list what would be removed, and notify, but remove nothing</label>
+      <label class="radio-row"><input type="radio" name="mode" value="remove" {{if eq .RemovalMode "remove"}}checked{{end}}> Remove - delete finished downloads and their files</label>
+      <div class="alert alert-warn">Remove deletes downloads from qBittorrent along with their files, which can't be undone. Try Report only first and check the list on the Downloads page. A download on the download drive that's done seeding is then removed instead of being moved to seed storage.</div>
+    </fieldset>
+    <div>
+      <label for="max_per_run">Most to remove per run</label>
+      <input type="number" id="max_per_run" name="max_per_run" min="1" step="1" value="{{.MaxPerRun}}">
+      <p class="hint">A mistaken rule then costs at most this many downloads and a notification, never the whole drive. The rest wait for the next run.</p>
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+{{end}}

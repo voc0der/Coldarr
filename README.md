@@ -6,12 +6,12 @@
 [![License badge](https://img.shields.io/github/license/voc0der/Coldarr)](LICENSE.md)
 [![Latest release badge](https://img.shields.io/github/v/release/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/releases/latest)
 [![CI status badge](https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI)](https://github.com/voc0der/Coldarr/actions/workflows/ci.yml)
-<a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-97.3%25-brightgreen" alt="Test coverage"></a>
+<a href="https://voc0der.github.io/Coldarr/development/contributing/#coverage"><img src="https://img.shields.io/badge/coverage-96.5%25-brightgreen" alt="Test coverage"></a>
 [![GitHub issues badge](https://img.shields.io/github/issues/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/issues)
 [![Docker pulls badge](https://img.shields.io/docker/pulls/voc0der/coldarr)](https://hub.docker.com/r/voc0der/coldarr)
 [![Docker image size badge](https://img.shields.io/docker/image-size/voc0der/coldarr?sort=date)](https://hub.docker.com/r/voc0der/coldarr)
 
-Move older movies and shows off your main storage and onto overflow drives. Tell Coldarr which drives are which, and it works out what's safe to move and has Radarr and Sonarr do the moving, so their libraries always match what's on disk. New additions, active downloads, and Jellyfin favorites stay on your main storage. Preview each plan first, or put it on a schedule. See the [full feature list](https://voc0der.github.io/Coldarr/features/).
+Move older movies and shows off your main storage and onto overflow drives. Tell Coldarr which drives are which, and it works out what's safe to move and has Radarr and Sonarr do the moving, so their libraries always match what's on disk. New additions, active downloads, and Jellyfin favorites stay on your main storage. With qBittorrent, it can also move finished downloads to a seed drive and clear them out once your trackers are satisfied. Preview each plan first, or put it on a schedule. See the [full feature list](https://voc0der.github.io/Coldarr/features/).
 
 **[Documentation](https://voc0der.github.io/Coldarr/)** · [Quick start](https://voc0der.github.io/Coldarr/getting-started/) · [Configuration](https://voc0der.github.io/Coldarr/configuration/)
 
@@ -56,4 +56,4 @@ Review the [contributing guide](https://voc0der.github.io/Coldarr/development/co
 
 ## License
 
-[MIT](LICENSE.md). Radarr, Sonarr, and Jellyfin logos in the web interface come from [selfh.st/icons](https://github.com/selfhst/icons), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+[MIT](LICENSE.md). Radarr, Sonarr, Lidarr, Jellyfin, and qBittorrent logos in the web interface come from [selfh.st/icons](https://github.com/selfhst/icons), licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
