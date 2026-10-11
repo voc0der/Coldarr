@@ -1,30 +1,36 @@
 package webui
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"time"
 
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/scoring"
+	"github.com/vocoder/coldarr/internal/torrents"
 )
 
 type tierRow struct {
-	TierName         string
-	Role             model.TierRole
-	IsDownloads      bool
-	Path             string
-	Available        bool
-	UsedBytes        int64
-	TotalBytes       int64
-	UsedPercent      float64
-	UsedPercentOver  bool // cold usage visibly past its hard ceiling, or hot literally full, at the 1-decimal precision the UI displays
-	HasTarget        bool // false for hot tiers, which have a reclaim max but no fill target
-	TargetPercent    float64
-	MaxPercent       float64
-	UsesDefaultMax   bool
-	StatusMsg        string
-	StatusClass      string
+	TierName        string
+	Role            model.TierRole
+	IsDownloads     bool
+	Path            string
+	Available       bool
+	UsedBytes       int64
+	TotalBytes      int64
+	UsedPercent     float64
+	UsedPercentOver bool // cold usage visibly past its hard ceiling, or hot literally full, at the 1-decimal precision the UI displays
+	HasTarget       bool // false for hot tiers, which have a reclaim max but no fill target
+	TargetPercent   float64
+	MaxPercent      float64
+	UsesDefaultMax  bool
+	StatusMsg       string
+	StatusClass     string
+	// Wedged is seed storage that downloads Coldarr doesn't manage fill
+	// past its max on their own (see engine.DownloadsInventory.Wedged) -
+	// set to a description of why, which no amount of waiting will change.
+	Wedged           string
 	SharesVolumeWith []string
 	SharedColorClass string // CSS class coloring the Tier column's link glyph; empty unless SharesVolumeWith is non-empty
 }
@@ -60,6 +66,19 @@ type dashboardData struct {
 	ProtectedCount        int
 	HotCount              int
 	ColdCount             int
+	// Downloads summarizes download tiering, when it's set up: nil
+	// otherwise, so a library-only dashboard looks as it always has.
+	Downloads *downloadCounts
+}
+
+// downloadCounts is the dashboard's download-tiering summary - how many of
+// the downloads Coldarr manages are in each state.
+type downloadCounts struct {
+	Active  int
+	Waiting int
+	Ready   int
+	Held    int
+	Parked  int
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +102,28 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		data.Error = err.Error()
 		s.render(w, "dashboard", data)
 		return
+	}
+
+	// Download tiering is summarized from what's already known - no
+	// import checks are made just to draw the dashboard (see
+	// BuildDownloadsInventory). A failure is a warning, not an error: the
+	// rest of the dashboard is still worth showing.
+	wedged := map[string]int64{}
+	if eng.DownloadsEnabled() {
+		if dl, err := eng.BuildDownloadsInventory(time.Now(), false); err != nil {
+			data.Warnings = append(data.Warnings, "Couldn't read downloads: "+err.Error())
+		} else {
+			counts := dl.Count()
+			data.Downloads = &downloadCounts{
+				Active:  counts[torrents.Active],
+				Waiting: counts[torrents.Waiting],
+				Ready:   counts[torrents.Ready],
+				Held:    counts[torrents.Held],
+				Parked:  counts[torrents.Parked],
+			}
+			data.Warnings = append(data.Warnings, dl.Warnings...)
+			wedged = dl.Wedged()
+		}
 	}
 
 	volumeOf := inv.VolumeOf()
@@ -115,12 +156,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 					row.SharedColorClass = sharedVolumeColorClasses[idx]
 				}
 				row.UsedPercentOver = usagePastHardLimit(row)
+				if n, ok := wedged[path]; ok {
+					row.Wedged = fmt.Sprintf("%.1f GB here isn't Coldarr's to move - downloads it leaves alone, or other files - and that alone fills it past its %.1f%% max, so nothing can move here until some of it is cleared or the max is raised.", float64(n)/(1<<30), row.MaxPercent)
+				}
 			}
 			data.Rows = append(data.Rows, row)
 		}
 	}
 
-	data.Warnings = inv.Warnings
+	data.Warnings = append(inv.Warnings, data.Warnings...)
 	data.TotalItems = len(inv.Items)
 	for _, it := range inv.Items {
 		switch it.Eval.Decision {

@@ -100,10 +100,6 @@ type applyRun struct {
 }
 
 func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server, error) {
-	pages, err := parseTemplates()
-	if err != nil {
-		return nil, err
-	}
 	linkCache, err := linkcache.Load(linkCachePath(cfgPath))
 	if err != nil {
 		return nil, err
@@ -124,9 +120,11 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		orphanStore:    orphanStore,
 		schedState:     schedState,
 		schedStatePath: schedulerStatePath(cfgPath),
-		pages:          pages,
 		authSessions:   map[string]authSession{},
 		oidcStates:     map[string]oidcLoginState{},
+	}
+	if s.pages, err = parseTemplatesWith(s.navState); err != nil {
+		return nil, err
 	}
 
 	if !s.effectiveOIDCConfig().Enabled {
@@ -231,6 +229,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/tiers/{name}", s.handleTierUpdate)
 	mux.HandleFunc("POST /settings/tiers/{name}/delete", s.handleTierDelete)
 
+	mux.HandleFunc("GET /settings/downloads", s.handleDownloadsSettingsPage)
+	mux.HandleFunc("POST /settings/downloads/moving", s.handleDownloadsMovingSave)
+	mux.HandleFunc("POST /settings/downloads/labels", s.handleDownloadsLabelsSave)
+
 	mux.HandleFunc("GET /settings/notifications", s.handleNotificationsPage)
 	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
 	mux.HandleFunc("POST /settings/notifications/test", s.handleNotificationsTest)
@@ -244,6 +246,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /settings/orphans", s.handleOrphansPage)
 	mux.HandleFunc("POST /settings/orphans/scan", s.handleOrphansScanNow)
+	mux.HandleFunc("POST /settings/orphans/delete", s.handleOrphanDelete)
 
 	mux.HandleFunc("GET /settings/auth", s.handleAuthPage)
 	mux.HandleFunc("POST /settings/auth", s.handleAuthSave)
@@ -299,6 +302,17 @@ func (s *Server) newEngine() (*engine.Engine, error) {
 	return engine.New(s.currentConfig(), s.connStore)
 }
 
+// navState works out which parts of the GUI apply right now - see
+// navState. The library pages show unless this is a downloads-only
+// install: qBittorrent connected and no library tier. Radarr or Sonarr
+// being connected doesn't count - download tiering asks them about imports
+// too.
+func (s *Server) navState() navState {
+	downloads := s.downloadsEnabled()
+	library := !downloads || len(model.TiersIn(s.currentConfig().Tiers, model.DomainLibrary)) > 0
+	return navState{Library: library, Downloads: downloads}
+}
+
 // downloadsEnabled reports whether qBittorrent is connected - what every
 // download-tiering page, setting and task waits on before it appears, so a
 // library-only setup never sees any of them.
@@ -345,6 +359,28 @@ func (s *Server) updateNotifications(verbose, markdown bool, tag string) error {
 	updated.Notifications.Verbose = verbose
 	updated.Notifications.Markdown = markdown
 	updated.Notifications.Tag = tag
+	if err := config.Save(s.cfgPath, &updated); err != nil {
+		return err
+	}
+	s.cfg = &updated
+	return nil
+}
+
+// updateTorrents applies fn to a copy of the download-tiering settings,
+// validates the result, persists it, and swaps it into the live config,
+// under the same lock discipline as updateTiers.
+func (s *Server) updateTorrents(fn func(*config.TorrentsConfig)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := *s.cfg
+	torrents := updated.Torrents
+	torrents.Labels = append([]config.LabelRule(nil), torrents.Labels...)
+	fn(&torrents)
+	if err := config.ValidateTorrents(torrents); err != nil {
+		return err
+	}
+	updated.Torrents = torrents
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		return err
 	}

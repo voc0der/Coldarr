@@ -88,6 +88,12 @@ func (f *fakeQbit) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"movies": {"name": "movies", "savePath": "/downloads/movies"}, "seed": {"name": "seed", "savePath": ""}}`))
 	case "/api/v2/torrents/tags":
 		_, _ = w.Write([]byte(`["transfer", "prowlarr"]`))
+	case "/api/v2/torrents/files":
+		if r.URL.Query().Get("hash") != "loose" {
+			http.Error(w, "Not Found", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"name": "a.mkv"}, {"name": "extras/b.srt"}, {"name": ""}]`))
 	case "/api/v2/torrents/trackers":
 		body, ok := f.trackers[r.URL.Query().Get("hash")]
 		if !ok {
@@ -360,6 +366,14 @@ func TestLabelsAndTrackers(t *testing.T) {
 	}
 	if _, err := c.TrackerHosts("gone"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("TrackerHosts(gone) err = %v, want ErrNotFound", err)
+	}
+
+	files, err := c.FileNames("loose")
+	if err != nil || strings.Join(files, ",") != "a.mkv,extras/b.srt" {
+		t.Errorf("FileNames() = %v, %v", files, err)
+	}
+	if _, err := c.FileNames("gone"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FileNames(gone) err = %v, want ErrNotFound", err)
 	}
 }
 

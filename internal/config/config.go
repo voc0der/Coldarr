@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/model"
@@ -104,6 +105,109 @@ type AuthConfig struct {
 	OIDC OIDCAuthConfig `yaml:"oidc"`
 }
 
+// TorrentsConfig is download tiering: when Coldarr moves a finished
+// qBittorrent download from the download drive to seed storage, and which
+// downloads it acts on at all. It does nothing until qBittorrent is
+// connected and downloads tiers exist.
+type TorrentsConfig struct {
+	// SettleDays is how long a finished download stays on the download
+	// drive before it moves - time for Radarr/Sonarr/Lidarr to import it,
+	// and for anything else to finish reading it. Defaults to 3.
+	SettleDays int `yaml:"settle_days"`
+	// SeedLabel is the category a download is given once it has landed on
+	// seed storage - never before, so a move that fails part way never
+	// leaves a download labeled as archived while its data is still on
+	// the download drive. Defaults to "seed".
+	SeedLabel string `yaml:"seed_label"`
+	// AllowDisablingAutoTMM lets Coldarr switch off Automatic Torrent
+	// Management for a download it's about to move. A managed download's
+	// location follows its category, so qBittorrent would undo the move;
+	// without this, such downloads are held back and listed instead.
+	AllowDisablingAutoTMM bool `yaml:"allow_disabling_auto_tmm,omitempty"`
+	// Labels says what Coldarr does with downloads carrying each of
+	// qBittorrent's categories and tags. A label with no rule is left
+	// alone, so a category added in qBittorrent next month is never acted
+	// on until someone decides it should be.
+	Labels []LabelRule `yaml:"labels,omitempty"`
+}
+
+// LabelAction is what a label rule tells Coldarr to do.
+type LabelAction string
+
+const (
+	// LabelMove means downloads with this label move to seed storage once
+	// they've settled, and are Coldarr's to manage from then on.
+	LabelMove LabelAction = "move"
+	// LabelIgnore means downloads with this label are never touched, even
+	// if another of their labels says to move them. Their bytes still
+	// count toward each drive's usage.
+	LabelIgnore LabelAction = "ignore"
+)
+
+// ImportApps are the *arr apps a label can name as the one that imports
+// its downloads.
+var ImportApps = []string{"radarr", "sonarr", "lidarr"}
+
+// LabelRule is one category or tag and what Coldarr does with it.
+type LabelRule struct {
+	Label  string      `yaml:"label"`
+	Action LabelAction `yaml:"action"`
+	// ImportedBy names the app that imports downloads with this label -
+	// radarr, sonarr or lidarr. A download it hasn't imported yet stays on
+	// the download drive, since moving it would break the import. Empty
+	// for labels no *arr app imports (manual downloads, say), which move
+	// without asking anyone.
+	ImportedBy string `yaml:"imported_by,omitempty"`
+}
+
+// Rule returns the rule for label, if there is one.
+func (c TorrentsConfig) Rule(label string) (LabelRule, bool) {
+	for _, r := range c.Labels {
+		if r.Label == label {
+			return r, true
+		}
+	}
+	return LabelRule{}, false
+}
+
+// ValidateTorrents checks the download-tiering settings - invoked wherever
+// config is loaded, and again before saving a change made through the web
+// GUI.
+func ValidateTorrents(cfg TorrentsConfig) error {
+	if cfg.SettleDays < 0 {
+		return fmt.Errorf("torrents.settle_days must not be negative, got %d", cfg.SettleDays)
+	}
+	if strings.TrimSpace(cfg.SeedLabel) != cfg.SeedLabel {
+		return fmt.Errorf("torrents.seed_label must not start or end with spaces, got %q", cfg.SeedLabel)
+	}
+	seen := map[string]bool{}
+	for _, r := range cfg.Labels {
+		if r.Label == "" || strings.TrimSpace(r.Label) != r.Label {
+			return fmt.Errorf("torrents.labels: a label must be a non-empty name without surrounding spaces, got %q", r.Label)
+		}
+		if seen[r.Label] {
+			return fmt.Errorf("torrents.labels: %q is listed twice", r.Label)
+		}
+		seen[r.Label] = true
+		switch r.Action {
+		case LabelMove:
+		case LabelIgnore:
+			if r.ImportedBy != "" {
+				return fmt.Errorf("torrents.labels: %q is ignored, so nothing imports it - drop imported_by", r.Label)
+			}
+		default:
+			return fmt.Errorf("torrents.labels: %q: action must be %q or %q, got %q", r.Label, LabelMove, LabelIgnore, r.Action)
+		}
+		if r.ImportedBy != "" && !slices.Contains(ImportApps, r.ImportedBy) {
+			return fmt.Errorf("torrents.labels: %q: imported_by must be one of %s, got %q", r.Label, strings.Join(ImportApps, ", "), r.ImportedBy)
+		}
+		if r.Label == cfg.SeedLabel && (r.Action != LabelMove || r.ImportedBy != "") {
+			return fmt.Errorf("torrents.labels: %q is the seed label Coldarr gives downloads on seed storage, so it can only be a plain move label", r.Label)
+		}
+	}
+	return nil
+}
+
 type OIDCAuthConfig struct {
 	Enabled         bool   `yaml:"enabled"`
 	IssuerURL       string `yaml:"issuer_url"`
@@ -118,6 +222,7 @@ type OIDCAuthConfig struct {
 type Config struct {
 	Tiers         []model.Tier        `yaml:"tiers"`
 	Policy        PolicyConfig        `yaml:"policy"`
+	Torrents      TorrentsConfig      `yaml:"torrents"`
 	History       HistoryConfig       `yaml:"history"`
 	Notifications NotificationsConfig `yaml:"notifications"`
 	Scheduler     SchedulerConfig     `yaml:"scheduler"`
@@ -137,6 +242,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := ValidateScheduler(cfg.Scheduler); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := ValidateTorrents(cfg.Torrents); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	return cfg, nil
@@ -167,6 +275,9 @@ func LoadForServer(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := ValidateScheduler(cfg.Scheduler); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := ValidateTorrents(cfg.Torrents); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	log.Printf("config: loaded %d tier(s) from %s: %v", len(cfg.Tiers), path, tierNames(cfg.Tiers))
@@ -305,6 +416,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Auth.OIDC.TokenAuthMethod == "" {
 		cfg.Auth.OIDC.TokenAuthMethod = "auto"
+	}
+	if cfg.Torrents.SettleDays == 0 {
+		cfg.Torrents.SettleDays = 3
+	}
+	if cfg.Torrents.SeedLabel == "" {
+		cfg.Torrents.SeedLabel = "seed"
 	}
 	applyScheduleDefaults(&cfg.Scheduler.RunPlan, "03:00")
 	applyScheduleDefaults(&cfg.Scheduler.RescanCold, "02:00")

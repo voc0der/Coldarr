@@ -516,6 +516,79 @@ func TestSave_OmitsDomainForLibraryTiers(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_Torrents(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if cfg.Torrents.SettleDays != 3 || cfg.Torrents.SeedLabel != "seed" || cfg.Torrents.AllowDisablingAutoTMM || len(cfg.Torrents.Labels) != 0 {
+		t.Fatalf("torrent defaults = %+v, want a 3-day settle, the seed label, AutoTMM left alone and no label rules", cfg.Torrents)
+	}
+
+	cfg = &Config{Torrents: TorrentsConfig{SettleDays: 7, SeedLabel: "archive"}}
+	applyDefaults(cfg)
+	if cfg.Torrents.SettleDays != 7 || cfg.Torrents.SeedLabel != "archive" {
+		t.Fatalf("explicit torrent settings were overwritten: %+v", cfg.Torrents)
+	}
+}
+
+func TestValidateTorrents(t *testing.T) {
+	valid := TorrentsConfig{SettleDays: 3, SeedLabel: "seed", Labels: []LabelRule{
+		{Label: "movies", Action: LabelMove, ImportedBy: "radarr"},
+		{Label: "music", Action: LabelMove, ImportedBy: "lidarr"},
+		{Label: "manual", Action: LabelMove},
+		{Label: "transfer", Action: LabelIgnore},
+		{Label: "seed", Action: LabelMove},
+	}}
+	if err := ValidateTorrents(valid); err != nil {
+		t.Fatalf("ValidateTorrents(valid) = %v", err)
+	}
+	if r, ok := valid.Rule("music"); !ok || r.ImportedBy != "lidarr" {
+		t.Errorf("Rule(music) = %+v, %v", r, ok)
+	}
+	if _, ok := valid.Rule("nope"); ok {
+		t.Error("Rule(nope) should find nothing")
+	}
+
+	tests := []struct {
+		name    string
+		edit    func(*TorrentsConfig)
+		wantErr string
+	}{
+		{name: "negative settle", edit: func(c *TorrentsConfig) { c.SettleDays = -1 }, wantErr: "settle_days must not be negative"},
+		{name: "padded seed label", edit: func(c *TorrentsConfig) { c.SeedLabel = " seed" }, wantErr: "seed_label must not start or end with spaces"},
+		{name: "empty label", edit: func(c *TorrentsConfig) { c.Labels = append(c.Labels, LabelRule{Action: LabelMove}) }, wantErr: "non-empty name"},
+		{name: "duplicate label", edit: func(c *TorrentsConfig) { c.Labels = append(c.Labels, LabelRule{Label: "movies", Action: LabelIgnore}) }, wantErr: `"movies" is listed twice`},
+		{name: "unknown action", edit: func(c *TorrentsConfig) { c.Labels[0].Action = "keep" }, wantErr: `action must be "move" or "ignore"`},
+		{name: "ignored but imported", edit: func(c *TorrentsConfig) { c.Labels[3].ImportedBy = "radarr" }, wantErr: "drop imported_by"},
+		{name: "unknown importer", edit: func(c *TorrentsConfig) { c.Labels[0].ImportedBy = "readarr" }, wantErr: "imported_by must be one of radarr, sonarr, lidarr"},
+		{name: "ignored seed label", edit: func(c *TorrentsConfig) { c.Labels[4].Action = LabelIgnore }, wantErr: "seed label"},
+		{name: "imported seed label", edit: func(c *TorrentsConfig) { c.Labels[4].ImportedBy = "sonarr" }, wantErr: "seed label"},
+	}
+	for _, tt := range tests {
+		cfg := valid
+		cfg.Labels = append([]LabelRule(nil), valid.Labels...)
+		tt.edit(&cfg)
+		if err := ValidateTorrents(cfg); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: ValidateTorrents = %v, want an error containing %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+// TestLoad_RejectsInvalidTorrents: a hand-edited label rule that makes no
+// sense stops the load, naming the setting, rather than being guessed at.
+func TestLoad_RejectsInvalidTorrents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coldarr.yaml")
+	raw := "tiers:\n  - name: hot\n    role: hot\n    paths: [/hot]\n    media_types: [movie]\n  - name: cold\n    role: cold\n    paths: [/cold]\n    media_types: [movie]\n    max_used_percent: 95\ntorrents:\n  labels:\n    - label: movies\n      action: shuffle\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "torrents.labels") {
+		t.Errorf("Load = %v, want the bad label rule named", err)
+	}
+	if _, err := LoadForServer(path); err == nil || !strings.Contains(err.Error(), "torrents.labels") {
+		t.Errorf("LoadForServer = %v, want the bad label rule named", err)
+	}
+}
+
 // TestValidateScheduler_NamesTheBrokenTask: a scheduler error has to say
 // which task's schedule is wrong, or an operator editing coldarr.yaml by
 // hand is left to guess among five near-identical blocks.

@@ -39,7 +39,7 @@ func TestRefresh_SkipsNilClients(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := s.Refresh(nil, nil, nil, nil); err != nil {
+	if err := s.Refresh(Sources{}, nil); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 	snap := s.Get()
@@ -62,7 +62,7 @@ func TestRefresh_FailurePropagatesAndLeavesSnapshotUnchanged(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	radarr := arrapi.NewRadarrClient(srv.URL, "key")
-	if err := s.Refresh(radarr, nil, nil, nil); err == nil {
+	if err := s.Refresh(Sources{Radarr: radarr}, nil); err == nil {
 		t.Fatal("expected Refresh to fail when the configured Radarr is unreachable")
 	}
 	if !s.Get().ScannedAt.IsZero() {
@@ -79,7 +79,7 @@ func TestRefresh_SkipsUnavailableTierPath(t *testing.T) {
 	tiers := []model.Tier{
 		{Name: "cold", Role: model.RoleCold, Paths: []string{t.TempDir() + "/does-not-exist"}, Media: []model.MediaType{model.Movie}},
 	}
-	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+	if err := s.Refresh(Sources{}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 	snap := s.Get()
@@ -105,7 +105,7 @@ func TestRefresh_PersistsAcrossLoad(t *testing.T) {
 	tiers := []model.Tier{
 		{Name: "cold", Role: model.RoleCold, Paths: []string{root}, Media: []model.MediaType{model.Movie}},
 	}
-	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+	if err := s.Refresh(Sources{}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestRefresh_PrunesKnownItemsAndFindsOrphans(t *testing.T) {
 	sonarr := arrapi.NewSonarrClient(sonarrSrv.URL, "key")
 	jf := jellyfin.NewClient(jellyfinSrv.URL, "key")
 
-	if err := s.Refresh(radarr, sonarr, jf, tiers); err != nil {
+	if err := s.Refresh(Sources{Radarr: radarr, Sonarr: sonarr, Jellyfin: jf}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestRefresh_ProbesWritability(t *testing.T) {
 		{Name: "writable", Role: model.RoleCold, Paths: []string{writableDir}, Media: []model.MediaType{model.Movie}},
 		{Name: "read-only", Role: model.RoleCold, Paths: []string{readOnlyDir}, Media: []model.MediaType{model.Movie}},
 	}
-	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+	if err := s.Refresh(Sources{}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestRefresh_UnreachableServiceFailsTheScan(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			err = s.Refresh(nil, tt.sonarr, tt.jf, tiers)
+			err = s.Refresh(Sources{Sonarr: tt.sonarr, Jellyfin: tt.jf}, tiers)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Refresh error = %v, want one containing %q", err, tt.wantErr)
 			}
@@ -405,7 +405,7 @@ func TestRefresh_IgnoresLooseFiles(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	tiers := []model.Tier{{Name: "cold", Role: model.RoleCold, Paths: []string{tierDir}, Media: []model.MediaType{model.Movie}}}
-	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+	if err := s.Refresh(Sources{}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
@@ -415,10 +415,10 @@ func TestRefresh_IgnoresLooseFiles(t *testing.T) {
 	}
 }
 
-// TestRefresh_LeavesDownloadsTiersAlone: nothing Radarr, Sonarr or Jellyfin
-// knows explains a torrent, so walking a downloads tier against them alone
-// would call every download on it an orphan.
-func TestRefresh_LeavesDownloadsTiersAlone(t *testing.T) {
+// TestRefresh_SkipsDownloadFoldersWithoutQbittorrent: nothing but
+// qBittorrent accounts for downloads, so without it a download folder isn't
+// scanned at all - every download in it would look orphaned.
+func TestRefresh_SkipsDownloadFoldersWithoutQbittorrent(t *testing.T) {
 	seedDir := t.TempDir()
 	mustMkdir(t, filepath.Join(seedDir, "Seeding.Torrent"))
 
@@ -427,11 +427,12 @@ func TestRefresh_LeavesDownloadsTiersAlone(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	tiers := []model.Tier{{Name: "seed", Domain: model.DomainDownloads, Role: model.RoleCold, Paths: []string{seedDir}}}
-	if err := s.Refresh(nil, nil, nil, tiers); err != nil {
+	if err := s.Refresh(Sources{}, tiers); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if snap := s.Get(); len(snap.Candidates) != 0 {
-		t.Fatalf("candidates = %+v, want the downloads tier left alone", snap.Candidates)
+	snap := s.Get()
+	if len(snap.Candidates) != 0 || len(snap.Warnings) != 1 || !strings.Contains(snap.Warnings[0], "qBittorrent isn't connected") {
+		t.Fatalf("snapshot = %+v, want the download folder skipped with a warning", snap)
 	}
 }
 
@@ -475,7 +476,7 @@ func TestRefresh_UnreadableFolderFailsTheScan(t *testing.T) {
 				t.Fatalf("Load: %v", err)
 			}
 			tiers := []model.Tier{{Name: "cold", Role: model.RoleCold, Paths: []string{tierDir}, Media: []model.MediaType{model.Movie}}}
-			err = s.Refresh(arrapi.NewRadarrClient(radarr.URL, "key"), nil, nil, tiers)
+			err = s.Refresh(Sources{Radarr: arrapi.NewRadarrClient(radarr.URL, "key")}, tiers)
 			if err == nil || !strings.Contains(err.Error(), "scanning "+tierDir) || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Refresh error = %v, want a scan failure containing %q", err, tt.wantErr)
 			}
@@ -536,7 +537,7 @@ func TestRefresh_ReportsAFailedSave(t *testing.T) {
 			if err := tt.breakSave(path); err != nil {
 				t.Fatalf("breakSave: %v", err)
 			}
-			if err := s.Refresh(nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			if err := s.Refresh(Sources{}, nil); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Refresh error = %v, want one containing %q", err, tt.wantErr)
 			}
 		})

@@ -361,6 +361,26 @@ func TrackerHost(raw string) string {
 	return strings.ToLower(u.Hostname())
 }
 
+type fileResource struct {
+	Name string `json:"name"`
+}
+
+// FileNames returns the path of each of the torrent's files, relative to its
+// save path. ErrNotFound means qBittorrent no longer has the torrent.
+func (c *Client) FileNames(hash string) ([]string, error) {
+	var raw []fileResource
+	if err := c.getJSON("/api/v2/torrents/files", url.Values{"hash": {hash}}, &raw); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(raw))
+	for _, f := range raw {
+		if f.Name != "" {
+			names = append(names, f.Name)
+		}
+	}
+	return names, nil
+}
+
 // SetLocation asks qBittorrent to move the torrents' data to location. It
 // returns once qBittorrent has accepted the move; the copy itself carries
 // on inside qBittorrent, state "moving", and survives Coldarr restarting.

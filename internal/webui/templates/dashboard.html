@@ -4,14 +4,28 @@
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{range .Warnings}}<div class="alert alert-error">{{.}}</div>{{end}}
 
+{{with nav}}{{if .Library}}
 <div class="card">
   <div class="stat-row">
-    <div class="stat">{{template "icon-plan"}}<div><div class="value">{{.TotalItems}}</div><div class="label">library items</div></div></div>
-    <div class="stat">{{template "icon-shield-check"}}<div><div class="value">{{.ProtectedCount}}</div><div class="label">protected</div></div></div>
-    <div class="stat">{{template "icon-flame"}}<div><div class="value">{{.HotCount}}</div><div class="label">hot</div></div></div>
-    <div class="stat">{{template "icon-snowflake"}}<div><div class="value">{{.ColdCount}}</div><div class="label">cold candidates</div></div></div>
+    <div class="stat">{{template "icon-plan"}}<div><div class="value">{{$.TotalItems}}</div><div class="label">library items</div></div></div>
+    <div class="stat">{{template "icon-shield-check"}}<div><div class="value">{{$.ProtectedCount}}</div><div class="label">protected</div></div></div>
+    <div class="stat">{{template "icon-flame"}}<div><div class="value">{{$.HotCount}}</div><div class="label">hot</div></div></div>
+    <div class="stat">{{template "icon-snowflake"}}<div><div class="value">{{$.ColdCount}}</div><div class="label">cold candidates</div></div></div>
   </div>
 </div>
+{{end}}{{end}}
+
+{{with .Downloads}}
+<div class="card">
+  <div class="stat-row">
+    <div class="stat">{{template "icon-download"}}<div><div class="value">{{.Active}}</div><div class="label">downloading or busy</div></div></div>
+    <div class="stat">{{template "icon-clock"}}<div><div class="value">{{.Waiting}}</div><div class="label">settling</div></div></div>
+    <div class="stat">{{template "icon-play"}}<div><div class="value">{{.Ready}}</div><div class="label">ready to move</div></div></div>
+    <div class="stat">{{template "icon-alert-triangle"}}<div><div class="value">{{.Held}}</div><div class="label">held back</div></div></div>
+    <div class="stat">{{template "icon-snowflake"}}<div><div class="value">{{.Parked}}</div><div class="label">on seed storage</div></div></div>
+  </div>
+</div>
+{{end}}
 
 <div class="section-header">
   <h2>Connections</h2>
@@ -54,7 +68,7 @@
   {{else}}
   <td class="muted">reclaim max {{pct .MaxPercent}} {{if .UsesDefaultMax}}(default){{else}}(configured){{end}}</td>
   {{end}}
-  <td><span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span></td>
+  <td>{{if .Wedged}}<span class="badge badge-warn" title="{{.Wedged}}">{{template "icon-alert-triangle"}} full of content Coldarr can't move</span>{{else}}<span class="badge badge-{{.StatusClass}}">{{template "icon-check-circle"}} {{.StatusMsg}}</span>{{end}}</td>
   {{else}}
   <td colspan="3" class="muted">unavailable</td>
   <td><span class="badge badge-danger">{{template "icon-x-circle"}} {{.StatusMsg}}</span></td>

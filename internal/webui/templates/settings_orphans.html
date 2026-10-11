@@ -1,7 +1,7 @@
 {{define "content"}}
 {{template "settings_subnav" .}}
 <h1>Orphaned Storage</h1>
-<p class="muted">Folders sitting on a configured tier path that no longer correspond to anything Radarr, Sonarr, or Jellyfin still tracks - a deleted movie/series whose folder was never cleaned up, a failed import, a leftover from a prior reorganization. Something known to any one of those services is not an orphan, even if the others have never heard of it.</p>
+<p class="muted">Folders sitting on a configured tier path that no longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent still tracks - a deleted movie/series whose folder was never cleaned up, a failed import, a leftover from a prior reorganization. Something known to any one of those services is not an orphan, even if the others have never heard of it.</p>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 {{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
@@ -44,9 +44,48 @@
 </div>
 {{end}}
 
+{{if .ShowDownloads}}
 <div class="card">
   <div class="btn-row" style="justify-content: space-between">
-    <h2 style="margin:0">Candidates</h2>
+    <h2 style="margin:0">Download folders</h2>
+    {{if .Downloads}}<p class="muted" style="margin:0">{{len .Downloads}} item(s), {{gb .DownloadsBytes}} total</p>{{end}}
+  </div>
+  <p class="hint">Files and folders in your download folders that qBittorrent doesn't know about - a download removed without its files, or what's left of a move that didn't finish. Every entry is compared, loose files included.</p>
+  {{if .AnyDeletableFolder}}<div class="alert alert-warn">Coldarr can delete from download folders marked as not read-only. A delete is permanent, and is only offered for what the last scan found. Coldarr checks again with every service just before deleting, and won't touch anything that has come into use since.</div>{{end}}
+  {{if .ReadOnlyDownloads}}<p class="hint">Read-only, so no Delete button: {{range $i, $t := .ReadOnlyDownloads}}{{if $i}}, {{end}}<strong>{{$t.Name}}</strong>{{end}}. Mark a tier as not read-only under <a href="/settings/tiers">Storage tiers</a> to delete from it here.</p>{{end}}
+  {{if .Downloads}}
+  <div class="overflow-table">
+  <table>
+  <thead><tr><th>Path</th><th>Tier</th><th>Size</th><th></th></tr></thead>
+  <tbody>
+  {{range .Downloads}}
+  <tr>
+    <td class="mono">{{.Path}}{{if .File}} <span class="badge badge-muted">file</span>{{end}}</td>
+    <td>{{.TierName}} <span class="badge badge-muted">{{if eq .TierRole "hot"}}{{template "icon-flame"}}{{else}}{{template "icon-snowflake"}}{{end}} {{.TierRole}}</span></td>
+    <td>{{gb .SizeBytes}}</td>
+    <td>{{if .Deletable}}
+      <form method="post" action="/settings/orphans/delete" onsubmit="return confirm('Permanently delete {{.Path}}? This cannot be undone.')">
+        <input type="hidden" name="path" value="{{.Path}}">
+        <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Delete</button>
+      </form>
+    {{else}}<span class="muted">read-only</span>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+  </table>
+  </div>
+  {{else}}
+  <div class="empty-state">
+    {{template "icon-download"}}
+    <div class="title">{{if .ScannedAt}}Nothing orphaned in the download folders{{else}}Not scanned yet{{end}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between">
+    <h2 style="margin:0">{{if .ShowDownloads}}Library folders{{else}}Candidates{{end}}</h2>
     {{if .Candidates}}<p class="muted" style="margin:0">{{len .Candidates}} folder(s), {{gb .TotalBytes}} total</p>{{end}}
   </div>
   {{if .Candidates}}

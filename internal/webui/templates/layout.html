@@ -9,8 +9,8 @@
 <nav>
   <a class="brand" href="/"><img src="/static/icon-512.png" alt="" class="brand-icon">Coldarr</a>
   <a href="/">{{template "icon-dashboard"}} Dashboard</a>
-  <a href="/plan">{{template "icon-plan"}} Plan</a>
-  <a href="/history">{{template "icon-history"}} History</a>
+  {{with nav}}{{if .Library}}<a href="/plan">{{template "icon-plan"}} Plan</a>{{end}}{{end}}
+  {{with nav}}{{if .Library}}<a href="/history">{{template "icon-history"}} History</a>{{end}}{{end}}
   <a href="/settings">{{template "icon-settings"}} Settings</a>
 </nav>
 <main>

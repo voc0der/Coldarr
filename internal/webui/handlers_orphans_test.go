@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/orphans"
+	"github.com/vocoder/coldarr/internal/secrets"
 )
 
 // TestOrphansPage_ShowsTheLastScan: the page only ever shows the stored
@@ -109,5 +111,93 @@ func TestOrphansScanNow(t *testing.T) {
 	rec = serveForm(srv.handleOrphansScanNow, "/settings/orphans/scan", nil)
 	if !strings.Contains(rec.Body.String(), "fetching radarr movies") {
 		t.Fatalf("expected the scan failure shown:\n%s", rec.Body.String())
+	}
+}
+
+// TestOrphans_DownloadFolders: with qBittorrent connected, the scan
+// compares the download folders against it and the page lists what it
+// doesn't know about - deletable only where the tier is marked as not
+// read-only, and gone from disk once deleted.
+func TestOrphans_DownloadFolders(t *testing.T) {
+	srv := newDownloadsTestServer(t)
+	srv.qb.add(t, finishedDownload("a1", "Seeding", "manual", srv.ssd))
+	if err := os.MkdirAll(filepath.Join(srv.ssd, "Leftover"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srv.seed, "stray.mkv"), make([]byte, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := serveForm(srv.handleOrphansScanNow, "/settings/orphans/scan", nil)
+	body := rec.Body.String()
+	if !strings.Contains(body, "Download folders") || !strings.Contains(body, filepath.Join(srv.ssd, "Leftover")) || !strings.Contains(body, filepath.Join(srv.seed, "stray.mkv")) {
+		t.Fatalf("panel should list both leftovers:\n%s", body)
+	}
+	if strings.Contains(body, filepath.Join(srv.ssd, "Seeding")) {
+		t.Error("a download qBittorrent has is not an orphan")
+	}
+	if strings.Contains(body, `action="/settings/orphans/delete"`) || !strings.Contains(body, "Read-only, so no Delete button") {
+		t.Error("read-only download folders offer no Delete button")
+	}
+
+	// A crafted delete against a read-only tier is still refused.
+	rec = serveForm(srv.handleOrphanDelete, "/settings/orphans/delete", url.Values{"path": {filepath.Join(srv.ssd, "Leftover")}})
+	if !strings.Contains(rec.Body.String(), "is read-only") {
+		t.Fatalf("delete on a read-only tier:\n%s", rec.Body.String())
+	}
+
+	srv.cfg.Tiers[0].AllowDeletes = true
+	page := httptest.NewRecorder()
+	srv.handleOrphansPage(page, httptest.NewRequest(http.MethodGet, "/settings/orphans", nil))
+	if strings.Count(page.Body.String(), `action="/settings/orphans/delete"`) != 1 {
+		t.Errorf("only the not-read-only tier's orphan should be deletable:\n%s", page.Body.String())
+	}
+
+	rec = serveForm(srv.handleOrphanDelete, "/settings/orphans/delete", url.Values{"path": {filepath.Join(srv.ssd, "Leftover")}})
+	if !strings.Contains(rec.Body.String(), "Deleted "+filepath.Join(srv.ssd, "Leftover")) {
+		t.Fatalf("delete:\n%s", rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(srv.ssd, "Leftover")); !os.IsNotExist(err) {
+		t.Error("the orphan should be gone from disk")
+	}
+
+	// Never alongside a scan.
+	srv.scanOrphansMu.Lock()
+	rec = serveForm(srv.handleOrphanDelete, "/settings/orphans/delete", url.Values{"path": {filepath.Join(srv.seed, "stray.mkv")}})
+	srv.scanOrphansMu.Unlock()
+	if !strings.Contains(rec.Body.String(), "a scan is in progress") {
+		t.Errorf("delete during a scan:\n%s", rec.Body.String())
+	}
+}
+
+// TestOrphans_NoDownloadPanelWithoutQbittorrent: a library-only install
+// sees the page exactly as before.
+func TestOrphans_NoDownloadPanelWithoutQbittorrent(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.handleOrphansPage(rec, httptest.NewRequest(http.MethodGet, "/settings/orphans", nil))
+	if strings.Contains(rec.Body.String(), "Download folders") || !strings.Contains(rec.Body.String(), "Candidates") {
+		t.Errorf("library-only orphans page changed:\n%s", rec.Body.String())
+	}
+}
+
+// TestScheduledOrphanScan_AlertsOnDownloadLeftovers: the scheduled scan's
+// notification calls out download-folder leftovers, one by one when
+// verbose.
+func TestScheduledOrphanScan_AlertsOnDownloadLeftovers(t *testing.T) {
+	srv := newDownloadsTestServer(t)
+	apprise := newFakeApprise(t)
+	if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+		t.Fatal(err)
+	}
+	srv.cfg.Notifications.Verbose = true
+	if err := os.MkdirAll(filepath.Join(srv.ssd, "Leftover"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.runScheduledScanOrphans(time.Now())
+	got := apprise.notifications()
+	if len(got) != 2 || !strings.Contains(got[0]["body"], "1 item(s) in download folders") || got[0]["type"] != "warning" || !strings.Contains(got[1]["title"], "Leftover") {
+		t.Fatalf("notifications = %+v, want a warning summary and the leftover itself", got)
 	}
 }

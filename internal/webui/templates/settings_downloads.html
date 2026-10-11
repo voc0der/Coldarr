@@ -1,0 +1,79 @@
+{{define "content"}}
+{{template "settings_subnav" .}}
+<h1>Downloads</h1>
+<p class="muted">How Coldarr treats qBittorrent's downloads on your downloads tiers. A finished download sits on the download drive for the settle time, then moves to seed storage and gets the seed label. Downloads still in progress are never moved, and neither is anything without a label set to move.</p>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">{{.Saved}}</div>{{end}}
+
+<div class="card">
+  <h2 style="margin-top:0">Moving</h2>
+  <form class="stacked" method="post" action="/settings/downloads/moving">
+    <div>
+      <label for="settle_days">Settle time (days)</label>
+      <input type="number" id="settle_days" name="settle_days" min="1" step="1" value="{{.SettleDays}}">
+      <p class="hint">How long a finished download stays on the download drive before it moves - time for Radarr/Sonarr/Lidarr to import it.</p>
+    </div>
+    <div>
+      <label for="seed_label">Seed label</label>
+      <input type="text" id="seed_label" name="seed_label" list="qbit-categories" value="{{.SeedLabel}}">
+      <datalist id="qbit-categories">{{range .Categories}}<option value="{{.}}">{{end}}</datalist>
+      <p class="hint">The category a download gets once it has landed on seed storage - only then, so a move that fails never leaves a download labeled as moved. Coldarr creates it in qBittorrent if it's missing.</p>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="allow_disabling_auto_tmm" name="allow_disabling_auto_tmm" {{if .AllowDisablingAutoTMM}}checked{{end}}>
+      <label for="allow_disabling_auto_tmm" style="font-weight:400">Turn off Automatic Torrent Management for downloads Coldarr moves</label>
+    </div>
+    <p class="hint" style="margin-top:-0.4rem">qBittorrent keeps a download with Automatic Torrent Management on in its category's folder, so it would undo a move. Left unticked, such downloads stay put and show on the Downloads page.</p>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Labels</h2>
+  <p class="hint">What Coldarr does with downloads carrying each of qBittorrent's categories and tags. A download moves only if one of its labels says to, and never if one says to leave it alone. A label with no rule - including one you add in qBittorrent later - is left alone until you give it one. Pick the app that imports a label's downloads, and Coldarr waits until that app has imported each download before moving it.</p>
+  {{if .LabelsError}}<div class="alert alert-warn">{{.LabelsError}}</div>{{end}}
+  {{if .Labels}}
+  <form method="post" action="/settings/downloads/labels">
+    <div class="overflow-table">
+    <table>
+    <thead><tr><th>Label</th><th>In qBittorrent</th><th>Coldarr</th><th>Imported by</th></tr></thead>
+    <tbody>
+    {{range .Labels}}
+    <tr>
+      <td class="mono">{{.Label}}<input type="hidden" name="label_{{.Index}}" value="{{.Label}}"></td>
+      <td>{{if .Where}}{{.Where}}{{else}}<span class="badge badge-warn">{{template "icon-alert-triangle"}} not in qBittorrent now</span>{{end}}{{if .IsSeedLabel}} <span class="badge badge-muted">seed label</span>{{end}}</td>
+      <td>
+        <select name="action_{{.Index}}" aria-label="What Coldarr does with {{.Label}}">
+          <option value="" {{if eq .Action ""}}selected{{end}}>No rule - leave alone</option>
+          <option value="move" {{if eq .Action "move"}}selected{{end}}>Move to seed storage</option>
+          <option value="ignore" {{if eq .Action "ignore"}}selected{{end}}>Never touch</option>
+        </select>
+        {{if not .Where}}{{if .Action}}<label class="radio-row" style="margin-top:0.3rem"><input type="checkbox" name="remove_{{.Index}}"> Remove this rule</label>{{end}}{{end}}
+      </td>
+      <td>
+        <select name="imported_by_{{.Index}}" aria-label="App that imports {{.Label}}">
+          <option value="" {{if eq .ImportedBy ""}}selected{{end}}>Nothing - move without asking</option>
+          {{$current := .ImportedBy}}{{range $.ImportApps}}<option value="{{.Value}}" {{if eq $current .Value}}selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+    </table>
+    </div>
+    <div class="btn-row" style="margin-top:0.75rem">
+      <button type="submit" class="btn btn-primary">Save label rules</button>
+    </div>
+  </form>
+  {{else}}
+  <div class="empty-state">
+    {{template "icon-download"}}
+    <div class="title">No labels yet</div>
+    <p class="muted">Once qBittorrent has categories or tags, they're listed here to set up.</p>
+  </div>
+  {{end}}
+</div>
+{{end}}
