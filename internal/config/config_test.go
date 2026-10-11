@@ -573,6 +573,59 @@ func TestValidateTorrents(t *testing.T) {
 	}
 }
 
+func TestValidateSeeding(t *testing.T) {
+	seven, negative := 7, -1
+	valid := TorrentsConfig{SeedLabel: "seed", Seeding: SeedingConfig{MinSeedDays: 14, GraceDays: &seven, Overrides: []TrackerOverride{{Host: "tracker.example.org", MinSeedDays: 21}, {Host: "example.net"}}}}
+	if err := ValidateTorrents(valid); err != nil {
+		t.Fatalf("ValidateTorrents(valid) = %v", err)
+	}
+	if (SeedingConfig{}).Grace() != 7 || valid.Seeding.Grace() != 7 {
+		t.Error("an unset grace defaults to 7")
+	}
+	zero := 0
+	if (SeedingConfig{GraceDays: &zero}).Grace() != 0 {
+		t.Error("an explicit zero grace is kept")
+	}
+
+	tests := []struct {
+		name    string
+		edit    func(*SeedingConfig)
+		wantErr string
+	}{
+		{name: "negative default", edit: func(c *SeedingConfig) { c.MinSeedDays = -1 }, wantErr: "min_seed_days must not be negative"},
+		{name: "negative grace", edit: func(c *SeedingConfig) { c.GraceDays = &negative }, wantErr: "grace_days must not be negative"},
+		{name: "a URL, not a host", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "https://tracker.example.org/announce" }, wantErr: "isn't a tracker host"},
+		{name: "upper case", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "Tracker.example.org" }, wantErr: "isn't a tracker host"},
+		{name: "empty host", edit: func(c *SeedingConfig) { c.Overrides[0].Host = "" }, wantErr: "isn't a tracker host"},
+		{name: "twice", edit: func(c *SeedingConfig) { c.Overrides[1].Host = "tracker.example.org" }, wantErr: "listed twice"},
+		{name: "negative override", edit: func(c *SeedingConfig) { c.Overrides[0].MinSeedDays = -2 }, wantErr: "min_seed_days must not be negative, got -2"},
+	}
+	for _, tt := range tests {
+		cfg := valid
+		cfg.Seeding.Overrides = append([]TrackerOverride(nil), valid.Seeding.Overrides...)
+		tt.edit(&cfg.Seeding)
+		if err := ValidateTorrents(cfg); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: err = %v, want %q", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestNormalizeTrackerHost(t *testing.T) {
+	for raw, want := range map[string]string{
+		"tracker.example.org":                          "tracker.example.org",
+		"  Tracker.Example.ORG ":                       "tracker.example.org",
+		"https://tracker.example.org/announce/PASSKEY": "tracker.example.org",
+		"udp://tracker.example.org:1337/announce":      "tracker.example.org",
+		"http://user:pass@tracker.example.org/a?b=c":   "tracker.example.org",
+		"tracker.example.org.":                         "tracker.example.org",
+		"":                                             "",
+	} {
+		if got := NormalizeTrackerHost(raw); got != want {
+			t.Errorf("NormalizeTrackerHost(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 // TestLoad_RejectsInvalidTorrents: a hand-edited label rule that makes no
 // sense stops the load, naming the setting, rather than being guessed at.
 func TestLoad_RejectsInvalidTorrents(t *testing.T) {

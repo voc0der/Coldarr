@@ -84,8 +84,11 @@ type Input struct {
 	Imports map[ImportKey]ImportResult
 	// Connected says which *arr apps Coldarr can ask about imports.
 	Connected map[string]bool
-	FS        FS
-	Now       time.Time
+	// Trackers says which trackers each download announces to; nil means
+	// none are known yet, so no seeding requirement can be.
+	Trackers Trackers
+	FS       FS
+	Now      time.Time
 }
 
 // Download is one qBittorrent torrent with what Coldarr makes of it. Its
@@ -121,6 +124,10 @@ type Download struct {
 	// Coldarr will switch off before moving or relabeling it - only ever
 	// set when the settings allow that.
 	DisableAutoTMM bool
+	// Seeding is how the download stands against its trackers' seeding
+	// requirement - worked out for every finished download Coldarr
+	// manages, wherever it is.
+	Seeding Seeding
 	// pendingImports are the import checks the download is waiting on.
 	pendingImports []ImportKey
 }
@@ -197,6 +204,7 @@ func classifyOne(in Input, tiers []model.Tier, t qbit.Torrent) *Download {
 		d.State, d.Reason = Active, reason
 		return d
 	}
+	d.Seeding = seedingStatus(t, in.Trackers, in.Config.Seeding, in.Now)
 
 	if tier.Role == model.RoleCold {
 		d.State = Parked

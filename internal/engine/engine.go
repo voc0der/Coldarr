@@ -29,6 +29,7 @@ import (
 	"github.com/vocoder/coldarr/internal/qbit"
 	"github.com/vocoder/coldarr/internal/scoring"
 	"github.com/vocoder/coldarr/internal/secrets"
+	"github.com/vocoder/coldarr/internal/trackercache"
 )
 
 type Engine struct {
@@ -56,7 +57,11 @@ type Engine struct {
 	Imports *importcache.Store
 	// DownloadLog records what Coldarr has had qBittorrent do - moves,
 	// relabels, removals.
-	DownloadLog  *history.DownloadLog
+	DownloadLog *history.DownloadLog
+	// Trackers remembers each download's tracker hosts (see
+	// internal/trackercache) - read on every downloads inventory, but only
+	// ever refreshed by ScanTrackers.
+	Trackers     *trackercache.Store
 	jellyfinConn secrets.Connection
 	jellyfinOK   bool
 }
@@ -110,6 +115,12 @@ func New(cfg *config.Config, connStore *secrets.Store) (*Engine, error) {
 		return nil, err
 	}
 	e.DownloadLog = downloadLog
+
+	trackers, err := trackercache.Load(filepath.Join(filepath.Dir(cfg.History.Path), "coldarr-trackers.json"))
+	if err != nil {
+		return nil, err
+	}
+	e.Trackers = trackers
 
 	return e, nil
 }

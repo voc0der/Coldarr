@@ -64,6 +64,7 @@ type schedulerData struct {
 	// qBittorrent is connected.
 	ShowDownloads  bool
 	RunTorrentPlan scheduleFormView
+	ScanTrackers   scheduleFormView
 }
 
 type omitDayView struct {
@@ -108,7 +109,7 @@ func (s *Server) scheduleView(task, label, hint string, sched scheduler.Schedule
 		view.ShowRunNow, view.RunNowLabel = true, "Refresh now"
 	case "scan_cutoffs":
 		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
-	case "scan_orphans":
+	case "scan_orphans", taskScanTrackers:
 		view.ShowRunNow, view.RunNowLabel = true, "Scan now"
 	}
 	if !lastRun.IsZero() {
@@ -141,6 +142,9 @@ func (s *Server) schedulerData() schedulerData {
 		RunTorrentPlan: s.scheduleView(taskRunTorrentPlan, "Move Settled Downloads",
 			`Moves downloads that have finished and sat on the download drive for the settle time to seed storage, one at a time, and gives each the seed label once it has landed - identical to clicking "Move these downloads" on the Downloads page, just unattended. Runs after Run the Plan by default; the two never run at once.`,
 			cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).LastRan),
+		ScanTrackers: s.scheduleView(taskScanTrackers, "Scan Torrent Trackers",
+			`Looks up which trackers each download announces to, so its seeding requirement (Settings > Downloads) can be worked out. qBittorrent answers one download per request, so this only ever runs here, on a schedule (or via "Scan now" below), and only looks up downloads it hasn't seen before. Until a download's trackers have been scanned, it never counts as done seeding.`,
+			cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).LastRan),
 		ScanOrphans: s.scheduleView("scan_orphans", "Scan for Orphaned Storage",
 			`Walks your configured tier paths on disk looking for folders that no longer correspond to anything Radarr, Sonarr, Lidarr, Jellyfin, or qBittorrent still tracks, and reports them on the Orphaned Storage page (linked from Storage tiers) - and, with qBittorrent connected, every file and folder in the download folders it doesn't know about. This is a filesystem walk, which can be slow on a large or slow cold tier - that's why it only ever runs here, on a schedule (or via "Scan now" below), never live on a page view.`,
 			cfg.Scheduler.ScanOrphans, s.getLastRanScanOrphans()),
@@ -219,6 +223,10 @@ func (s *Server) handleSchedulerSave(w http.ResponseWriter, r *http.Request) {
 		case taskRunTorrentPlan:
 			submitted.Label, submitted.Hint, submitted.LastRan = data.RunTorrentPlan.Label, data.RunTorrentPlan.Hint, data.RunTorrentPlan.LastRan
 			data.RunTorrentPlan = submitted
+		case taskScanTrackers:
+			submitted.Label, submitted.Hint, submitted.LastRan = data.ScanTrackers.Label, data.ScanTrackers.Hint, data.ScanTrackers.LastRan
+			submitted.ShowRunNow, submitted.RunNowLabel = true, "Scan now"
+			data.ScanTrackers = submitted
 		}
 		s.render(w, "settings_scheduler", data)
 		return
@@ -646,5 +654,64 @@ func (s *Server) handleScanOrphansNow(w http.ResponseWriter, r *http.Request) {
 
 	data := s.schedulerData()
 	data.Saved = "Orphaned storage scan finished."
+	s.render(w, "settings_scheduler", data)
+}
+
+// runScheduledScanTrackers refreshes internal/trackercache. Only called
+// from tick() when scheduler.Due says it's time.
+func (s *Server) runScheduledScanTrackers(now time.Time) {
+	if !s.scanTrackersMu.TryLock() {
+		log.Printf("scheduler: scan-torrent-trackers is due, but a previous scan is still running - skipping this tick")
+		return
+	}
+	defer s.scanTrackersMu.Unlock()
+
+	s.recordTaskRan(taskScanTrackers, now)
+	n := s.notifier()
+	eng, err := s.newEngine()
+	if err == nil {
+		var looked int
+		looked, err = eng.ScanTrackers(now)
+		if err == nil {
+			n.Summary("Tracker scan finished",
+				fmt.Sprintf("%s download(s) looked up, %s tracker(s) known", n.Bold(strconv.Itoa(looked)), n.Bold(strconv.Itoa(len(eng.Trackers.Get().Seen)))),
+				notify.LevelSuccess)
+			return
+		}
+	}
+	log.Printf("scheduler: scan-torrent-trackers: %v", err)
+	n.Summary("Tracker scan failed", err.Error(), notify.LevelFailure)
+}
+
+// scanTrackersNow runs the tracker scan by hand - from the Scheduler page
+// or the Seeding rules card - under the same lock as a scheduled one, and
+// counts as the task's run.
+func (s *Server) scanTrackersNow() (int, error) {
+	if !s.scanTrackersMu.TryLock() {
+		return 0, fmt.Errorf("a tracker scan is already in progress - try again shortly")
+	}
+	defer s.scanTrackersMu.Unlock()
+
+	eng, err := s.newEngine()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	looked, err := eng.ScanTrackers(now)
+	if err != nil {
+		return looked, err
+	}
+	s.recordTaskRan(taskScanTrackers, now)
+	return looked, nil
+}
+
+func (s *Server) handleScanTrackersNow(w http.ResponseWriter, r *http.Request) {
+	looked, err := s.scanTrackersNow()
+	data := s.schedulerData()
+	if err != nil {
+		data.ScanTrackers.Error = err.Error()
+	} else {
+		data.Saved = fmt.Sprintf("Tracker scan finished - %d download(s) looked up.", looked)
+	}
 	s.render(w, "settings_scheduler", data)
 }

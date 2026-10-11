@@ -124,8 +124,9 @@ func (e *Engine) BuildDownloadsInventory(now time.Time, liveImportChecks bool) (
 			"sonarr": e.Sonarr != nil,
 			"lidarr": e.Lidarr != nil,
 		},
-		FS:  fs,
-		Now: now,
+		Trackers: e.Trackers.Get(),
+		FS:       fs,
+		Now:      now,
 	}
 	downloads := torrents.Classify(in)
 	if needed := torrents.ImportChecksNeeded(downloads); len(needed) > 0 {
@@ -635,4 +636,18 @@ func (downloadsFS) HasHardLinks(path string) (bool, error) {
 		return nil
 	})
 	return linked, err
+}
+
+// ScanTrackers looks up the trackers of every download not yet in the
+// tracker cache (see trackercache.Store.Refresh) - the only thing that
+// ever refreshes it. It returns how many downloads were looked up.
+func (e *Engine) ScanTrackers(now time.Time) (int, error) {
+	if e.Qbit == nil {
+		return 0, ErrQbitNotConnected
+	}
+	list, err := e.Qbit.Torrents()
+	if err != nil {
+		return 0, fmt.Errorf("listing qBittorrent's downloads: %w", err)
+	}
+	return e.Trackers.Refresh(e.Qbit, list, now)
 }

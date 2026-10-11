@@ -19,6 +19,7 @@ import (
 	"github.com/vocoder/coldarr/internal/model"
 	"github.com/vocoder/coldarr/internal/qbit"
 	"github.com/vocoder/coldarr/internal/torrents"
+	"github.com/vocoder/coldarr/internal/trackercache"
 )
 
 // qbitTorrent is the torrents/info record shape, for fakes.
@@ -555,5 +556,46 @@ func TestBuildDownloadsPlan(t *testing.T) {
 	}
 	if x := f.engine.DownloadsExecutor(); x.SeedLabel != "seed" || x.Qbit != f.engine.Qbit {
 		t.Errorf("DownloadsExecutor = %+v", x)
+	}
+}
+
+func TestScanTrackers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/torrents/info":
+			_, _ = w.Write([]byte(`[{"hash": "aaa", "name": "A"}, {"hash": "bbb", "name": "B", "tracker": "https://live.example.com/announce/KEY"}]`))
+		case "/api/v2/torrents/trackers":
+			if r.URL.Query().Get("hash") == "aaa" {
+				_, _ = w.Write([]byte(`[{"url": "https://tracker.example.org/announce/KEY"}]`))
+				return
+			}
+			http.Error(w, "Not Found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	store, err := trackercache.Load(filepath.Join(t.TempDir(), "trackers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Qbit: qbit.NewClient(srv.URL, qbit.Auth{}), Trackers: store}
+
+	looked, err := e.ScanTrackers(time.Now())
+	if err != nil || looked != 1 {
+		t.Fatalf("ScanTrackers = %d, %v; want aaa looked up and the vanished bbb skipped", looked, err)
+	}
+	if hosts, ok := store.Get().Hosts("aaa"); !ok || len(hosts) != 1 || hosts[0] != "tracker.example.org" {
+		t.Errorf("aaa = %v, %v", hosts, ok)
+	}
+	if seen := store.Get().SeenHosts(); strings.Join(seen, ",") != "live.example.com,tracker.example.org" {
+		t.Errorf("seen = %v", seen)
+	}
+
+	e.Qbit = qbit.NewClient("http://127.0.0.1:1", qbit.Auth{})
+	if _, err := e.ScanTrackers(time.Now()); err == nil || !strings.Contains(err.Error(), "listing qBittorrent's downloads") {
+		t.Errorf("unreachable = %v", err)
+	}
+	e.Qbit = nil
+	if _, err := e.ScanTrackers(time.Now()); !errors.Is(err, ErrQbitNotConnected) {
+		t.Errorf("no qBittorrent = %v", err)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vocoder/coldarr/internal/config"
 	"github.com/vocoder/coldarr/internal/model"
@@ -213,5 +215,109 @@ func TestNav_DownloadsOnlyInstallHidesLibraryPages(t *testing.T) {
 	srv.cfg.Tiers = []model.Tier{{Name: "hot", Role: model.RoleHot, Paths: []string{"/hot"}, Media: []model.MediaType{model.Movie}}}
 	if nav := srv.navState(); !nav.Library || !nav.Downloads {
 		t.Fatalf("nav with a library tier = %+v, want both", nav)
+	}
+}
+
+// TestDownloadsSettings_SeedingRules: defaults and overrides save, a pasted
+// announce URL is cut down to its host - its passkey never reaches the
+// config - and an override for a tracker no download uses stays until
+// removed.
+func TestDownloadsSettings_SeedingRules(t *testing.T) {
+	srv, qb := newDownloadsSettingsServer(t)
+	qb.add(t, fakeTorrent{Hash: "a1", Name: "A", SavePath: "/downloads", Tracker: "https://live.example.com/announce/KEY", Progress: 0.5})
+	qb.trackers["a1"] = []string{"tracker.example.org"}
+
+	data := srv.downloadsSettingsData()
+	if data.DefaultSeedDays != 0 || data.GraceDays != 7 || strings.Join(data.TrackerHosts, ",") != "live.example.com" || data.TrackersScanned != "" {
+		t.Fatalf("data = %+v, want the defaults and the live tracker offered before any scan", data)
+	}
+
+	body := serveForm(srv.handleDownloadsSeedingSave, "/settings/downloads/seeding", url.Values{"min_seed_days": {"14"}, "grace_days": {"0"}}).Body.String()
+	if !strings.Contains(body, "Seeding defaults saved.") {
+		t.Fatalf("save defaults:\n%s", body)
+	}
+	if got := srv.currentConfig().Torrents.Seeding; got.MinSeedDays != 14 || got.Grace() != 0 {
+		t.Errorf("seeding = %+v, want 14 days and an explicit zero grace", got)
+	}
+	if body := serveForm(srv.handleDownloadsSeedingSave, "/settings/downloads/seeding", url.Values{"min_seed_days": {"-1"}, "grace_days": {"3"}}).Body.String(); !strings.Contains(body, "0 or more") {
+		t.Errorf("a negative default should be refused:\n%s", body)
+	}
+
+	save := func(host, days string) string {
+		t.Helper()
+		return serveForm(srv.handleDownloadsTrackerSave, "/settings/downloads/trackers", url.Values{"host": {host}, "min_seed_days": {days}}).Body.String()
+	}
+	if body := save("https://Tracker.Example.org:443/announce/SECRETKEY", "21"); !strings.Contains(body, "Override for tracker.example.org saved.") {
+		t.Fatalf("save override:\n%s", body)
+	}
+	save("tracker.example.org", "30") // the same host again updates it
+	save("gone.example.net", "0")
+	if body := save("", "5"); !strings.Contains(body, "needs a tracker host") {
+		t.Errorf("an empty host should be refused:\n%s", body)
+	}
+	overrides := srv.currentConfig().Torrents.Seeding.Overrides
+	if len(overrides) != 2 || overrides[0] != (config.TrackerOverride{Host: "tracker.example.org", MinSeedDays: 30}) {
+		t.Fatalf("overrides = %+v", overrides)
+	}
+	raw, err := os.ReadFile(srv.cfgPath)
+	if err != nil || strings.Contains(string(raw), "SECRETKEY") || strings.Contains(string(raw), "announce") {
+		t.Fatalf("the config file holds more than the host:\n%s", raw)
+	}
+
+	// Scan, and the overrides show which trackers are in use.
+	if body := serveForm(srv.handleDownloadsTrackerScan, "/settings/downloads/trackers/scan", nil).Body.String(); !strings.Contains(body, "1 download(s) looked up") {
+		t.Fatalf("scan:\n%s", body)
+	}
+	data = srv.downloadsSettingsData()
+	byHost := map[string]trackerOverrideView{}
+	for _, o := range data.Overrides {
+		byHost[o.Host] = o
+	}
+	if byHost["tracker.example.org"].Downloads != 1 || byHost["gone.example.net"].Downloads != 0 || data.TrackersScanned == "" {
+		t.Errorf("overrides = %+v, scanned %q", data.Overrides, data.TrackersScanned)
+	}
+	page := httptest.NewRecorder()
+	srv.handleDownloadsSettingsPage(page, httptest.NewRequest(http.MethodGet, "/settings/downloads", nil))
+	if !strings.Contains(page.Body.String(), "none right now") || !strings.Contains(page.Body.String(), `<option value="tracker.example.org">`) {
+		t.Errorf("page should flag the unused override and offer scanned trackers:\n%s", page.Body.String())
+	}
+
+	body = serveForm(srv.handleDownloadsTrackerDelete, "/settings/downloads/trackers/delete", url.Values{"host": {"gone.example.net"}}).Body.String()
+	if !strings.Contains(body, "removed") || len(srv.currentConfig().Torrents.Seeding.Overrides) != 1 {
+		t.Errorf("delete:\n%s", body)
+	}
+
+	// A scan already running is refused, not doubled up.
+	srv.scanTrackersMu.Lock()
+	body = serveForm(srv.handleDownloadsTrackerScan, "/settings/downloads/trackers/scan", nil).Body.String()
+	srv.scanTrackersMu.Unlock()
+	if !strings.Contains(body, "already in progress") {
+		t.Errorf("overlapping scan:\n%s", body)
+	}
+}
+
+func TestScheduledTrackerScan(t *testing.T) {
+	srv, qb := newDownloadsSettingsServer(t)
+	apprise := newFakeApprise(t)
+	if err := srv.connStore.Set("apprise", secrets.Connection{URL: apprise.URL}); err != nil {
+		t.Fatal(err)
+	}
+	qb.add(t, fakeTorrent{Hash: "a1", Name: "A", SavePath: "/downloads", Progress: 0.5})
+	qb.trackers["a1"] = []string{"tracker.example.org"}
+
+	srv.runScheduledScanTrackers(time.Now())
+	if got := apprise.notifications(); len(got) != 1 || !strings.Contains(got[0]["body"], "1 download(s) looked up, 1 tracker(s) known") {
+		t.Fatalf("notifications = %+v", got)
+	}
+
+	qb.Close()
+	srv.runScheduledScanTrackers(time.Now())
+	if got := apprise.notifications(); len(got) != 2 || got[1]["type"] != "failure" {
+		t.Errorf("a failed scan should notify: %+v", got)
+	}
+
+	rec := serveForm(srv.handleScanTrackersNow, "/settings/scheduler/scan_trackers/run", nil)
+	if !strings.Contains(rec.Body.String(), "listing qBittorrent") {
+		t.Errorf("Scan now with qBittorrent down:\n%s", rec.Body.String())
 	}
 }

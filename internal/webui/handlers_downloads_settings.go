@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/config"
+	"github.com/vocoder/coldarr/internal/engine"
+	"github.com/vocoder/coldarr/internal/trackercache"
 )
 
 // labelRowView is one row of the Labels table: a category or tag, and the
@@ -31,10 +33,30 @@ type importAppView struct {
 	Label string
 }
 
+// trackerOverrideView is one row of the tracker overrides table.
+type trackerOverrideView struct {
+	Host string
+	Days int
+	// Downloads is how many scanned downloads use this tracker right now.
+	// A saved override with none is kept - downloads come and go - and
+	// flagged, so it can be removed if it's really no longer wanted.
+	Downloads int
+}
+
 type downloadsSettingsData struct {
 	Title string
 	Error string
 	Saved string
+
+	DefaultSeedDays int
+	GraceDays       int
+	Overrides       []trackerOverrideView
+	// TrackerHosts feeds the override picker: every tracker host seen by
+	// a scan, plus each download's current tracker.
+	TrackerHosts    []string
+	TrackersScanned string
+	// TrackerError says why the live trackers couldn't be read.
+	TrackerError string
 
 	SettleDays            int
 	SeedLabel             string
@@ -52,6 +74,8 @@ func (s *Server) downloadsSettingsData() downloadsSettingsData {
 	cfg := s.currentConfig().Torrents
 	data := downloadsSettingsData{
 		Title:                 "Downloads",
+		DefaultSeedDays:       cfg.Seeding.MinSeedDays,
+		GraceDays:             cfg.Seeding.Grace(),
 		SettleDays:            cfg.SettleDays,
 		SeedLabel:             cfg.SeedLabel,
 		AllowDisablingAutoTMM: cfg.AllowDisablingAutoTMM,
@@ -64,6 +88,9 @@ func (s *Server) downloadsSettingsData() downloadsSettingsData {
 
 	where := map[string][]string{}
 	eng, err := s.newEngine()
+	if err != nil {
+		eng = nil
+	}
 	switch {
 	case err != nil:
 		data.LabelsError = err.Error()
@@ -85,6 +112,8 @@ func (s *Server) downloadsSettingsData() downloadsSettingsData {
 		}
 		sort.Strings(data.Categories)
 	}
+
+	s.addTrackerData(&data, eng, cfg.Seeding)
 
 	// Every label qBittorrent has, then every saved rule it doesn't - each
 	// group alphabetical, so the table reads the same from one visit to
@@ -108,6 +137,116 @@ func (s *Server) downloadsSettingsData() downloadsSettingsData {
 		data.Labels = append(data.Labels, row)
 	}
 	return data
+}
+
+// addTrackerData fills in the Seeding rules card: the overrides with how
+// many downloads use each, and the picker's hosts.
+func (s *Server) addTrackerData(data *downloadsSettingsData, eng *engine.Engine, seeding config.SeedingConfig) {
+	hosts := map[string]bool{}
+	var snap trackercache.Snapshot
+	if eng != nil {
+		snap = eng.Trackers.Get()
+		for _, h := range snap.SeenHosts() {
+			hosts[h] = true
+		}
+		if eng.Qbit != nil {
+			if list, err := eng.Qbit.Torrents(); err != nil {
+				data.TrackerError = fmt.Sprintf("Couldn't read qBittorrent's current trackers: %v", err)
+			} else {
+				for _, t := range list {
+					if t.TrackerHost != "" {
+						hosts[t.TrackerHost] = true
+					}
+				}
+			}
+		}
+	}
+	if !snap.RefreshedAt.IsZero() {
+		data.TrackersScanned = snap.RefreshedAt.Format("2006-01-02 15:04")
+	}
+
+	for _, o := range seeding.Overrides {
+		row := trackerOverrideView{Host: o.Host, Days: o.MinSeedDays}
+		for _, e := range snap.Downloads {
+			for _, h := range e.Hosts {
+				if h == o.Host || strings.HasSuffix(h, "."+o.Host) {
+					row.Downloads++
+					break
+				}
+			}
+		}
+		data.Overrides = append(data.Overrides, row)
+		hosts[o.Host] = true
+	}
+	sort.Slice(data.Overrides, func(i, j int) bool { return data.Overrides[i].Host < data.Overrides[j].Host })
+	for h := range hosts {
+		data.TrackerHosts = append(data.TrackerHosts, h)
+	}
+	sort.Strings(data.TrackerHosts)
+}
+
+// handleDownloadsSeedingSave saves the default requirement and the grace
+// margin.
+func (s *Server) handleDownloadsSeedingSave(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	days, err1 := strconv.Atoi(strings.TrimSpace(r.FormValue("min_seed_days")))
+	grace, err2 := strconv.Atoi(strings.TrimSpace(r.FormValue("grace_days")))
+	if err1 != nil || err2 != nil || days < 0 || grace < 0 {
+		s.renderDownloadsSettings(w, "", fmt.Errorf("seeding days and grace days must be whole numbers, 0 or more"))
+		return
+	}
+	err := s.updateTorrents(func(t *config.TorrentsConfig) {
+		t.Seeding.MinSeedDays = days
+		t.Seeding.GraceDays = &grace
+	})
+	s.renderDownloadsSettings(w, "Seeding defaults saved.", err)
+}
+
+// handleDownloadsTrackerSave adds a tracker override, or changes the one
+// already saved for that host. Whatever was typed or pasted - an announce
+// URL included - is reduced to its host first, so a passkey never reaches
+// coldarr.yaml.
+func (s *Server) handleDownloadsTrackerSave(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	host := config.NormalizeTrackerHost(r.FormValue("host"))
+	days, err := strconv.Atoi(strings.TrimSpace(r.FormValue("min_seed_days")))
+	if host == "" || err != nil || days < 0 {
+		s.renderDownloadsSettings(w, "", fmt.Errorf("an override needs a tracker host and a whole number of days, 0 or more"))
+		return
+	}
+	err = s.updateTorrents(func(t *config.TorrentsConfig) {
+		t.Seeding.Overrides = append([]config.TrackerOverride(nil), t.Seeding.Overrides...)
+		for i := range t.Seeding.Overrides {
+			if t.Seeding.Overrides[i].Host == host {
+				t.Seeding.Overrides[i].MinSeedDays = days
+				return
+			}
+		}
+		t.Seeding.Overrides = append(t.Seeding.Overrides, config.TrackerOverride{Host: host, MinSeedDays: days})
+	})
+	s.renderDownloadsSettings(w, fmt.Sprintf("Override for %s saved.", host), err)
+}
+
+func (s *Server) handleDownloadsTrackerDelete(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	host := r.FormValue("host")
+	err := s.updateTorrents(func(t *config.TorrentsConfig) {
+		kept := make([]config.TrackerOverride, 0, len(t.Seeding.Overrides))
+		for _, o := range t.Seeding.Overrides {
+			if o.Host != host {
+				kept = append(kept, o)
+			}
+		}
+		t.Seeding.Overrides = kept
+	})
+	s.renderDownloadsSettings(w, fmt.Sprintf("Override for %s removed.", host), err)
+}
+
+// handleDownloadsTrackerScan is the Seeding rules card's own "Scan now" -
+// the same scan as the scheduled task's (see scanTrackersNow).
+func (s *Server) handleDownloadsTrackerScan(w http.ResponseWriter, r *http.Request) {
+	looked, err := s.scanTrackersNow()
+	s.renderDownloadsSettings(w, fmt.Sprintf("Tracker scan finished - %d download(s) looked up.", looked), err)
 }
 
 func firstErr(errs ...error) error {

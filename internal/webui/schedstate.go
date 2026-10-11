@@ -22,9 +22,10 @@ const (
 	taskScanOrphans  = "scan_orphans"
 
 	taskRunTorrentPlan = "run_torrent_plan"
+	taskScanTrackers   = "scan_trackers"
 )
 
-var scheduledTasks = []string{taskRunPlan, taskRescanCold, taskRefreshLinks, taskScanCutoffs, taskScanOrphans, taskRunTorrentPlan}
+var scheduledTasks = []string{taskRunPlan, taskRescanCold, taskRefreshLinks, taskScanCutoffs, taskScanOrphans, taskRunTorrentPlan, taskScanTrackers}
 
 func scheduleFor(cfg *config.Config, task string) scheduler.Schedule {
 	switch task {
@@ -40,6 +41,8 @@ func scheduleFor(cfg *config.Config, task string) scheduler.Schedule {
 		return cfg.Scheduler.ScanOrphans
 	case taskRunTorrentPlan:
 		return cfg.Scheduler.RunTorrentPlan
+	case taskScanTrackers:
+		return cfg.Scheduler.ScanTrackers
 	}
 	return scheduler.Schedule{}
 }

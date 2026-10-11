@@ -104,6 +104,11 @@ type SchedulerConfig struct {
 	// it by default: both hold the same apply lock, and a scheduled run
 	// that finds the lock taken simply tries again on the next tick.
 	RunTorrentPlan scheduler.Schedule `yaml:"run_torrent_plan"`
+	// ScanTrackers refreshes internal/trackercache - which trackers each
+	// download announces to, one qBittorrent request per download not yet
+	// known - so seeding requirements can be worked out. Never done on a
+	// page view, for the same reason as ScanCutoffs.
+	ScanTrackers scheduler.Schedule `yaml:"scan_trackers"`
 }
 
 type AuthConfig struct {
@@ -134,6 +139,61 @@ type TorrentsConfig struct {
 	// alone, so a category added in qBittorrent next month is never acted
 	// on until someone decides it should be.
 	Labels []LabelRule `yaml:"labels,omitempty"`
+	// Seeding is how long downloads must seed before their trackers are
+	// satisfied - what eventually makes one removable.
+	Seeding SeedingConfig `yaml:"seeding"`
+}
+
+// SeedingConfig is each tracker's seeding requirement: a default for every
+// tracker, and overrides for particular ones.
+type SeedingConfig struct {
+	// MinSeedDays is the requirement for any tracker without an override.
+	// 0 - the default - means forever: such downloads are never done, so
+	// an incomplete setup errs toward keeping things.
+	MinSeedDays int `yaml:"min_seed_days"`
+	// GraceDays is added to every requirement as a margin: Coldarr can't
+	// see a tracker's own count of seeding time, only an approximation of
+	// it (see internal/torrents). Defaults to 7; nil means unset.
+	GraceDays *int `yaml:"grace_days,omitempty"`
+	// Overrides set the requirement for particular trackers.
+	Overrides []TrackerOverride `yaml:"overrides,omitempty"`
+}
+
+// Grace returns GraceDays, or the default 7 when unset.
+func (c SeedingConfig) Grace() int {
+	if c.GraceDays == nil {
+		return 7
+	}
+	return *c.GraceDays
+}
+
+// TrackerOverride sets one tracker's seeding requirement. Host matches the
+// tracker's own host and any subdomain of it, so "example.org" covers
+// "tracker.example.org" too; the most specific override wins.
+type TrackerOverride struct {
+	Host string `yaml:"host"`
+	// MinSeedDays is this tracker's requirement; 0 means forever.
+	MinSeedDays int `yaml:"min_seed_days"`
+}
+
+// NormalizeTrackerHost reduces whatever someone typed or pasted - a bare
+// host, or a whole announce URL, passkey and all - to the lower-case host
+// an override is keyed by. Nothing past the host is ever kept.
+func NormalizeTrackerHost(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	}
+	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	if host, _, ok := strings.Cut(raw, ":"); ok && !strings.HasPrefix(raw, "[") {
+		raw = host
+	}
+	return strings.Trim(raw, ".")
 }
 
 // LabelAction is what a label rule tells Coldarr to do.
@@ -208,6 +268,29 @@ func ValidateTorrents(cfg TorrentsConfig) error {
 		}
 		if r.Label == cfg.SeedLabel && (r.Action != LabelMove || r.ImportedBy != "") {
 			return fmt.Errorf("torrents.labels: %q is the seed label Coldarr gives downloads on seed storage, so it can only be a plain move label", r.Label)
+		}
+	}
+	return validateSeeding(cfg.Seeding)
+}
+
+func validateSeeding(cfg SeedingConfig) error {
+	if cfg.MinSeedDays < 0 {
+		return fmt.Errorf("torrents.seeding.min_seed_days must not be negative, got %d", cfg.MinSeedDays)
+	}
+	if cfg.Grace() < 0 {
+		return fmt.Errorf("torrents.seeding.grace_days must not be negative, got %d", cfg.Grace())
+	}
+	seen := map[string]bool{}
+	for _, o := range cfg.Overrides {
+		if o.Host == "" || NormalizeTrackerHost(o.Host) != o.Host {
+			return fmt.Errorf("torrents.seeding.overrides: %q isn't a tracker host - use just the host, like tracker.example.org", o.Host)
+		}
+		if seen[o.Host] {
+			return fmt.Errorf("torrents.seeding.overrides: %q is listed twice", o.Host)
+		}
+		seen[o.Host] = true
+		if o.MinSeedDays < 0 {
+			return fmt.Errorf("torrents.seeding.overrides: %q: min_seed_days must not be negative, got %d", o.Host, o.MinSeedDays)
 		}
 	}
 	return nil
@@ -314,6 +397,9 @@ func ValidateScheduler(cfg SchedulerConfig) error {
 	}
 	if err := scheduler.Validate(cfg.RunTorrentPlan); err != nil {
 		return fmt.Errorf("scheduler.run_torrent_plan: %w", err)
+	}
+	if err := scheduler.Validate(cfg.ScanTrackers); err != nil {
+		return fmt.Errorf("scheduler.scan_trackers: %w", err)
 	}
 	return nil
 }
@@ -437,6 +523,7 @@ func applyDefaults(cfg *Config) {
 	applyScheduleDefaults(&cfg.Scheduler.ScanCutoffs, "00:30")
 	applyScheduleDefaults(&cfg.Scheduler.ScanOrphans, "00:45")
 	applyScheduleDefaults(&cfg.Scheduler.RunTorrentPlan, "04:30")
+	applyScheduleDefaults(&cfg.Scheduler.ScanTrackers, "04:00")
 	for i := range cfg.Tiers {
 		t := &cfg.Tiers[i]
 		if t.Role == model.RoleCold && t.TargetUsedPercent == 0 {

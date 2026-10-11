@@ -77,6 +77,10 @@ type Server struct {
 	// checked by runScheduledPlan: unlike quality cutoffs, an unattended
 	// apply has no need for fresh orphan data.
 	scanOrphansMu sync.Mutex
+	// scanTrackersMu is rescanMu's counterpart for "Scan Torrent
+	// Trackers" - also taken by the downloads tasks that refresh trackers
+	// before acting, so two scans never hit qBittorrent at once.
+	scanTrackersMu sync.Mutex
 
 	authMu       sync.Mutex
 	authSessions map[string]authSession
@@ -236,6 +240,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /settings/downloads", s.handleDownloadsSettingsPage)
 	mux.HandleFunc("POST /settings/downloads/moving", s.handleDownloadsMovingSave)
 	mux.HandleFunc("POST /settings/downloads/labels", s.handleDownloadsLabelsSave)
+	mux.HandleFunc("POST /settings/downloads/seeding", s.handleDownloadsSeedingSave)
+	mux.HandleFunc("POST /settings/downloads/trackers", s.handleDownloadsTrackerSave)
+	mux.HandleFunc("POST /settings/downloads/trackers/delete", s.handleDownloadsTrackerDelete)
+	mux.HandleFunc("POST /settings/downloads/trackers/scan", s.handleDownloadsTrackerScan)
 
 	mux.HandleFunc("GET /settings/notifications", s.handleNotificationsPage)
 	mux.HandleFunc("POST /settings/notifications", s.handleNotificationsSave)
@@ -246,6 +254,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /settings/scheduler/refresh_links/run", s.handleRefreshLinksNow)
 	mux.HandleFunc("POST /settings/scheduler/scan_cutoffs/run", s.handleScanCutoffsNow)
 	mux.HandleFunc("POST /settings/scheduler/scan_orphans/run", s.handleScanOrphansNow)
+	mux.HandleFunc("POST /settings/scheduler/scan_trackers/run", s.handleScanTrackersNow)
 	mux.HandleFunc("POST /settings/scheduler/{task}", s.handleSchedulerSave)
 
 	mux.HandleFunc("GET /settings/orphans", s.handleOrphansPage)
@@ -472,6 +481,10 @@ func (s *Server) tick(now time.Time) {
 	if scheduler.Due(cfg.Scheduler.ScanOrphans, s.getLastRunScanOrphans(), now) {
 		s.runScheduledScanOrphans(now)
 	}
+	// Trackers first: the downloads tasks after it read what it found.
+	if scheduler.Due(cfg.Scheduler.ScanTrackers, s.taskState(taskScanTrackers).Anchor, now) {
+		s.runScheduledScanTrackers(now)
+	}
 	if scheduler.Due(cfg.Scheduler.RunTorrentPlan, s.taskState(taskRunTorrentPlan).Anchor, now) {
 		s.runScheduledDownloadsPlan(now)
 	}
@@ -538,6 +551,8 @@ func (s *Server) updateScheduleConfig(task string, sched scheduler.Schedule, sta
 		updated.Scheduler.ScanOrphans = sched
 	case taskRunTorrentPlan:
 		updated.Scheduler.RunTorrentPlan = sched
+	case taskScanTrackers:
+		updated.Scheduler.ScanTrackers = sched
 	}
 	if err := config.Save(s.cfgPath, &updated); err != nil {
 		s.mu.Unlock()
