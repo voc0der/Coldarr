@@ -13,6 +13,7 @@ versions:
   radarr: 6.0.4.10291
   sonarr: 4.0.16.2944
   jellyfin: 10.11.11
+  qbittorrent: v5.2.0
 
 # How long a fake move takes: size / move_throughput, clamped to
 # [min, max] seconds - long enough to screenshot an apply mid-run.
@@ -40,6 +41,33 @@ drives:
     mount: /mnt/sat3
     size: 12TB
     used_percent: 85.5
+  - name: download-ssd
+    mount: /downloads
+    size: 2TB
+    used_percent: 64
+  - name: seed-hdd
+    mount: /seed
+    size: 8TB
+    used_percent: 71
+
+# qBittorrent downloads: ready moves (including a cross-seed), settling,
+# downloading, held by import/AutoTMM/missing files, and already seeding.
+# Names and tracker hosts are fictional. Files are sparse, like the library.
+downloads:
+  - {name: Lanterns.1968, root: /downloads/movies, size: 36.8GiB, category: movies, completed_days_ago: 8, seeded_days: 7, imported_by: radarr, imported: true}
+  - {name: Lanterns.1968, root: /downloads/movies, size: 36.8GiB, category: movies, tags: [cross-seed], completed_days_ago: 7, seeded_days: 6, imported_by: radarr, imported: true, trackers: [archive.example.net]}
+  - {name: Flying.Discs.1957, root: /downloads/movies, size: 12.2GiB, category: movies, completed_days_ago: 6, seeded_days: 5, imported_by: radarr, imported: true}
+  - {name: Rex.Orion.S01, root: /downloads/tv, size: 86.4GiB, category: tv, completed_days_ago: 5, seeded_days: 4, imported_by: sonarr, imported: true}
+  - {name: Field.Recordings, root: /downloads/manual, size: 6.4GiB, category: manual, completed_days_ago: 4, seeded_days: 3}
+  - {name: Loose.Rivets.2023, root: /downloads/movies, size: 3.1GiB, category: movies, completed_days_ago: 1, seeded_days: 1, imported_by: radarr, imported: true}
+  - {name: Tidewater.S03E04, root: /downloads/tv, size: 4.8GiB, category: tv, state: downloading, imported_by: sonarr, queued: true}
+  - {name: Glass.Foundry.1927, root: /downloads/movies, size: 58.4GiB, category: movies, completed_days_ago: 7, seeded_days: 6, imported_by: radarr, imported: true, auto_tmm: true}
+  - {name: Quiet.Arrangement.1963, root: /downloads/movies, size: 61.8GiB, category: movies, completed_days_ago: 6, seeded_days: 5, imported_by: radarr}
+  - {name: Chrome.Orchard.2012, root: /downloads/movies, size: 7.9GiB, category: movies, completed_days_ago: 5, seeded_days: 4, imported_by: radarr, imported: true, missing: true}
+  - {name: Vargas.Shadow.1922, root: /downloads/movies, size: 27.9GiB, category: movies, tags: [keep-seeding], completed_days_ago: 50, seeded_days: 45}
+  - {name: Widows.Stair.1959, root: /seed, size: 32.6GiB, category: seed, completed_days_ago: 40, seeded_days: 35}
+  - {name: Inspector.Ashby.S01, root: /seed, size: 58.9GiB, category: seed, completed_days_ago: 12, seeded_days: 10, trackers: [archive.example.net]}
+  - {name: Machine.Garden.2006, root: /seed, size: 3.9GiB, category: manual, completed_days_ago: 5, seeded_days: 4}
 
 # Per item: title, year, root (the Radarr/Sonarr root folder it's in),
 # size, added_days_ago; optionally profile (quality profile - SD and

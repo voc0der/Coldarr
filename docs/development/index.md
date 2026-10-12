@@ -65,8 +65,8 @@ means actually running the server and looking at it:
 `tools/gallery/` runs Coldarr, built from your checkout, against a fake
 world in one container: FUSE "drives" whose `statfs` reports whatever
 capacity and usage `fixture.yaml` asks for (a 16TB satellite at 89% costs a
-few KB of sparse files), and fake Radarr/Sonarr/Jellyfin serving the
-fixture's library. Moves really copy between those drives over a few
+few KB of sparse files), and fake Radarr/Sonarr/Jellyfin/qBittorrent serving the
+fixture's library and downloads. Moves really copy between those drives over a few
 seconds, so apply, settle, and landing confirmation all run for real. Each
 drive is its own mount, so `require_mount`, shared-volume detection, and
 the dead-drive check behave as they do in production. It's a separate Go
@@ -76,13 +76,23 @@ with FUSE on the host, plus Playwright for capturing.
 ```sh
 tools/gallery/run.sh                      # every scene, light + dark, into docs/assets/screenshots/
 tools/gallery/run.sh --only plan history  # just these scenes
+tools/gallery/run.sh --only downloads downloads-settings downloads-applying downloads-activity
 tools/gallery/run.sh --serve              # leave it running at http://127.0.0.1:18478 (password: gallery)
 ```
 
 Scenes run in order, since some change state (`applying` really applies
-the plan, and `dead-drive` unmounts a satellite). To change what the
-screenshots show, edit `fixture.yaml` (drives, library, orphans, history)
+the plan, `downloads-applying` moves downloads, and `dead-drive` unmounts a
+satellite). The Downloads scenes cover cross-seeds, import checks, settling,
+held downloads, tracker requirements, report-only removal, settings, and
+recent activity after real moves. To change what the
+screenshots show, edit `fixture.yaml` (drives, library, downloads, orphans, history)
 and `tools/gallery/coldarr.yaml` (tiers, policy, schedules).
+
+The fake qBittorrent supports the reads, moves, and seed relabels these
+scenes use; it does not implement deletion. Its tracker hosts and download
+names are fictional, and it never contacts a tracker. The capture checks
+browser errors and the expected Downloads states as it goes. To run the
+gallery module's own Go checks, use the commands above from `tools/gallery/`.
 
 ## Documentation
 

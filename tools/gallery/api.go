@@ -86,7 +86,25 @@ func (l *library) arrHandler(k arrKind, version string) http.Handler {
 				records = append(records, map[string]any{"id": 1000 + it.id, k.idField: it.id, "status": "downloading"})
 			}
 		}
+		for _, d := range l.downloads {
+			if d.ImportedBy == k.app && d.Queued {
+				records = append(records, map[string]any{"downloadId": strings.ToUpper(d.hash), "status": "downloading"})
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"page": 1, "totalRecords": len(records), "records": records})
+	})
+
+	// Import history is joined by hash, just as Coldarr checks real downloads.
+	mux.HandleFunc("GET "+api+"history", func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		records := []map[string]any{}
+		for _, d := range l.downloads {
+			if d.ImportedBy == k.app && d.Imported && strings.EqualFold(d.hash, r.URL.Query().Get("downloadId")) {
+				records = append(records, map[string]any{"downloadId": strings.ToUpper(d.hash), "eventType": "downloadFolderImported"})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"records": records})
 	})
 
 	// Radarr's cutoff list is movies; Sonarr's is episodes, one standing in

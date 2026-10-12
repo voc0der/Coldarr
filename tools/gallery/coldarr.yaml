@@ -29,6 +29,37 @@ tiers:
     max_used_percent: 95
     require_mount: true
 
+  - name: download-ssd
+    domain: downloads
+    role: hot
+    paths: [/downloads]
+    require_mount: true
+
+  - name: seed
+    domain: downloads
+    role: cold
+    paths: [/seed]
+    target_used_percent: 92
+    max_used_percent: 97
+    require_mount: true
+
+torrents:
+  settle_days: 3
+  seed_label: seed
+  labels:
+    - {label: movies, action: move, imported_by: radarr}
+    - {label: tv, action: move, imported_by: sonarr}
+    - {label: manual, action: move}
+    - {label: keep-seeding, action: ignore}
+  seeding:
+    min_seed_days: 14
+    grace_days: 7
+    overrides:
+      - {host: archive.example.net, min_seed_days: 30}
+  removal:
+    mode: report
+    max_per_run: 25
+
 policy:
   cooldown_days: 30
   min_move_size_gb: 1
@@ -77,3 +108,18 @@ scheduler:
     unit: daily
     every: 7
     at: "04:00"
+  run_torrent_plan:
+    enabled: true
+    unit: daily
+    every: 1
+    at: "06:00"
+  scan_trackers:
+    enabled: true
+    unit: hourly
+    every: 6
+    at: "00:00"
+  expire_seeds:
+    enabled: true
+    unit: daily
+    every: 1
+    at: "07:00"

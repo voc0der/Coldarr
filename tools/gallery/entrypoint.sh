@@ -1,5 +1,5 @@
 #!/bin/sh
-# Mounts the fake drives and starts the fake Radarr/Sonarr/Jellyfin, points
+# Mounts the fake drives and starts fake Radarr/Sonarr/Jellyfin/qBittorrent, points
 # a fresh Coldarr at them, then warms the caches a long-running install
 # would already have (quality cutoffs, Jellyfin links, orphan scan) so the
 # first page load looks lived-in. /run/coldarr.ready appears once that's
@@ -15,7 +15,7 @@ mkdir -p /config
 cp /gallery/coldarr.yaml "$CONFIG"
 
 # The connections read like a typical compose setup's service names.
-echo "127.0.0.1 radarr sonarr jellyfin" >>/etc/hosts
+echo "127.0.0.1 radarr sonarr jellyfin qbittorrent" >>/etc/hosts
 
 gallery --fixture /gallery/fixture.yaml --coldarr-config "$CONFIG" \
   --history-out /config/coldarr-history.json --ready-file /run/gallery.ready &
@@ -33,6 +33,7 @@ done
 $COLDARR connections set radarr --url http://radarr:7878 --api-key 3f2a9c7e1b8d4f6a0c5e9b2d7a1f4c8e >/dev/null
 $COLDARR connections set sonarr --url http://sonarr:8989 --api-key 9d4e1a7c3b6f2e8a5c0d9b4f7a2e6c1d >/dev/null
 $COLDARR connections set jellyfin --url http://jellyfin:8096 --api-key 6b1f8e3a9c4d7b2e0f5a8c3d6e9b1a4f >/dev/null
+$COLDARR connections set qbittorrent --url http://qbittorrent:8080 --api-key gallery-qbit-key >/dev/null
 
 (
   until curl -fs -o /dev/null "$URL/healthz"; do sleep 0.3; done
@@ -49,11 +50,12 @@ $COLDARR connections set jellyfin --url http://jellyfin:8096 --api-key 6b1f8e3a9
       exit 1
     fi
   }
-  for app in radarr sonarr jellyfin; do
+  for app in radarr sonarr jellyfin qbittorrent; do
     post --data-urlencode "external_url=https://$app.example.com" "$URL/settings/connections/$app/external-url"
   done
   post "$URL/settings/scheduler/scan_cutoffs/run"
   post "$URL/settings/scheduler/refresh_links/run"
+  post "$URL/settings/scheduler/scan_trackers/run"
   post "$URL/settings/scheduler/scan_orphans/run"
   touch /run/coldarr.ready
   echo "gallery: ready - Coldarr on :8478, password '$COLDARR_PASSWORD'"

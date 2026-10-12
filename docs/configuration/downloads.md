@@ -10,6 +10,9 @@ downloads that have done their time.
 Like library tiering, Coldarr never moves a file itself. It asks qBittorrent
 to move each download, so qBittorrent always knows where its data is.
 
+See the [Downloads screenshots](../screenshots.md#downloads) for a plan,
+move progress, recent activity, and the label and seeding settings.
+
 ## How a download moves through
 
 1. **It downloads.** qBittorrent saves it to the download drive. Coldarr
