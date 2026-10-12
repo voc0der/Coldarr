@@ -12,21 +12,23 @@ import (
 )
 
 // fixture is the whole fake environment: the drives Coldarr's tiers live
-// on, and the library Radarr/Sonarr/Jellyfin report. See fixture.yaml.
+// on, and the library and downloads the fake services report. See fixture.yaml.
 type fixture struct {
 	Versions struct {
 		Radarr   string `yaml:"radarr"`
 		Sonarr   string `yaml:"sonarr"`
 		Jellyfin string `yaml:"jellyfin"`
+		Qbit     string `yaml:"qbittorrent"`
 	} `yaml:"versions"`
-	Simulation simulation   `yaml:"simulation"`
-	Drives     []driveSpec  `yaml:"drives"`
-	Movies     []itemSpec   `yaml:"movies"`
-	Series     []itemSpec   `yaml:"series"`
-	Orphans    []orphanSpec `yaml:"orphans"`
+	Simulation simulation     `yaml:"simulation"`
+	Drives     []driveSpec    `yaml:"drives"`
+	Movies     []itemSpec     `yaml:"movies"`
+	Series     []itemSpec     `yaml:"series"`
+	Orphans    []orphanSpec   `yaml:"orphans"`
+	Downloads  []downloadSpec `yaml:"downloads"`
 }
 
-// simulation controls how long a fake Radarr/Sonarr move takes. Real moves
+// simulation controls how long a fake library or download move takes. Real moves
 // take minutes to hours; these are compressed so an apply finishes in about
 // a minute but still spends long enough "moving" to be captured mid-run.
 type simulation struct {
@@ -104,6 +106,7 @@ func loadFixture(path string) (*fixture, error) {
 // history record moved an item between.
 type tierSpec struct {
 	Name       string   `yaml:"name"`
+	Domain     string   `yaml:"domain"`
 	Role       string   `yaml:"role"`
 	Paths      []string `yaml:"paths"`
 	MediaTypes []string `yaml:"media_types"`

@@ -5,7 +5,7 @@
 //   - fake drives: FUSE loopback mounts whose statfs reports the fixture's
 //     capacity and usage (see drive.go), so a "16TB" satellite at 89% costs
 //     a few KB of sparse files
-//   - fake Radarr, Sonarr and Jellyfin APIs serving the fixture's library,
+//   - fake Radarr, Sonarr, Jellyfin and qBittorrent APIs serving the fixture,
 //     whose moves really copy between those drives over a few seconds
 //
 // It runs inside the gallery container (see Dockerfile and entrypoint.sh),
@@ -40,14 +40,15 @@ func main() {
 	radarrAddr := flag.String("radarr", ":7878", "fake Radarr listen address")
 	sonarrAddr := flag.String("sonarr", ":8989", "fake Sonarr listen address")
 	jellyfinAddr := flag.String("jellyfin", ":8096", "fake Jellyfin listen address")
+	qbitAddr := flag.String("qbittorrent", ":8080", "fake qBittorrent listen address")
 	flag.Parse()
 
-	if err := run(*fixturePath, *coldarrConfig, *backingRoot, *historyOut, *readyFile, *radarrAddr, *sonarrAddr, *jellyfinAddr); err != nil {
+	if err := run(*fixturePath, *coldarrConfig, *backingRoot, *historyOut, *readyFile, *radarrAddr, *sonarrAddr, *jellyfinAddr, *qbitAddr); err != nil {
 		log.Fatalf("gallery: %v", err)
 	}
 }
 
-func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrAddr, sonarrAddr, jellyfinAddr string) error {
+func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrAddr, sonarrAddr, jellyfinAddr, qbitAddr string) error {
 	fx, err := loadFixture(fixturePath)
 	if err != nil {
 		return err
@@ -83,6 +84,9 @@ func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrA
 				return fmt.Errorf("tier %s path %s is not on any fixture drive", t.Name, p)
 			}
 			tierPaths = append(tierPaths, filepath.Clean(p))
+			if t.Domain == "downloads" && t.Role == "cold" {
+				lib.seedRoots = append(lib.seedRoots, filepath.Clean(p))
+			}
 		}
 	}
 	for _, d := range drives {
@@ -107,6 +111,9 @@ func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrA
 	if err := lib.seed(fx.Orphans); err != nil {
 		return fmt.Errorf("seeding library: %w", err)
 	}
+	if err := lib.seedDownloads(fx.Downloads, time.Now()); err != nil {
+		return fmt.Errorf("seeding downloads: %w", err)
+	}
 	for _, d := range drives {
 		if err := d.calibrate(); err != nil {
 			return err
@@ -126,6 +133,7 @@ func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrA
 		{Addr: radarrAddr, Handler: lib.arrHandler(radarr, fx.Versions.Radarr), ReadHeaderTimeout: 10 * time.Second},
 		{Addr: sonarrAddr, Handler: lib.arrHandler(sonarr, fx.Versions.Sonarr), ReadHeaderTimeout: 10 * time.Second},
 		{Addr: jellyfinAddr, Handler: lib.jellyfinHandler(fx.Versions.Jellyfin), ReadHeaderTimeout: 10 * time.Second},
+		{Addr: qbitAddr, Handler: lib.qbitHandler(fx.Versions.Qbit), ReadHeaderTimeout: 10 * time.Second},
 	}
 	errs := make(chan error, len(servers))
 	for _, srv := range servers {
@@ -139,7 +147,7 @@ func run(fixturePath, coldarrConfig, backingRoot, historyOut, readyFile, radarrA
 			}
 		}()
 	}
-	logf("fake Radarr on %s, Sonarr on %s, Jellyfin on %s", radarrAddr, sonarrAddr, jellyfinAddr)
+	logf("fake Radarr on %s, Sonarr on %s, Jellyfin on %s, qBittorrent on %s", radarrAddr, sonarrAddr, jellyfinAddr, qbitAddr)
 
 	if readyFile != "" {
 		if err := os.WriteFile(readyFile, nil, 0o644); err != nil { //nolint:gosec // a marker file, nothing secret

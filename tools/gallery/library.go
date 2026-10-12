@@ -117,13 +117,16 @@ type command struct {
 }
 
 type library struct {
-	mu       sync.Mutex
-	movies   []*item
-	series   []*item
-	tags     []string // index+1 is the tag's ID
-	profiles []string // index+1 is the profile's ID
-	commands map[string][]*command
-	nextCmd  int
+	mu          sync.Mutex
+	movies      []*item
+	series      []*item
+	tags        []string // index+1 is the tag's ID
+	profiles    []string // index+1 is the profile's ID
+	commands    map[string][]*command
+	nextCmd     int
+	downloads   []*download
+	seedRoots   []string
+	seedTargets []string
 
 	sim    simulation
 	drives []*drive
@@ -338,6 +341,12 @@ func (l *library) relocate(it *item, root string) error {
 	l.mu.Unlock()
 
 	dst := filepath.Join(root, folder)
+	return l.relocateFiles(src, dst, files, size)
+}
+
+// relocateFiles also powers qBittorrent moves, preserving sparse files
+// while their apparent sizes grow over the simulated transfer time.
+func (l *library) relocateFiles(src, dst string, files []fileSpec, size int64) error {
 	if src == dst {
 		return nil
 	}

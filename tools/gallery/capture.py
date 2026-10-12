@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
 try:
     from PIL import Image, features
@@ -38,6 +38,8 @@ SCENES = [
     "login",
     "dashboard",
     "plan",
+    "downloads",
+    "downloads-settings",
     "tiers",
     "tier-edit",
     "connections",
@@ -46,6 +48,8 @@ SCENES = [
     "applying",
     "history",
     "verify",
+    "downloads-applying",
+    "downloads-activity",
     "dead-drive",
 ]
 
@@ -154,9 +158,9 @@ class Capturer:
 
     def connections(self) -> None:
         def test_all(page: Page) -> None:
-            for app in ("radarr", "sonarr", "jellyfin"):
+            for app in ("radarr", "sonarr", "jellyfin", "qbittorrent"):
                 page.click(f"button[hx-target='#test-{app}']")
-                page.wait_for_selector(f"#test-{app} .badge")
+                expect(page.locator(f"#test-{app} .badge-ok")).to_be_visible()
 
         self.shot("connections", "/settings/connections", prepare=test_all)
 
@@ -165,6 +169,74 @@ class Capturer:
 
     def orphans(self) -> None:
         self.shot("orphans", "/settings/orphans")
+
+    def downloads(self) -> None:
+        def ready(page: Page) -> None:
+            expect(page.get_by_role("button", name="Move these downloads")).to_be_visible()
+            expect(page.get_by_role("heading", name="Held back")).to_be_visible()
+            expect(page.get_by_role("heading", name="Relabel only")).to_be_visible()
+            expect(page.get_by_text("+1 cross-seed", exact=True)).to_be_visible()
+            expect(page.get_by_text("Report only:", exact=False)).to_be_visible()
+            expect(page.locator(".alert-error")).to_have_count(0)
+
+        self.shot("downloads", "/downloads", prepare=ready)
+
+    def downloads_settings(self) -> None:
+        def configured(page: Page) -> None:
+            expect(page.locator("#seed_label")).to_have_value("seed")
+            expect(page.get_by_role("cell", name="archive.example.net", exact=True)).to_be_visible()
+            expect(page.locator(".alert-error")).to_have_count(0)
+            expect(page.locator(".alert-warn")).to_have_count(1)
+            expect(page.locator("input[name=mode][value=report]")).to_be_checked()
+
+        self.shot("downloads-settings", "/settings/downloads", prepare=configured)
+
+    def downloads_applying(self) -> None:
+        page = self.pages["light"]
+        page.goto(self.base + "/downloads")
+        page.once("dialog", lambda d: d.accept())
+        page.get_by_role("button", name="Move these downloads").click()
+        page.wait_for_url(self.base + "/downloads")
+
+        status_path = "/downloads/apply/status/partial"
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            html = page.request.get(self.base + status_path).text()
+            counts = {s: len(re.findall(rf"</svg> {s}</span>", html)) for s in ("done", "moving", "pending")}
+            if "failed:" in html:
+                raise RuntimeError("a gallery download move failed")
+            if counts["done"] >= 1 and counts["moving"] == 1 and counts["pending"] >= 1:
+                break
+            if "hx-trigger" not in html:
+                raise RuntimeError("downloads finished before the mid-run scene was captured")
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("downloads did not reach the mid-run scene in 3 minutes")
+        self.shot("downloads-applying", "/downloads")
+
+        while time.monotonic() < deadline:
+            html = page.request.get(self.base + status_path).text()
+            if "hx-trigger" not in html:
+                if "finished with errors" in html:
+                    raise RuntimeError("a gallery download move failed")
+                return
+            time.sleep(0.5)
+        raise RuntimeError("the downloads apply did not finish within 3 minutes")
+
+    def downloads_activity(self) -> None:
+        # --only downloads-activity still needs a real run to populate it.
+        page = self.pages["light"]
+        page.goto(self.base + "/downloads")
+        if page.get_by_role("heading", name="Recent activity").count() == 0:
+            self.downloads_applying()
+
+        def landed(page: Page) -> None:
+            expect(page.get_by_role("heading", name="Recent activity")).to_be_visible()
+            expect(page.get_by_text("4 moved, 0 failed", exact=True)).to_be_visible()
+            expect(page.get_by_text("Relabeled 1 of 1", exact=False)).to_be_visible()
+            expect(page.locator(".alert-error")).to_have_count(0)
+
+        self.shot("downloads-activity", "/downloads", prepare=landed)
 
     def applying(self) -> None:
         """Start the plan, then capture it mid-run with some moves done,

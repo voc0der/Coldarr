@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # Coldarr (built from this checkout) plus the gallery's fake drives and fake
-# Radarr/Sonarr/Jellyfin, in one container so Coldarr sees the FUSE mounts.
+# Radarr/Sonarr/Jellyfin/qBittorrent, sharing the container's FUSE mounts.
 # Build from the repo root:
 #
 #   docker build -f tools/gallery/Dockerfile -t coldarr-gallery .
