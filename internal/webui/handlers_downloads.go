@@ -283,7 +283,16 @@ func ago(now, t time.Time) string {
 }
 
 func (s *Server) handleDownloadsPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "downloads", s.buildDownloadsPageData())
+	data := s.buildDownloadsPageData()
+	// A Remove now click's result shows once, on the page its redirect
+	// lands on.
+	s.applyMu.Lock()
+	if res := s.removalResult; res != nil {
+		data.Removed, data.RemoveError = res.Removed, res.Error
+		s.removalResult = nil
+	}
+	s.applyMu.Unlock()
+	s.render(w, "downloads", data)
 }
 
 func (s *Server) renderDownloadsError(w http.ResponseWriter, err error) {
@@ -615,25 +624,42 @@ func (s *Server) removeFinishedSeeds(eng *engine.Engine, now time.Time) (removal
 	return out, nil
 }
 
+// removalResult is what a Remove now click did, as the Downloads page
+// reports it.
+type removalResult struct {
+	Removed string
+	Error   string
+}
+
+// handleDownloadsRemove is the Downloads page's Remove now. It redirects
+// back to the page rather than rendering the result: reloading a POST's
+// response sends it again, and past the per-run cap that removes the next
+// batch, which nobody confirmed.
 func (s *Server) handleDownloadsRemove(w http.ResponseWriter, r *http.Request) {
 	eng, err := s.newEngine()
 	var out removalOutcome
 	if err == nil {
 		out, err = s.removeFinishedSeeds(eng, time.Now())
 	}
-	data := s.buildDownloadsPageData()
+	var res removalResult
 	if err != nil {
-		data.RemoveError = err.Error()
+		res.Error = err.Error()
 	} else {
-		data.Removed = fmt.Sprintf("Removed %d download(s), freeing %.1f GB.", len(out.Removed), float64(out.freedBytes())/(1<<30))
+		res.Removed = fmt.Sprintf("Removed %d download(s), freeing %.1f GB.", len(out.Removed), float64(out.freedBytes())/(1<<30))
+		if out.Deferred > 0 {
+			res.Removed += fmt.Sprintf(" One run removes at most %d, so %d more done seeding wait for the next run.", eng.Cfg.Torrents.Removal.Limit(), out.Deferred)
+		}
 		if len(out.Failed) > 0 {
-			data.RemoveError = fmt.Sprintf("%d couldn't be removed: %s", len(out.Failed), strings.Join(out.Failed, "; "))
+			res.Error = fmt.Sprintf("%d couldn't be removed: %s", len(out.Failed), strings.Join(out.Failed, "; "))
 		}
 	}
 	if eng != nil && len(out.Removed) > 0 {
 		s.notifyRemovals(out, false)
 	}
-	s.render(w, "downloads", data)
+	s.applyMu.Lock()
+	s.removalResult = &res
+	s.applyMu.Unlock()
+	http.Redirect(w, r, "/downloads", http.StatusSeeOther)
 }
 
 // notifyRemovals sends the summary every removal run sends - regardless of
