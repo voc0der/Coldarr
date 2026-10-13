@@ -164,6 +164,10 @@ rather than the drive. Every run that removes anything sends a
 notification naming what went, whether or not notifications are verbose.
 The Downloads page lists every removal under **Recent activity**.
 
+**Remove these now** on the Downloads page removes exactly the list the
+page shows. If that list has changed since the page loaded, nothing is
+removed, and the page shows the list as it is now to check again.
+
 With removal set to Remove, a download that's done seeding while still on
 the download drive is removed from there instead of being moved to seed
 storage first. Downloads can be removed from either drive.

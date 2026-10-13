@@ -114,6 +114,7 @@
   {{if .Plan.Deferred}}<p class="hint">{{.Plan.Deferred}} more wait for later runs - the per-run cap.</p>{{end}}
   {{if eq .Plan.RemovalMode "remove"}}
   <form method="post" action="/downloads/remove" onsubmit="return confirm('Remove {{len .Plan.Removals}} download(s) from qBittorrent now? Their files are deleted unless another download still uses them. This cannot be undone.')" style="margin-top:0.75rem">
+    <input type="hidden" name="removals" value="{{.Plan.RemovalList}}">
     <button type="submit" class="btn btn-danger">{{template "icon-trash"}} Remove these now</button>
   </form>
   {{end}}
