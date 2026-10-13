@@ -222,6 +222,19 @@ func doneSeedingServer(t *testing.T, mode config.RemovalMode) *downloadsTestServ
 	return srv
 }
 
+// removeNow clicks Remove these now and follows its redirect, returning the
+// Downloads page it lands on.
+func removeNow(t *testing.T, srv *downloadsTestServer) string {
+	t.Helper()
+	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/downloads" {
+		t.Fatalf("remove now = %d to %q, want a redirect to /downloads - a rendered result would send the removal again on reload", rec.Code, rec.Header().Get("Location"))
+	}
+	page := httptest.NewRecorder()
+	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	return page.Body.String()
+}
+
 func TestDownloads_RemovalModes(t *testing.T) {
 	// Off: just a count.
 	srv := doneSeedingServer(t, config.RemovalOff)
@@ -242,9 +255,8 @@ func TestDownloads_RemovalModes(t *testing.T) {
 	if strings.Contains(body, "<td>Strict.ISO") {
 		t.Error("a download short of its tracker's override is not done")
 	}
-	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
-	if !strings.Contains(rec.Body.String(), "removal isn&#39;t set to remove") {
-		t.Errorf("a crafted remove in report mode must be refused:\n%s", rec.Body.String())
+	if body := removeNow(t, srv); !strings.Contains(body, "removal isn&#39;t set to remove") {
+		t.Errorf("a crafted remove in report mode must be refused:\n%s", body)
 	}
 	if got := srv.qb.torrent("aaa"); got.Hash == "" {
 		t.Fatal("report mode removed something")
@@ -265,21 +277,37 @@ func TestDownloads_RemoveNow(t *testing.T) {
 		t.Fatalf("remove mode, capped at 1:\n%s", page.Body.String())
 	}
 
-	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
-	body := rec.Body.String()
-	if !strings.Contains(body, "Removed 1 download(s)") {
+	body := removeNow(t, srv)
+	if !strings.Contains(body, "Removed 1 download(s)") || !strings.Contains(body, "One run removes at most 1, so 1 more done seeding wait for the next run.") {
 		t.Fatalf("remove now:\n%s", body)
 	}
-	var gone, left []string
-	for _, h := range []string{"aaa", "bbb", "ccc"} {
-		if srv.qb.torrent(h).Hash == "" {
-			gone = append(gone, h)
-		} else {
-			left = append(left, h)
+	remaining := func() (gone, left []string) {
+		for _, h := range []string{"aaa", "bbb", "ccc"} {
+			if srv.qb.torrent(h).Hash == "" {
+				gone = append(gone, h)
+			} else {
+				left = append(left, h)
+			}
 		}
+		return gone, left
 	}
+	gone, left := remaining()
 	if len(gone) != 1 || strings.Join(left, ",") == "aaa,bbb,ccc" {
 		t.Fatalf("gone = %v, want exactly one removed under the cap", gone)
+	}
+
+	// The page it lands on offers the one the cap held back. Reloading it
+	// is just a page view: nothing more goes, and the result isn't repeated.
+	if !strings.Contains(body, "Remove these now") {
+		t.Error("the download the cap held back should be offered for the next run")
+	}
+	reload := httptest.NewRecorder()
+	srv.handleDownloadsPage(reload, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	if strings.Contains(reload.Body.String(), "Removed 1 download(s)") {
+		t.Error("a reload showed the removal's result again")
+	}
+	if again, _ := remaining(); len(again) != 1 {
+		t.Errorf("gone after a reload = %v, want still just %v", again, gone)
 	}
 	names := map[string]string{"aaa": "Old.ISO", "bbb": "Other.ISO"}
 	if _, err := os.Stat(filepath.Join(srv.seed, names[gone[0]])); !os.IsNotExist(err) {
@@ -296,10 +324,10 @@ func TestDownloads_RemoveNow(t *testing.T) {
 	// Never alongside an apply.
 	srv.currentDownloadsRun = &downloadsRun{done: make(chan struct{}), progress: mover.Run[torrents.MoveEntry](&torrents.Executor{}, nil, nil, mover.Options{})}
 	srv.currentDownloadsRun.active.Store(true)
-	rec = serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	body = removeNow(t, srv)
 	srv.currentDownloadsRun.active.Store(false)
-	if !strings.Contains(rec.Body.String(), "an apply is running") {
-		t.Errorf("remove during an apply:\n%s", rec.Body.String())
+	if !strings.Contains(body, "an apply is running") {
+		t.Errorf("remove during an apply:\n%s", body)
 	}
 }
 
@@ -413,9 +441,8 @@ func TestDownloads_RemovalGuards(t *testing.T) {
 				}
 			}
 
-			rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
-			if !strings.Contains(rec.Body.String(), tt.want) {
-				t.Errorf("page = %s, want %q", rec.Body.String(), tt.want)
+			if body := removeNow(t, srv); !strings.Contains(body, tt.want) {
+				t.Errorf("page = %s, want %q", body, tt.want)
 			}
 			untouched("from the page")
 
@@ -446,8 +473,7 @@ func TestDownloads_RemovalThatDoesntTake(t *testing.T) {
 	srv.qb.dropDeletes = true
 	srv.qb.mu.Unlock()
 
-	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
-	body := rec.Body.String()
+	body := removeNow(t, srv)
 	if !strings.Contains(body, "Removed 0 download(s)") || !strings.Contains(body, "2 couldn&#39;t be removed") || !strings.Contains(body, "qBittorrent still lists") {
 		t.Fatalf("page:\n%s", body)
 	}

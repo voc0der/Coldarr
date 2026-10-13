@@ -46,6 +46,9 @@ type Server struct {
 	// under the same lock: both kinds of apply hold the mover lock, so
 	// only one of either ever runs at a time.
 	currentDownloadsRun *downloadsRun
+	// removalResult is what the last Remove now click did, until the
+	// Downloads page shows it - see handleDownloadsRemove. Same lock.
+	removalResult *removalResult
 
 	// verifyMu guards currentVerify the same way applyMu guards
 	// currentRun - only one size-verification run in flight at a time,
