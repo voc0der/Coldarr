@@ -1,10 +1,13 @@
 package webui
 
 import (
+	"html"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -222,11 +225,31 @@ func doneSeedingServer(t *testing.T, mode config.RemovalMode) *downloadsTestServ
 	return srv
 }
 
-// removeNow clicks Remove these now and follows its redirect, returning the
-// Downloads page it lands on.
+// removeNow clicks Remove these now on the Downloads page as it is now -
+// sending back the list the page shows, as a browser would - and follows
+// the redirect, returning the page it lands on.
 func removeNow(t *testing.T, srv *downloadsTestServer) string {
 	t.Helper()
-	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", nil)
+	page := httptest.NewRecorder()
+	srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+	return postRemoval(t, srv, shownRemovals(page.Body.String()))
+}
+
+// shownRemovals is the form a Downloads page's Remove now sends - nil when
+// the page has no Remove now.
+func shownRemovals(page string) url.Values {
+	m := regexp.MustCompile(`name="removals" value="([^"]*)"`).FindStringSubmatch(page)
+	if m == nil {
+		return nil
+	}
+	return url.Values{"removals": {html.UnescapeString(m[1])}}
+}
+
+// postRemoval sends Remove now with form and follows its redirect,
+// returning the page it lands on.
+func postRemoval(t *testing.T, srv *downloadsTestServer, form url.Values) string {
+	t.Helper()
+	rec := serveForm(srv.handleDownloadsRemove, "/downloads/remove", form)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/downloads" {
 		t.Fatalf("remove now = %d to %q, want a redirect to /downloads - a rendered result would send the removal again on reload", rec.Code, rec.Header().Get("Location"))
 	}
@@ -328,6 +351,90 @@ func TestDownloads_RemoveNow(t *testing.T) {
 	srv.currentDownloadsRun.active.Store(false)
 	if !strings.Contains(body, "an apply is running") {
 		t.Errorf("remove during an apply:\n%s", body)
+	}
+}
+
+// TestDownloads_RemoveNowStaleList: Remove now removes the list its page
+// showed or nothing at all. A page left open while things changed, or one
+// from before the list was sent, is refused - and the page that lands on
+// shows the list as it is now, which removes.
+func TestDownloads_RemoveNowStaleList(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		// setup runs before the page loads, change after it.
+		setup, change func(t *testing.T, srv *downloadsTestServer)
+		// stale makes the form the click sends out of what the page showed.
+		stale func(shown url.Values) url.Values
+	}{
+		{
+			name: "another finished seeding since",
+			change: func(t *testing.T, srv *downloadsTestServer) {
+				srv.qb.add(t, finishedDownload("ddd", "New.ISO", "seed", srv.seed))
+				srv.qb.trackers["ddd"] = []string{"tracker.example.org"}
+				if _, err := srv.scanTrackersNow(); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:   "one was removed in qBittorrent since",
+			change: func(t *testing.T, srv *downloadsTestServer) { srv.qb.drop("bbb") },
+		},
+		{
+			name: "files the page said stay would now be deleted",
+			setup: func(t *testing.T, srv *downloadsTestServer) {
+				// A cross-seed of Old.ISO that isn't done keeps its files.
+				cross := finishedDownload("xxx", "Old.ISO.cross", "seed", srv.seed)
+				cross.ContentPath = filepath.Join(srv.seed, "Old.ISO")
+				srv.qb.add(t, cross)
+				srv.qb.trackers["xxx"] = []string{"strict.example.org"}
+				if _, err := srv.scanTrackersNow(); err != nil {
+					t.Fatal(err)
+				}
+			},
+			change: func(t *testing.T, srv *downloadsTestServer) { srv.qb.drop("xxx") },
+		},
+		{
+			name:  "a page from before the list was sent",
+			stale: func(url.Values) url.Values { return nil },
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := doneSeedingServer(t, config.RemovalRemove)
+			if tt.setup != nil {
+				tt.setup(t, srv)
+			}
+			page := httptest.NewRecorder()
+			srv.handleDownloadsPage(page, httptest.NewRequest(http.MethodGet, "/downloads", nil))
+			form := shownRemovals(page.Body.String())
+			if form == nil {
+				t.Fatalf("the page should offer Remove now:\n%s", page.Body.String())
+			}
+			if tt.change != nil {
+				tt.change(t, srv)
+			}
+			if tt.stale != nil {
+				form = tt.stale(form)
+			}
+
+			body := postRemoval(t, srv, form)
+			if !strings.Contains(body, "refusing to remove anything: the list has changed since the page was loaded") {
+				t.Fatalf("a stale list should be refused:\n%s", body)
+			}
+			if srv.qb.torrent("aaa").Hash == "" {
+				t.Fatal("Old.ISO was removed from a stale list")
+			}
+			if _, err := os.Stat(filepath.Join(srv.seed, "Old.ISO", "data.bin")); err != nil {
+				t.Fatalf("Old.ISO's files: %v", err)
+			}
+
+			if body := postRemoval(t, srv, shownRemovals(body)); !strings.Contains(body, "Removed ") || strings.Contains(body, "refusing") {
+				t.Errorf("the list as it is now should remove:\n%s", body)
+			}
+			if srv.qb.torrent("aaa").Hash != "" {
+				t.Error("Old.ISO should be gone once the list as it is now is confirmed")
+			}
+		})
 	}
 }
 

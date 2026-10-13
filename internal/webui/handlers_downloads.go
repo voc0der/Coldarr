@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,10 +96,12 @@ type downloadsPlanView struct {
 	Held        []downloadHeldView
 	NextSettled string
 
-	// Done-seeding: what removal would do, by mode.
+	// Done-seeding: what removal would do, by mode. RemovalList is
+	// Removals as Remove now sends them back - see removalList.
 	RemovalMode  string
 	DoneSeeding  int
 	Removals     []removalView
+	RemovalList  string
 	Deferred     int
 	RemovalHeld  []downloadHeldView
 	RemovalError string
@@ -248,6 +251,7 @@ func (s *Server) buildDownloadsPlanView(eng *engine.Engine) downloadsPlanView {
 		for _, r := range removals.Removals {
 			view.Removals = append(view.Removals, removalViewOf(r))
 		}
+		view.RemovalList = removalList(removals.Removals)
 		for _, r := range removals.Deferred {
 			view.Deferred += len(r.Hashes)
 		}
@@ -547,6 +551,23 @@ func removalViewOf(r torrents.Removal) removalView {
 	}
 }
 
+// removalList is what a plan removes, as Remove now sends it back: each
+// removal's downloads and whether their files go too, in an order that
+// doesn't depend on the plan's. The page shows exactly this, so it's what
+// a click confirms - see removeFinishedSeeds.
+func removalList(removals []torrents.Removal) string {
+	keys := make([]string, 0, len(removals))
+	for _, r := range removals {
+		files := "keep"
+		if r.DeleteFiles {
+			files = "delete"
+		}
+		keys = append(keys, strings.Join(slices.Sorted(slices.Values(r.Hashes)), ",")+":"+files)
+	}
+	slices.Sort(keys)
+	return strings.Join(keys, " ")
+}
+
 // errApplyBusy means another apply holds the mover lock - for a scheduled
 // task, a reason to try again next tick rather than a failure.
 var errApplyBusy = errors.New("another apply is running")
@@ -574,7 +595,11 @@ func (o removalOutcome) freedBytes() int64 {
 // gates and lock as an apply: removing frees space a plan may be counting
 // on, so it never runs alongside one, nor while anything is still moving
 // or a drive is missing.
-func (s *Server) removeFinishedSeeds(eng *engine.Engine, now time.Time) (removalOutcome, error) {
+//
+// confirmed, from a Remove now click, is the list its page showed (see
+// removalList). If the plan made now differs at all, nothing is removed:
+// that isn't what was confirmed. The scheduled task passes nil.
+func (s *Server) removeFinishedSeeds(eng *engine.Engine, now time.Time, confirmed *string) (removalOutcome, error) {
 	var out removalOutcome
 	if eng.Cfg.Torrents.Removal.EffectiveMode() != config.RemovalRemove {
 		return out, fmt.Errorf("removal isn't set to remove - see Settings > Downloads")
@@ -608,6 +633,9 @@ func (s *Server) removeFinishedSeeds(eng *engine.Engine, now time.Time) (removal
 	if err != nil {
 		return out, err
 	}
+	if confirmed != nil && removalList(plan.Removals) != *confirmed {
+		return out, errors.New("refusing to remove anything: the list has changed since the page was loaded - check it again")
+	}
 	remover := eng.Remover()
 	for _, r := range plan.Removals {
 		if err := remover.Remove(r); err != nil {
@@ -631,15 +659,17 @@ type removalResult struct {
 	Error   string
 }
 
-// handleDownloadsRemove is the Downloads page's Remove now. It redirects
-// back to the page rather than rendering the result: reloading a POST's
-// response sends it again, and past the per-run cap that removes the next
-// batch, which nobody confirmed.
+// handleDownloadsRemove is the Downloads page's Remove now. It removes only
+// the list its page showed, and redirects back to the page rather than
+// rendering the result: reloading a POST's response sends it again.
 func (s *Server) handleDownloadsRemove(w http.ResponseWriter, r *http.Request) {
 	eng, err := s.newEngine()
 	var out removalOutcome
 	if err == nil {
-		out, err = s.removeFinishedSeeds(eng, time.Now())
+		// Missing - a page from before the list was sent, or a crafted
+		// request - reads as empty, which only an empty plan matches.
+		confirmed := r.PostFormValue("removals")
+		out, err = s.removeFinishedSeeds(eng, time.Now(), &confirmed)
 	}
 	var res removalResult
 	if err != nil {
@@ -767,7 +797,7 @@ func (s *Server) runScheduledExpireSeeds(now time.Time) {
 		log.Printf("scheduler: expire-seeds is due, but %s - skipping this tick, will retry next tick", detail)
 		return
 	}
-	out, err := s.removeFinishedSeeds(eng, now)
+	out, err := s.removeFinishedSeeds(eng, now, nil)
 	if err != nil {
 		if errors.Is(err, errApplyBusy) {
 			log.Printf("scheduler: expire-seeds: %v - skipping this tick", err)

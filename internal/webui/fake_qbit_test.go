@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -337,6 +338,14 @@ func newFakeArrDownloads(t *testing.T) *fakeArrDownloads {
 	}))
 	t.Cleanup(f.Close)
 	return f
+}
+
+// drop takes a download out of the fake qBittorrent and leaves its files,
+// as removing it in qBittorrent itself would.
+func (f *fakeQbittorrent) drop(hash string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.torrents = slices.DeleteFunc(f.torrents, func(t *fakeTorrent) bool { return t.Hash == hash })
 }
 
 func (f *fakeQbittorrent) torrent(hash string) fakeTorrent {
