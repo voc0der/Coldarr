@@ -3,6 +3,7 @@
   Coldarr
 </h1>
 
+![Since badge](https://img.shields.io/badge/since-07%2F05%2F2026-blue)
 [![License badge](https://img.shields.io/github/license/voc0der/Coldarr)](LICENSE.md)
 [![Latest release badge](https://img.shields.io/github/v/release/voc0der/Coldarr)](https://github.com/voc0der/Coldarr/releases/latest)
 [![CI status badge](https://img.shields.io/github/actions/workflow/status/voc0der/Coldarr/ci.yml?branch=main&label=CI)](https://github.com/voc0der/Coldarr/actions/workflows/ci.yml)
