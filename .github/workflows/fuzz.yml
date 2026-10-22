@@ -1,0 +1,79 @@
+name: Fuzz
+
+# The Go fuzz tests, which assert security properties of parsers and
+# validators. A pull request that changes Go code runs each one briefly; the
+# scheduled run, three nights a week, gives each one minutes when main has
+# changed since the previous run.
+on:
+  pull_request:
+    branches: [main]
+    paths: ['**/*.go', 'go.mod', 'go.sum', 'dev/fuzz/**', '.github/workflows/fuzz.yml']
+  schedule:
+    - cron: '41 4 * * 1,3,5'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: How long to run each fuzz test, as a Go duration
+        default: 2m
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Go fuzz tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+      GOTELEMETRY: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Without a new commit there is nothing new to fuzz, and minutes are limited.
+      - name: Check for changes on main since the previous run
+        id: changed
+        if: github.event_name == 'schedule'
+        run: |
+          # Monday's run looks back to Friday's, the others two days.
+          days=2
+          [ "$(date -u +%u)" = 1 ] && days=3
+          if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -lt $(( days * 86400 + 3600 )) ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main has no commits since the previous run."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The Go that builds the release image, as in Dependency Audit.
+      - name: Read the release image's Go version
+        id: go
+        if: steps.changed.outputs.run != 'false'
+        run: |
+          version="$(sed -n 's/^FROM golang:\([0-9][0-9.]*\).*/\1/p' Dockerfile)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.changed.outputs.run != 'false'
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          check-latest: true
+          cache: false
+
+      - name: Fuzz
+        if: steps.changed.outputs.run != 'false'
+        env:
+          FUZZTIME: ${{ github.event_name == 'pull_request' && '10s' || inputs.fuzztime || '2m' }}
+        run: bash dev/fuzz/run.sh
+
+      # Go saves each failing input under its test's testdata/fuzz/; commit it with the fix.
+      - name: Keep the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failures
+          path: '**/testdata/fuzz/'
+          retention-days: 14

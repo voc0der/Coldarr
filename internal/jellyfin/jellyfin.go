@@ -132,6 +132,9 @@ func (c *Client) get(path string, query url.Values) ([]byte, error) {
 	}
 	c.authorize(req)
 
+	// The authenticated operator chooses the upstream service URL in connection settings.
+	// Reaching arbitrary LAN services is intentional; public visitors cannot configure it.
+	// codeql[go/request-forgery]
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", path, err)

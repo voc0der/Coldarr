@@ -171,10 +171,10 @@ func (s *Server) handleOrphanDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := s.orphanStore.DeleteDownload(path, orphanSources(eng), eng.Cfg.Tiers)
 	if err != nil {
-		log.Printf("orphans: refused to delete %q: %v", path, err)
+		log.Printf("orphans: refused to delete %q: %q", path, err)
 		render("", err)
 		return
 	}
-	log.Printf("orphans: deleted %s (%.1f GB) from tier %s, as asked on the Orphaned Storage page", deleted.Path, float64(deleted.SizeBytes)/(1<<30), deleted.TierName)
+	log.Printf("orphans: deleted %q (%.1f GB) from tier %q, as asked on the Orphaned Storage page", deleted.Path, float64(deleted.SizeBytes)/(1<<30), deleted.TierName)
 	render(fmt.Sprintf("Deleted %s.", deleted.Path), nil)
 }

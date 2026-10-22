@@ -105,6 +105,8 @@ func qualityFor(profile string) string {
 // jellyfinID mimics Jellyfin's path-derived item IDs: a moved item comes
 // back under a new ID, just as it does in real Jellyfin.
 func jellyfinID(path string) string {
+	// An ID scheme, not a security check: nothing is authenticated with it.
+	// nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-md5
 	sum := md5.Sum([]byte(path)) //nolint:gosec // see import
 	return hex.EncodeToString(sum[:])
 }

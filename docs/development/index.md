@@ -23,7 +23,7 @@ go build ./...
 go vet ./...
 gofmt -l .          # should print nothing
 go test ./... -race
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 ```
 
 Coverage is not part of that list and is not computed by CI - the README
@@ -104,24 +104,32 @@ for installation, local previews, strict builds, and GitHub Pages setup.
 - `.github/workflows/ci.yml` - on every PR and push to `main`: `go build`,
   `go vet`, a `gofmt -l` check, `go test -race`, `golangci-lint` (config in
   `.golangci.yml` - standard linters plus `bodyclose`, `errorlint`,
-  `gosec`, `misspell`, `unconvert`, `unparam`), `govulncheck` against the
-  module and its dependencies, and a docker build (not pushed) to catch
-  Dockerfile breakage early.
+  `gosec`, `misspell`, `unconvert`, `unparam`), and a Docker build (not
+  pushed) that Grype scans for fixable high or critical vulnerabilities.
+- The security workflows - Semgrep, CodeQL, Dependency Audit (`govulncheck`
+  and `pip-audit`), Gitleaks, zizmor, Fuzz, ZAP, and a scheduled Container
+  Scan of both published architectures. See
+  [Security checks](contributing.md#security-checks) for what each finds,
+  when it runs, and how to run it locally.
 - `.github/workflows/docs.yml` - builds the Zensical site in strict mode on
   documentation PRs and pushes to `main`, and deploys successful builds from
   `main` to GitHub Pages. See [publishing setup](documentation.md#publishing).
 - `.github/workflows/renovate.yml` - runs Renovate (config in
   `.github/renovate.json5`) hourly, after every push to `main`, and when CI
-  finishes on a `renovate/*` branch. It keeps Go modules, GitHub Actions,
-  the Dockerfiles' base images, and the documentation dependency up to date.
+  or another PR workflow finishes on a `renovate/*` branch. It keeps Go
+  modules, GitHub Actions (pinned by commit), the Dockerfiles' base images,
+  the scanners the workflows pin, and the documentation dependency up to date.
   Minor and patch updates share one PR, which merges on its own once CI passes and the release is 3 days
   old; majors wait for approval on the Dependency Dashboard issue. Security
   fixes skip the wait: Renovate opens them from the repo's Dependabot alerts
   and from osv.dev, and Dependabot's own security-update PRs are off so each
-  fix arrives once. The alerts and code scanning are configured separately
-  under repo Settings > Security (no workflow file needed for those).
+  fix arrives once. The alerts and GitHub's CodeQL default setup are
+  configured separately under repo Settings > Security (no workflow file
+  needed for those); the CodeQL workflow is a separate harness that fails
+  PRs on findings.
 - `.github/workflows/release.yml` - on publishing a GitHub Release: builds
-  a multi-arch (amd64/arm64) image and pushes it to both
+  the amd64 and arm64 images and scans each with Grype, then pushes the
+  multi-arch (amd64/arm64) image to both
   `ghcr.io/voc0der/coldarr` and `docker.io/voc0der/coldarr`, tagged with
   the release version, its `major.minor`, and `latest` (skipped for
   prereleases). Also runnable manually via `workflow_dispatch`. GHCR
@@ -167,7 +175,8 @@ build and publish the Docker image. To ship a new version:
     releases (`gh release view vX.Y.Z`) for the tone to match.
 
 4. The image build/push happens automatically from there - no manual
-   Docker steps.
+   Docker steps. If its vulnerability scan fails, nothing is pushed; see
+   [Security checks](contributing.md#security-checks).
 
 ## Roadmap (not yet implemented)
 

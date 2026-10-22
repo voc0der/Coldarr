@@ -1,0 +1,36 @@
+name: Semgrep Security Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run weekly on Mondays at 12:00 UTC
+    - cron: '0 12 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Scan Code
+    runs-on: ubuntu-latest
+
+    container:
+      image: semgrep/semgrep:1.182.0@sha256:4a34048c04fef049f71665047f074cffb00cc3d89482f965a5cd151d589237af
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # --error fails the job on any finding. Silence a reviewed false
+      # positive with a "nosemgrep: <rule id>" comment and a reason above it.
+      # The Django CSRF rule reads the Go html/template forms as Django
+      # templates; net/http.CrossOriginProtection guards them (security_test.go).
+      - name: Run Semgrep
+        run: >-
+          semgrep scan --config=auto --error
+          --exclude-rule python.django.security.django-no-csrf-token.django-no-csrf-token

@@ -160,6 +160,9 @@ func post(url, tag, title, body string, lvl Level, markdown bool) error {
 	data := buf.Bytes()
 
 	client := &http.Client{Timeout: 15 * time.Second}
+	// The authenticated operator chooses the upstream service URL in connection settings.
+	// Reaching arbitrary LAN services is intentional; public visitors cannot configure it.
+	// codeql[go/request-forgery]
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", url, err)

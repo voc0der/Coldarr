@@ -1,0 +1,75 @@
+name: Dependency Audit
+
+# Known vulnerabilities in Go modules and documentation packages. New advisories appear
+# without any change here, so this also runs three times a week.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * 1,3,5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go modules
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=go depName=golang.org/x/vuln
+      GOVULNCHECK_VERSION: v1.9.0
+      GOTOOLCHAIN: local
+      GOTELEMETRY: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Standard-library findings depend on the Go release running the scan, and
+      # go.mod names only the oldest one that builds. Scan with the release image's
+      # Go instead: the Dockerfile's golang tag, at its latest patch.
+      - name: Read the release image's Go version
+        id: go
+        run: |
+          version="$(sed -n 's/^FROM golang:\([0-9][0-9.]*\).*/\1/p' Dockerfile)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          check-latest: true
+          cache: false
+
+      # Fails when the code calls a vulnerable function. Vulnerable modules it
+      # never calls are only listed.
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" ./...
+
+      # The screenshot gallery harness is its own Go module.
+      - name: Audit gallery dependencies
+        working-directory: tools/gallery
+        run: go run "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION" ./...
+
+  docs:
+    name: Documentation packages
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=pypi depName=pip-audit
+      PIP_AUDIT_VERSION: 2.10.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15'
+
+      - name: Audit documentation dependencies
+        run: |
+          python -m pip install "pip-audit==$PIP_AUDIT_VERSION"
+          pip-audit -r requirements-docs.txt
