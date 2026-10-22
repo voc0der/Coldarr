@@ -124,6 +124,8 @@ func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
+	// loginPath fixes the destination to /login and query-escapes the return path.
+	// nosemgrep: go.lang.security.injection.open-redirect.open-redirect
 	http.Redirect(w, r, loginPath(cleanReturnTo(r.URL.RequestURI())), http.StatusFound) //nolint:gosec // always /login; the request URI only rides along as an escaped, cleanReturnTo-restricted query value
 }
 
@@ -146,7 +148,9 @@ func authPublicPath(path string) bool {
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if s.currentAuthSession(r) {
-		http.Redirect(w, r, cleanReturnTo(r.URL.Query().Get("return_to")), http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path
+		// cleanReturnTo rejects foreign origins; FuzzReturnTo checks the emitted Location.
+		// codeql[go/unvalidated-url-redirection]
+		http.Redirect(w, r, cleanReturnTo(r.URL.Query().Get("return_to")), http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path // nosemgrep: go.lang.security.injection.open-redirect.open-redirect
 		return
 	}
 	returnTo := cleanReturnTo(r.URL.Query().Get("return_to"))
@@ -215,7 +219,9 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, returnTo, http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path
+	// cleanReturnTo rejects foreign origins; FuzzReturnTo checks the emitted Location.
+	// codeql[go/unvalidated-url-redirection]
+	http.Redirect(w, r, returnTo, http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path // nosemgrep: go.lang.security.injection.open-redirect.open-redirect
 }
 
 func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +330,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// cleanReturnTo rejects foreign origins; FuzzReturnTo checks the emitted Location.
+	// nosemgrep: go.lang.security.injection.open-redirect.open-redirect
 	http.Redirect(w, r, cleanReturnTo(state.ReturnTo), http.StatusFound)
 }
 
@@ -333,6 +341,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		delete(s.authSessions, c.Value)
 		s.authMu.Unlock()
 	}
+	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
 		Name:     authSessionCookie,
 		Value:    "",
@@ -528,6 +538,8 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	}
 	s.authMu.Unlock()
 
+	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
 		Name:     authSessionCookie,
 		Value:    id,
@@ -613,6 +625,9 @@ func logGeneratedPassword(password string) {
 	log.Printf("is generated every restart. Set COLDARR_PASSWORD (or COLDARR_PASSWORD_FILE")
 	log.Printf("to read it from a mounted file/docker secret) for a stable password.")
 	log.Printf("")
+	// The one-time generated bootstrap password must be visible to the operator.
+	// Configured passwords are never logged; this fallback changes on every restart.
+	// codeql[go/clear-text-logging]
 	log.Printf("    password: %s", password)
 	log.Printf("======================================================================")
 }

@@ -42,5 +42,10 @@ EXPOSE 8478
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD proto=http; if [ -n "${COLDARR_TLS_CERT_FILE:-}" ] && [ -n "${COLDARR_TLS_KEY_FILE:-}" ]; then proto=https; fi; wget -q --no-check-certificate -O- "${proto}://127.0.0.1:$(echo "${COLDARR_LISTEN_ADDR:-:8478}" | sed 's/.*://')/healthz" >/dev/null || exit 1
 
+# The entrypoint needs root only to set PUID/PGID and /config ownership, then
+# execs Coldarr as that user via su-exec (or keeps an explicit non-root --user).
+# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
+# Privileges are dropped by the entrypoint before this command runs.
+# nosemgrep: dockerfile.security.missing-user.missing-user
 CMD ["serve"]

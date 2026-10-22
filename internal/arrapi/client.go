@@ -93,6 +93,9 @@ func (c *client) do(method, path string, query url.Values, body interface{}, out
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// The authenticated operator chooses the upstream service URL in connection settings.
+	// Reaching arbitrary LAN services is intentional; public visitors cannot configure it.
+	// codeql[go/request-forgery]
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)

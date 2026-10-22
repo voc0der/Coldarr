@@ -126,6 +126,9 @@ func (c *Client) send(path string, query, form url.Values, withKey bool) ([]byte
 		req.Header.Set("X-API-Key", c.auth.APIKey)
 	}
 
+	// The authenticated operator chooses the upstream service URL in connection settings.
+	// Reaching arbitrary LAN services is intentional; public visitors cannot configure it.
+	// codeql[go/request-forgery]
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%s %s: %w", method, path, err)

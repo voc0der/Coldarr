@@ -21,7 +21,13 @@ type transport struct {
 func newTransport() *transport {
 	verified := http.DefaultTransport.(*http.Transport).Clone()
 	local := verified.Clone()
-	local.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Only selected for local addresses below.
+	// Only literal private/loopback/link-local IPs and localhost use this transport;
+	// public hosts (including redirects) use verified. See transport_test.go. Go's
+	// client default already refuses anything older than TLS 1.2.
+	// Code scanning matches its dismissed alert by this line's text: keep the line
+	// as it is, and add anything new after its existing comment.
+	// codeql[go/disabled-certificate-check]
+	local.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Only selected for local addresses below. // nosemgrep: problem-based-packs.insecure-transport.go-stdlib.bypass-tls-verification.bypass-tls-verification, go.lang.security.audit.crypto.missing-ssl-minversion.missing-ssl-minversion
 	return &transport{verified: verified, local: local}
 }
 

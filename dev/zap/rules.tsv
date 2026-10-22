@@ -1,0 +1,7 @@
+# ZAP baseline rules for dev/zap/scan.sh: rule ID, action, name and reason, separated by tabs.
+# A rule not listed here warns, and any warning fails the scan. INFO reports a rule without
+# failing; IGNORE silences it. Change a rule only after review, and give the reason.
+10015	INFO	(Re-examine Cache-control Directives)	Dynamic responses send no-store, which already forbids caching.
+10031	INFO	(User Controllable HTML Element Attribute)	The return_to hidden input is a validated same-origin path escaped by Go html/template; FuzzReturnTo checks redirects.
+10055	INFO	(CSP: unsafe-inline)	Existing templates use inline scripts, event handlers and styles; CSP still restricts resource origins, framing and form targets.
+10202	INFO	(Absence of Anti-CSRF Tokens)	Go CrossOriginProtection checks Sec-Fetch-Site and Origin on unsafe requests, including login; security_test.go covers direct and trusted-proxy requests.

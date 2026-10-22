@@ -17,3 +17,7 @@ See [Before opening a PR](https://voc0der.github.io/Coldarr/development/contribu
 ## Coverage
 
 See [Coverage](https://voc0der.github.io/Coldarr/development/contributing/#coverage).
+
+## Security checks
+
+See [Security checks](https://voc0der.github.io/Coldarr/development/contributing/#security-checks).

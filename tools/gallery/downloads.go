@@ -85,6 +85,9 @@ func (l *library) seedDownloads(specs []downloadSpec, now time.Time) error {
 func (l *library) qbitHandler(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v2/app/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		// The fixture's own version string, served as plain text.
+		// nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter
 		_, _ = fmt.Fprint(w, version)
 	})
 	mux.HandleFunc("GET /api/v2/torrents/info", func(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +177,8 @@ func (l *library) moveDownloads(w http.ResponseWriter, r *http.Request) {
 	defer l.mu.Unlock()
 	// Coldarr preserves category subdirectories (e.g. /downloads/movies
 	// becomes /seed/movies), but every destination must stay on seed storage.
+	// Clean only normalizes the path for an exact allowlist lookup; nothing is opened.
+	// nosemgrep: go.lang.security.filepath-clean-misuse.filepath-clean-misuse
 	index := slices.Index(l.seedTargets, filepath.Clean(r.FormValue("location")))
 	if index < 0 {
 		http.Error(w, "not a configured seed path", http.StatusBadRequest)

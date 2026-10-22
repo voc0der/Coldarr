@@ -44,4 +44,7 @@ ENV COLDARR_PASSWORD=gallery \
     COLDARR_SCHEDULER_TICK_INTERVAL=24h
 
 EXPOSE 8478
+# Disposable screenshot fixture: root and SYS_ADMIN are required to mount fake
+# FUSE drives; this image is not the application image and has no real media.
+# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
 ENTRYPOINT ["/gallery/entrypoint.sh"]
