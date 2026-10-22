@@ -303,7 +303,7 @@ func (s *Server) routes() http.Handler {
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticSub)))
 
-	return s.authMiddleware(mux)
+	return browserSecurity(s.authMiddleware(mux))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {

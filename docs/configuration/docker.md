@@ -47,7 +47,11 @@ container.
 `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`)
 :   Comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` /
     `X-Forwarded-Host` headers should be trusted. Headers from other remote
-    IPs are ignored.
+    IPs are ignored. Coldarr refuses form submissions from other sites, which
+    over plain HTTP it checks by comparing the page's address with the `Host`
+    header. A plain-HTTP proxy that rewrites `Host` therefore needs to be
+    listed here and send `X-Forwarded-Host`, or saving settings fails with
+    a 403.
 
 ### Sign-in
 
