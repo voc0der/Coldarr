@@ -651,6 +651,16 @@ func cleanReturnTo(raw string) string {
 	if raw[0] != '/' || (len(raw) > 1 && (raw[1] == '/' || raw[1] == '\\')) {
 		return "/"
 	}
+	// A backslash further in can still end up leading: http.Redirect runs
+	// path.Clean over everything before the first "?", a "#" fragment
+	// included, so a "../" in the path or the fragment can pop the leading
+	// segment and bring the backslash to the front. A "//" never survives
+	// path.Clean, but a "\" does, and so does a control byte such as NUL,
+	// which url.Parse accepts in a fragment and which then lands in a
+	// malformed Location header. Reject both wherever they appear.
+	if strings.ContainsFunc(raw, func(r rune) bool { return r == '\\' || r < ' ' || r == '\x7f' }) {
+		return "/"
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.IsAbs() || u.Host != "" {
 		return "/"

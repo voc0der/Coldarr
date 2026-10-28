@@ -14,6 +14,7 @@ func FuzzReturnTo(f *testing.F) {
 		"", "/plan?page=1", "//evil.example", `/\evil.example`, "/.//evil.example",
 		"/a/../..//evil.example", "/%2f%2fevil.example", "/\t/evil.example",
 		"https://evil.example", "/auth/callback", "/login", "/history%zz",
+		`/x/../\evil.example`, "/#/../\x000",
 	} {
 		f.Add(target)
 	}

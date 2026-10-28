@@ -25,6 +25,11 @@ func TestCleanReturnTo(t *testing.T) {
 		{raw: "https://evil.example/plan", want: "/"},
 		{raw: "//evil.example/plan", want: "/"},
 		{raw: "/\\evil.example/plan", want: "/"},
+		// http.Redirect's path.Clean would pop the first segment, leading the
+		// Location with a later backslash or with a NUL hidden in the fragment.
+		{raw: `/x/../\evil.example`, want: "/"},
+		{raw: `/#/../\evil.example`, want: "/"},
+		{raw: "/#/../\x000", want: "/"},
 		{raw: "/auth/login", want: "/"},
 		{raw: "/login", want: "/"},
 		{raw: "/auth/callback?code=x", want: "/"},
