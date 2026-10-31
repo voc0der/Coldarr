@@ -16,7 +16,7 @@ concurrency:
 jobs:
   scan:
     name: Go and JavaScript
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       COLDARR_CODEQL_HOME: ${{ github.workspace }}/../.coldarr-codeql
@@ -32,14 +32,14 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # Ubuntu 24.04 denies capabilities in unprivileged user namespaces, so bwrap
+      # Ubuntu denies capabilities in unprivileged user namespaces, so bwrap
       # can't set up its network namespace. Ubuntu's profile allows bwrap itself
-      # while the commands it starts still get no capabilities.
+      # while the commands it starts still get no capabilities. Since 25.04 the
+      # apparmor package ships it; loading it here fails loudly if it moves again.
       - name: Install sandbox prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap zstd apparmor-profiles
-          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+          sudo apt-get install --yes --no-install-recommends bubblewrap zstd
           sudo apparmor_parser --replace /etc/apparmor.d/bwrap-userns-restrict
           bwrap --unshare-all --die-with-parent --ro-bind / / true
 

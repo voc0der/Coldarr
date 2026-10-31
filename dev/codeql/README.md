@@ -11,10 +11,11 @@ Detailed reports stay on the runner and are deleted after the job.
 
 Install Python 3.12+, Git, curl, zstd, bubblewrap (`bwrap`), and the project's
 Go toolchain. Unprivileged user and network namespaces must be available.
-Ubuntu 24.04's AppArmor restriction blocks them for bwrap unless you install
-`apparmor-profiles` and load its `bwrap-userns-restrict` profile, as the CodeQL
-workflow does. Where the namespaces are unavailable, the harness tests skip their
-real-sandbox check, but `doctor` and scans still fail.
+Ubuntu's AppArmor restriction blocks them for bwrap unless the
+`bwrap-userns-restrict` profile is loaded. Since Ubuntu 25.04 the `apparmor`
+package ships it enabled; on 24.04, install `apparmor-profiles` and load its copy
+from `/usr/share/apparmor/extra-profiles/`. Where the namespaces are unavailable,
+the harness tests skip their real-sandbox check, but `doctor` and scans still fail.
 The sandbox expects system tools under `/usr`, as on Debian, Ubuntu, and Arch.
 It mounts the selected Go toolchain separately, including installations made by
 `actions/setup-go` outside `/usr`.
