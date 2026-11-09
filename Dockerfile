@@ -14,7 +14,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 
 FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates tzdata su-exec
+# Alpine ships security fixes to its package repository before it publishes a
+# new base image, so upgrade what the base image already has: a rebuild then
+# picks up a fix as soon as Alpine releases it.
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata su-exec
 
 COPY --from=builder /out/coldarr /usr/local/bin/coldarr
 COPY docker/entrypoint.sh /entrypoint.sh

@@ -125,7 +125,9 @@ GH_TOKEN="$(gh auth token)" uvx zizmor .
 vulnerabilities that have a fix. A failing scheduled scan means the published
 image needs rebuilding, which the next release does. If a release's scan fails,
 nothing is pushed: publish a new release once the cause is fixed, or re-run the
-failed release workflow if a newer base image alone fixes it. Record a reviewed
+failed release workflow if a newer base image or Alpine package alone fixes it.
+The build upgrades the base image's Alpine packages, so a fix in Alpine's
+repository doesn't have to wait for a new base image. Record a reviewed
 false positive as an `ignore` rule in a `.grype.yaml` at the repository root. To
 scan the same way with [Grype](https://github.com/anchore/grype):
 
