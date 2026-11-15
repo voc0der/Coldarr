@@ -46,12 +46,17 @@ container.
 
 `COLDARR_TRUSTED_REVERSE_PROXIES_CIDR` (`TRUSTED_REVERSE_PROXIES_CIDR`)
 :   Comma-separated proxy CIDRs whose `Forwarded` / `X-Forwarded-Proto` /
-    `X-Forwarded-Host` headers should be trusted. Headers from other remote
-    IPs are ignored. Coldarr refuses form submissions from other sites, which
-    over plain HTTP it checks by comparing the page's address with the `Host`
-    header. A plain-HTTP proxy that rewrites `Host` therefore needs to be
-    listed here and send `X-Forwarded-Host`, or saving settings fails with
-    a 403.
+    `X-Forwarded-Host` / `X-Forwarded-For` headers should be trusted. Headers
+    from other remote IPs are ignored. Coldarr refuses form submissions from
+    other sites, which over plain HTTP it checks by comparing the page's
+    address with the `Host` header. A plain-HTTP proxy that rewrites `Host`
+    therefore needs to be listed here and send `X-Forwarded-Host`, or saving
+    settings fails with a 403. `X-Forwarded-For` gives each browser's own
+    address, which the [sign-in limit](#sign-in) counts attempts against:
+    behind a proxy that isn't listed, every browser counts as the proxy, so
+    one that keeps getting the password wrong holds up everyone's password
+    sign-ins. List only the proxies' own addresses: anything sending from a
+    listed address can say what it likes in these headers.
 
 ### Sign-in
 
@@ -60,7 +65,11 @@ container.
     `COLDARR_PASSWORD_FILE` isn't either), a random 64-character password is
     generated on every start and printed to the container's console log,
     with a warning that it won't survive a restart - set this to keep it
-    stable. Irrelevant once OIDC is enabled.
+    stable. Irrelevant once OIDC is enabled. After 10 wrong passwords in 15
+    minutes, a browser's address (for IPv6, its /64) has to wait until the
+    oldest of them is 15 minutes old, even to try the right one. Signing in
+    clears its count. The log records each wrong password and sign-in, with
+    the address it came from.
 
 `COLDARR_PASSWORD_FILE`
 :   Path to a file containing the password (its contents win over

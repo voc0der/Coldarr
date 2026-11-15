@@ -88,6 +88,8 @@ type Server struct {
 	authMu       sync.Mutex
 	authSessions map[string]authSession
 	oidcStates   map[string]oidcLoginState
+	// signIns limits failed password sign-ins per client.
+	signIns signInLimiter
 	// password gates the GUI whenever OIDC is disabled - resolved once in
 	// New() from COLDARR_PASSWORD/COLDARR_PASSWORD_FILE (or generated), so
 	// it's never reachable with zero protection just because nobody set
@@ -592,11 +594,17 @@ func (s *Server) renderPartial(w http.ResponseWriter, page, partial string, data
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, page, name string, data any) {
+	s.renderTemplateStatus(w, http.StatusOK, page, name, data)
+}
+
+// renderTemplateStatus is renderTemplate answering with status.
+func (s *Server) renderTemplateStatus(w http.ResponseWriter, status int, page, name string, data any) {
 	var buf bytes.Buffer
 	if err := s.pages[page].ExecuteTemplate(&buf, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = buf.WriteTo(w)
 }

@@ -195,6 +195,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, data loginData) {
 // (resolved once at startup - see resolvePassword) and, if it matches,
 // creates the same kind of session OIDC login does. Only reachable while
 // OIDC is disabled; requirePasswordSession is what actually gates access.
+// Failed attempts are logged and limited per client (see signInLimiter).
 func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	if s.effectiveOIDCConfig().Enabled {
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -205,7 +206,23 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	returnTo := cleanReturnTo(r.FormValue("return_to"))
 	attempt := r.FormValue("password")
 
+	client := signInClient(r)
+	if ok, report := s.signIns.allow(client, time.Now()); !ok {
+		if report {
+			log.Printf("auth: refusing password sign-ins from %s: too many failed attempts", clientAddr(r))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(int(signInWindow/time.Second)))
+		s.renderTemplateStatus(w, http.StatusTooManyRequests, "login", "portal_layout", loginData{
+			Title:        "Sign in",
+			PasswordAuth: true,
+			ReturnTo:     returnTo,
+			Error:        "Too many failed sign-in attempts. Wait 15 minutes and try again.",
+		})
+		return
+	}
+
 	if s.password == "" || subtle.ConstantTimeCompare([]byte(attempt), []byte(s.password)) != 1 {
+		log.Printf("auth: wrong password from %s", clientAddr(r))
 		s.renderLogin(w, loginData{
 			Title:        "Sign in",
 			PasswordAuth: true,
@@ -214,11 +231,13 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.signIns.forget(client)
 
 	if err := s.createAuthSession(w, r, effectiveOIDCConfig{}, "admin", "", nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("auth: signed in with the password from %s", clientAddr(r))
 	// cleanReturnTo rejects foreign origins; FuzzReturnTo checks the emitted Location.
 	// codeql[go/unvalidated-url-redirection]
 	http.Redirect(w, r, returnTo, http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path // nosemgrep: go.lang.security.injection.open-redirect.open-redirect

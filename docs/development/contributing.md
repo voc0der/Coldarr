@@ -164,7 +164,8 @@ Its seeds also run with the regular tests.
 | Test | Property |
 | --- | --- |
 | `FuzzReturnTo` | A post-login redirect stays on the site, as a browser reads the `Location` header |
-| `FuzzUntrustedProxy` | Forwarding headers from a peer that isn't a trusted proxy change neither the request's host nor its scheme, and never reach the handler |
+| `FuzzUntrustedProxy` | Forwarding headers from a peer that isn't a trusted proxy change none of the request's host, scheme or client address, and never reach the handler |
+| `FuzzForwardedClient` | Whatever `X-Forwarded-For` a client sends, its address is the one the trusted proxies appended, never one it wrote |
 | `FuzzProxyCIDRs` | An accepted trusted-proxy list holds only valid, zone-free prefixes, and trusts a peer exactly when `netip` says one of them contains it |
 | `FuzzEncryptedConnection` | A saved connection reads back unchanged, and changing any bit of its nonce, ciphertext or key stops it decrypting |
 | `FuzzDecryptMalformed` | A corrupt connection store fails with an error, never a panic, and whatever does decrypt saves and reads back unchanged |

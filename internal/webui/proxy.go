@@ -36,7 +36,7 @@ func trustedReverseProxyMiddleware(next http.Handler, proxies []netip.Prefix) ht
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r2 := r.Clone(r.Context())
 		if remoteAddrTrusted(r.RemoteAddr, proxies) {
-			applyForwardedHeaders(r2)
+			applyForwardedHeaders(r2, proxies)
 		} else {
 			stripForwardedHeaders(r2.Header)
 		}
@@ -46,9 +46,10 @@ func trustedReverseProxyMiddleware(next http.Handler, proxies []netip.Prefix) ht
 
 func remoteAddrTrusted(remoteAddr string, proxies []netip.Prefix) bool {
 	addr, ok := remoteIP(remoteAddr)
-	if !ok {
-		return false
-	}
+	return ok && addrTrusted(addr, proxies)
+}
+
+func addrTrusted(addr netip.Addr, proxies []netip.Prefix) bool {
 	for _, proxy := range proxies {
 		if proxy.Contains(addr) {
 			return true
@@ -69,7 +70,7 @@ func remoteIP(remoteAddr string) (netip.Addr, bool) {
 	return addr.Unmap(), true
 }
 
-func applyForwardedHeaders(r *http.Request) {
+func applyForwardedHeaders(r *http.Request, proxies []netip.Prefix) {
 	forwarded := parseForwardedHeader(r.Header.Values("Forwarded"))
 	if forwarded.proto != "" {
 		r.URL.Scheme = forwarded.proto
@@ -87,6 +88,49 @@ func applyForwardedHeaders(r *http.Request) {
 	if host := cleanForwardedHost(r.Header.Get("X-Forwarded-Host")); host != "" {
 		r.Host = host
 	}
+
+	// The request's remote address becomes the client's, so what counts per
+	// client - failed sign-ins - counts each one behind the proxy separately.
+	if client, ok := forwardedClient(r.Header.Values("X-Forwarded-For"), proxies); ok {
+		r.RemoteAddr = client.String()
+	}
+}
+
+// forwardedClient is the client a trusted proxy passed the request on for,
+// read from X-Forwarded-For. Each proxy appends the address it heard from, so
+// reading back from the end, past the trusted proxies' own addresses, reaches
+// the client. Anything further left, the client sent itself, so the reading
+// stops there, and at an entry that isn't an address.
+func forwardedClient(values []string, proxies []netip.Prefix) (netip.Addr, bool) {
+	var hops []string
+	for _, value := range values {
+		hops = append(hops, strings.Split(value, ",")...)
+	}
+	var client netip.Addr
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, ok := parseForwardedAddr(hops[i])
+		if !ok {
+			break
+		}
+		client = addr
+		if !addrTrusted(addr, proxies) {
+			break
+		}
+	}
+	return client, client.IsValid()
+}
+
+// parseForwardedAddr reads one X-Forwarded-For entry: an IP address, perhaps
+// in brackets or with a port, as some proxies write them.
+func parseForwardedAddr(raw string) (netip.Addr, bool) {
+	raw = strings.TrimSpace(raw)
+	if addr, err := netip.ParseAddr(strings.Trim(raw, "[]")); err == nil {
+		return addr.Unmap().WithZone(""), true
+	}
+	if addrPort, err := netip.ParseAddrPort(raw); err == nil {
+		return addrPort.Addr().Unmap().WithZone(""), true
+	}
+	return netip.Addr{}, false
 }
 
 func stripForwardedHeaders(h http.Header) {
