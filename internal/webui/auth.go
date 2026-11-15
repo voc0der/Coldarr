@@ -311,7 +311,7 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	// callback; Secure follows the effective HTTPS request, as the session's.
 	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
-		Name:     oidcBrowserCookie,
+		Name:     cookieName(r, oidcBrowserCookie),
 		Value:    browser,
 		Path:     "/",
 		MaxAge:   int(oidcStateTTL / time.Second),
@@ -409,7 +409,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(authSessionCookie); err == nil {
+	if c, err := r.Cookie(cookieName(r, authSessionCookie)); err == nil {
 		s.authMu.Lock()
 		delete(s.authSessions, c.Value)
 		s.authMu.Unlock()
@@ -417,7 +417,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
 	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
-		Name:     authSessionCookie,
+		Name:     cookieName(r, authSessionCookie),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -575,7 +575,7 @@ func validOIDCTokenAuthMethod(method string) bool {
 }
 
 func (s *Server) currentAuthSession(r *http.Request) bool {
-	c, err := r.Cookie(authSessionCookie)
+	c, err := r.Cookie(cookieName(r, authSessionCookie))
 	if err != nil || c.Value == "" {
 		return false
 	}
@@ -614,7 +614,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
 	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
-		Name:     authSessionCookie,
+		Name:     cookieName(r, authSessionCookie),
 		Value:    id,
 		Path:     "/",
 		Expires:  expires,
@@ -672,7 +672,7 @@ func (s *Server) consumeOIDCState(state, browser string) (oidcLoginState, bool) 
 // oidcBrowser is the request's oidcBrowserCookie value, or "" when it has
 // none that Coldarr could have made.
 func oidcBrowser(r *http.Request) string {
-	c, err := r.Cookie(oidcBrowserCookie)
+	c, err := r.Cookie(cookieName(r, oidcBrowserCookie))
 	if err != nil {
 		return ""
 	}
@@ -790,6 +790,19 @@ func requestIsHTTPS(r *http.Request, cfg effectiveOIDCConfig) bool {
 		return true
 	}
 	return strings.HasPrefix(strings.ToLower(cfg.RedirectURL), "https://")
+}
+
+// cookieName gives a cookie the __Host- prefix when the request came over
+// HTTPS, to Coldarr itself or by a trusted proxy's account. A browser takes
+// such a cookie only over HTTPS, from this host alone, for the whole site,
+// so neither a sibling subdomain nor a plain-HTTP response can plant one or
+// hide it. Unlike requestIsHTTPS, it goes by how the request came, never by
+// settings, so changing them never changes which cookie a request reads.
+func cookieName(r *http.Request, name string) string {
+	if r.TLS != nil || r.URL.Scheme == "https" {
+		return "__Host-" + name
+	}
+	return name
 }
 
 type oidcIdentity struct {

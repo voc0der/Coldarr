@@ -534,6 +534,74 @@ func passwordSession(t *testing.T, handler http.Handler) *http.Cookie {
 	return nil
 }
 
+// TestSessionCookie_HostPrefixedOverHTTPS: over HTTPS - to Coldarr itself,
+// or by a trusted proxy's account - the session cookie is __Host-prefixed,
+// which a sibling subdomain can't set, and the unprefixed name a sibling
+// could set doesn't count there.
+func TestSessionCookie_HostPrefixedOverHTTPS(t *testing.T) {
+	t.Setenv(passwordEnvVar, "pw")
+	srv := newAuthTestServer(t, false)
+	proxies, err := parseTrustedReverseProxyCIDRs("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := trustedReverseProxyMiddleware(srv.routes(), proxies)
+	const prefixed = "__Host-" + authSessionCookie
+
+	for name, newRequest := range map[string]func(method, target string) *http.Request{
+		"direct TLS": func(method, target string) *http.Request {
+			return httptest.NewRequest(method, "https://coldarr.example"+target, strings.NewReader("password=pw&return_to=/plan"))
+		},
+		"trusted proxy": func(method, target string) *http.Request {
+			r := httptest.NewRequest(method, "http://coldarr.example"+target, strings.NewReader("password=pw&return_to=/plan"))
+			r.RemoteAddr = "10.0.0.2:4711"
+			r.Header.Set("X-Forwarded-Proto", "https")
+			return r
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := newRequest(http.MethodPost, "/login")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			handler.ServeHTTP(rec, req)
+			cookie := responseCookie(rec, prefixed)
+			if rec.Code != http.StatusFound || cookie == nil || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" {
+				t.Fatalf("POST /login = %d with cookies %+v, want a Secure, host-only %s for the whole site", rec.Code, rec.Result().Cookies(), prefixed)
+			}
+
+			rec = httptest.NewRecorder()
+			req = newRequest(http.MethodGet, "/plan")
+			req.AddCookie(cookie)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /plan with %s = %d, want 200", prefixed, rec.Code)
+			}
+
+			rec = httptest.NewRecorder()
+			req = newRequest(http.MethodGet, "/plan")
+			req.Header.Set("Cookie", authSessionCookie+"="+cookie.Value)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+				t.Fatalf("GET /plan with the session under the unprefixed name = %d, want sent to /login", rec.Code)
+			}
+
+			rec = httptest.NewRecorder()
+			req = newRequest(http.MethodGet, "/auth/logout")
+			req.AddCookie(cookie)
+			handler.ServeHTTP(rec, req)
+			if cleared := responseCookie(rec, prefixed); cleared == nil || cleared.MaxAge >= 0 || !cleared.Secure {
+				t.Fatalf("logout cookies = %+v, want %s expired", rec.Result().Cookies(), prefixed)
+			}
+			srv.authMu.Lock()
+			_, live := srv.authSessions[cookie.Value]
+			srv.authMu.Unlock()
+			if live {
+				t.Fatal("logout over HTTPS left the session behind")
+			}
+		})
+	}
+}
+
 // TestLogout_EndsTheSessionServerSide: logging out deletes the session
 // itself, not just the browser's cookie, so a copy of the cookie stops
 // working too.

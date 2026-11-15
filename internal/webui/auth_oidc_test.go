@@ -649,6 +649,49 @@ func TestOIDCLogin_ConfiguredRedirectURLMakesTheSessionSecure(t *testing.T) {
 	}
 }
 
+// TestOIDCLogin_HostPrefixedCookiesOverHTTPS: over HTTPS, the login's
+// browser cookie and the session it ends in are both __Host-prefixed.
+func TestOIDCLogin_HostPrefixedCookiesOverHTTPS(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	srv := newOIDCTestServer(t, issuer.URL, nil)
+	handler := srv.routes()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "https://coldarr.example/auth/login?return_to=%2F", nil))
+	browser := responseCookie(rec, "__Host-"+oidcBrowserCookie)
+	if rec.Code != http.StatusFound || browser == nil || !browser.Secure || browser.Path != "/" || browser.Domain != "" {
+		t.Fatalf("GET /auth/login over HTTPS = %d with cookies %+v, want a Secure, host-only __Host-%s", rec.Code, rec.Result().Cookies(), oidcBrowserCookie)
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := loc.Query()
+	issuer.mu.Lock()
+	issuer.challenge, issuer.redirectURI = auth.Get("code_challenge"), auth.Get("redirect_uri")
+	issuer.claims = map[string]any{"sub": "user-1", "groups": []string{"coldarr"}, "nonce": auth.Get("nonce")}
+	issuer.mu.Unlock()
+
+	callback := "https://coldarr.example/auth/callback?code=code-1&state=" + url.QueryEscape(auth.Get("state"))
+	// The unprefixed name, which a sibling subdomain could set, doesn't
+	// count over HTTPS.
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, callback, nil)
+	req.Header.Set("Cookie", oidcBrowserCookie+"="+browser.Value)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("callback with the unprefixed browser cookie = %d %q, want 400", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, callback, nil)
+	req.AddCookie(browser)
+	handler.ServeHTTP(rec, req)
+	if session := responseCookie(rec, "__Host-"+authSessionCookie); rec.Code != http.StatusFound || session == nil || !session.Secure {
+		t.Fatalf("callback over HTTPS = %d with cookies %+v, want a Secure __Host-%s", rec.Code, rec.Result().Cookies(), authSessionCookie)
+	}
+}
+
 func TestOIDCLogin_UnreachableProvider(t *testing.T) {
 	issuer := newFakeIssuer(t)
 	issuer.Close()
