@@ -83,7 +83,12 @@ container.
 
 `COLDARR_OIDC_REDIRECT_URL` / `COLDARR_OIDC_REQUIRED_GROUP` / `COLDARR_OIDC_GROUPS_CLAIM`
 :   Optional OIDC details. Required group defaults to `coldarr`; groups claim
-    defaults to `groups`.
+    defaults to `groups`. Set the redirect URL to Coldarr's public address
+    followed by `/auth/callback`, such as
+    `https://coldarr.example.com/auth/callback`. Without it, each sign-in
+    builds that address from the request's `Host` header, which the
+    container's log warns about at startup. A sign-in only finishes in the
+    browser it started in, so start it at the redirect URL's address.
 
 `COLDARR_OIDC_AUTO_LOGIN`
 :   Set to `true`/`false` to skip straight to the IdP instead of showing a

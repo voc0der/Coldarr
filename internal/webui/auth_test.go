@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,10 +36,17 @@ func TestCleanReturnTo(t *testing.T) {
 		{raw: "/auth/callback?code=x", want: "/"},
 		{raw: "/history%zz", want: "/"},
 		{raw: "plan", want: "/"},
+		// Logins in flight keep their return path, so it's bounded.
+		{raw: "/plan?q=" + strings.Repeat("a", maxReturnTo-len("/plan?q=")), want: "/plan?q=" + strings.Repeat("a", maxReturnTo-len("/plan?q="))},
+		{raw: "/plan?q=" + strings.Repeat("a", maxReturnTo+1-len("/plan?q=")), want: "/"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.raw, func(t *testing.T) {
+		name := tt.raw
+		if len(name) > 40 {
+			name = fmt.Sprintf("%s...(%d bytes)", name[:20], len(name))
+		}
+		t.Run(name, func(t *testing.T) {
 			if got := cleanReturnTo(tt.raw); got != tt.want {
 				t.Fatalf("cleanReturnTo(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
@@ -58,18 +66,14 @@ func TestGroupAllowed(t *testing.T) {
 	}
 }
 
-func TestClaimStringSlice(t *testing.T) {
-	primary := map[string]any{"groups": []any{"coldarr", "media"}}
-	fallback := map[string]any{"groups": "fallback"}
-
-	got := claimStringSlice(primary, fallback, "groups")
-	if len(got) != 2 || got[0] != "coldarr" || got[1] != "media" {
-		t.Fatalf("claimStringSlice array = %#v, want coldarr/media", got)
+func TestStringSliceClaim(t *testing.T) {
+	for _, claim := range []any{[]any{"coldarr", " media ", ""}, "coldarr, media", "coldarr media", []string{"coldarr", "media"}} {
+		if got := stringSliceClaim(claim); len(got) != 2 || got[0] != "coldarr" || got[1] != "media" {
+			t.Errorf("stringSliceClaim(%#v) = %#v, want coldarr/media", claim, got)
+		}
 	}
-
-	got = claimStringSlice(map[string]any{}, map[string]any{"groups": "coldarr, media"}, "groups")
-	if len(got) != 2 || got[0] != "coldarr" || got[1] != "media" {
-		t.Fatalf("claimStringSlice string fallback = %#v, want coldarr/media", got)
+	if got := stringSliceClaim(42.0); got != nil {
+		t.Errorf("stringSliceClaim(42) = %#v, want nothing", got)
 	}
 }
 
@@ -628,10 +632,10 @@ func TestAuthState_ExpiredEntriesAreRefusedAndSwept(t *testing.T) {
 	srv.oidcStates["too-slow"] = oidcLoginState{Expires: past}
 	srv.authSessions["old"] = authSession{Expires: past}
 
-	if _, ok := srv.consumeOIDCState("too-slow"); ok {
+	if _, ok := srv.consumeOIDCState("too-slow", "browser"); ok {
 		t.Error("an expired login state must not complete a login")
 	}
-	if _, ok := srv.consumeOIDCState(""); ok {
+	if _, ok := srv.consumeOIDCState("", "browser"); ok {
 		t.Error("a callback without a state must not complete a login")
 	}
 

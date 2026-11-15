@@ -140,7 +140,7 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		return nil, err
 	}
 
-	if !s.effectiveOIDCConfig().Enabled {
+	if oidcCfg := s.effectiveOIDCConfig(); !oidcCfg.Enabled {
 		password, generated, err := resolvePassword()
 		if err != nil {
 			return nil, err
@@ -149,6 +149,10 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		if generated {
 			logGeneratedPassword(password)
 		}
+	} else if oidcCfg.RedirectURL == "" {
+		// A Host header can name anything, so an identity provider that
+		// matches redirect URIs loosely could send a sign-in elsewhere.
+		log.Printf("auth: OIDC sign-ins build their callback address from each request's Host header - set COLDARR_OIDC_REDIRECT_URL, or the Redirect URL under Settings > Auth, to Coldarr's public address")
 	}
 
 	return s, nil
