@@ -16,7 +16,13 @@ precedence:
 2. **The web GUI's Connections page** (**Settings > Connections**) - fill in
    URL + API key, hit "Test connection" to confirm it actually works, then
    Save. If an app's env vars are set, its fields show locked with a note
-   explaining why.
+   explaining why. Left blank, a saved API key or password stays as it is,
+   but only for the URL it was saved for: after changing the URL, type it
+   again (for qBittorrent's optional key, you can tick **Forget the saved
+   API key** instead). That way nobody at a signed-in browser can send your
+   saved secrets to a server of their own just by changing the URL. The
+   same goes for the OIDC client secret under **Settings > Auth** and its
+   issuer URL.
 3. **The CLI**: `coldarr connections set/list/test/delete` - see the
    [CLI guide](../usage/cli.md#setting-up-connections).
 

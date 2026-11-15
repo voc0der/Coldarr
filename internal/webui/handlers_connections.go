@@ -1,8 +1,10 @@
 package webui
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strings"
 
 	"github.com/vocoder/coldarr/internal/conncheck"
@@ -114,23 +116,38 @@ func (s *Server) handleConnectionTest(w http.ResponseWriter, r *http.Request) {
 	// env), so "Test connection" also works for already-configured apps
 	// without retyping the key. A login is only borrowed when the form
 	// didn't post one at all: a username field submitted empty means
-	// "test without signing in".
+	// "test without signing in". A saved secret is only ever sent to the
+	// URL it was saved for, though: testing another URL needs its secrets
+	// typed in, or a session alone - a borrowed browser, a script injected
+	// into a page - could point a test at its own server and collect them.
 	effective, _ := s.connStore.Effective(app)
+	moved := conn.URL != "" && !sameAddress(conn.URL, effective.URL)
 	if conn.URL == "" {
 		conn.URL = effective.URL
-	}
-	if conn.APIKey == "" {
-		conn.APIKey = effective.APIKey
 	}
 	if !r.Form.Has("username") {
 		conn.Username = effective.Username
 	}
-	if conn.Username != "" && conn.Password == "" {
-		conn.Password = effective.Password
+	retype := ""
+	if conn.APIKey == "" && effective.APIKey != "" && !clearsAPIKey(app, r) {
+		if moved {
+			retype = retypeSecret(app, "API key")
+		} else {
+			conn.APIKey = effective.APIKey
+		}
+	}
+	if conn.Username != "" && conn.Password == "" && effective.Password != "" {
+		if moved {
+			retype = cmp.Or(retype, retypeSecret(app, "password"))
+		} else {
+			conn.Password = effective.Password
+		}
 	}
 
 	result := testResult{App: app}
 	switch {
+	case retype != "":
+		result.Error = retype
 	case app == secrets.LoginApp && conn.URL == "":
 		result.Error = "URL is required to test"
 	case app != secrets.LoginApp && (conn.URL == "" || conn.APIKey == ""):
@@ -169,15 +186,22 @@ func (s *Server) handleConnectionSave(w http.ResponseWriter, r *http.Request) {
 	// Saved over what's already stored rather than replacing it, so the
 	// External URL - which has its own form - survives a connection save.
 	conn, _ := s.connStore.Get(app)
+	// Saved secrets are kept only for the URL they were saved for (see
+	// handleConnectionTest).
+	moved := !sameAddress(url, conn.URL)
 
 	// Blank API key on save means "keep the existing one" (the field is
 	// left blank in the form deliberately, so a saved key never round-trips
 	// back into the browser). qBittorrent's key is optional, so it alone
 	// has a box to drop the saved one.
-	if apiKey == "" {
+	if apiKey == "" && conn.APIKey != "" && !clearsAPIKey(app, r) {
+		if moved {
+			s.render(w, "connections", connectionsData{Title: "Connections", Error: retypeSecret(app, "API key"), Rows: s.connRows()})
+			return
+		}
 		apiKey = conn.APIKey
 	}
-	if app == secrets.LoginApp && r.FormValue("clear_api_key") == "on" {
+	if clearsAPIKey(app, r) {
 		apiKey = ""
 	}
 	if apiKey == "" && app != secrets.LoginApp {
@@ -185,7 +209,6 @@ func (s *Server) handleConnectionSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn.URL, conn.APIKey, conn.Enabled = url, apiKey, enabled
 	if app == secrets.LoginApp {
 		// No username means no login at all, so a stale password must not
 		// linger; a username with the password left blank keeps the saved
@@ -195,11 +218,15 @@ func (s *Server) handleConnectionSave(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case username == "":
 			password = ""
+		case password == "" && conn.Password != "" && moved:
+			s.render(w, "connections", connectionsData{Title: "Connections", Error: retypeSecret(app, "password"), Rows: s.connRows()})
+			return
 		case password == "":
 			password = conn.Password
 		}
 		conn.Username, conn.Password = username, password
 	}
+	conn.URL, conn.APIKey, conn.Enabled = url, apiKey, enabled
 	if err := s.connStore.Set(app, conn); err != nil {
 		s.render(w, "connections", connectionsData{Title: "Connections", Error: err.Error(), Rows: s.connRows()})
 		return
@@ -247,4 +274,57 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.render(w, "connections", connectionsData{Title: "Connections", Saved: app + " connection removed.", Rows: s.connRows()})
+}
+
+// clearsAPIKey reports qBittorrent's "Forget the saved API key" box ticked:
+// its key is optional, so it alone can do without one.
+func clearsAPIKey(app string, r *http.Request) bool {
+	return app == secrets.LoginApp && r.FormValue("clear_api_key") == "on"
+}
+
+// retypeSecret asks for a saved secret again for a URL other than the one
+// it was saved for.
+func retypeSecret(app, secret string) string {
+	msg := "Enter the " + secret + " again for this URL"
+	if app == secrets.LoginApp && secret == "API key" {
+		msg += ", or tick Forget the saved API key"
+	}
+	return msg + ": a saved " + secret + " is only sent to the URL it was saved for."
+}
+
+// sameAddress reports whether two URLs name the same place: the same
+// scheme, host, port, path and query, allowing for case where URLs ignore
+// it, a default port written out, and a trailing slash. A saved secret is
+// only sent to the address it was saved for, so this errs toward "not the
+// same": a URL that doesn't parse matches only itself.
+func sameAddress(a, b string) bool {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	if a == b {
+		return true
+	}
+	ua, errA := neturl.Parse(a)
+	ub, errB := neturl.Parse(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) &&
+		strings.EqualFold(ua.Hostname(), ub.Hostname()) &&
+		urlPort(ua) == urlPort(ub) &&
+		ua.Opaque == ub.Opaque &&
+		strings.TrimRight(ua.EscapedPath(), "/") == strings.TrimRight(ub.EscapedPath(), "/") &&
+		ua.RawQuery == ub.RawQuery
+}
+
+// urlPort is a URL's port, or its scheme's default.
+func urlPort(u *neturl.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }

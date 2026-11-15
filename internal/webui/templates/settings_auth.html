@@ -32,7 +32,7 @@
     </div>
     <div>
       <label for="client_secret">Client secret</label>
-      <input type="password" id="client_secret" name="client_secret" placeholder="{{if .ClientSecretSet}}(unchanged - leave blank to keep it){{else}}client secret{{end}}">
+      <input type="password" id="client_secret" name="client_secret" placeholder="{{if .ClientSecretSet}}(unchanged - leave blank to keep it for this issuer){{else}}client secret{{end}}">
       <p class="hint">Stored encrypted, alongside the other connection credentials.</p>
     </div>
     <div class="checkbox-row">

@@ -83,14 +83,20 @@ func TestAuthSave_StoresSettingsAndSecretSeparately(t *testing.T) {
 
 // TestAuthSave_BlankSecretKeepsTheStoredOne: the secret is never sent back
 // to the browser, so saving the form again with the field left blank must
-// keep it rather than wipe it.
+// keep it rather than wipe it - for the issuer it was saved for, however
+// its URL is written.
 func TestAuthSave_BlankSecretKeepsTheStoredOne(t *testing.T) {
 	srv := newAuthTestServer(t, false)
+	srv.mu.Lock()
+	srv.cfg.Auth.OIDC.IssuerURL = "https://auth.example.com"
+	srv.mu.Unlock()
 	if err := srv.connStore.Set(oidcSecretApp, storedOIDCSecret("old-client", "kept-secret")); err != nil {
 		t.Fatal(err)
 	}
 
-	rec := serveForm(srv.handleAuthSave, "/settings/auth", oidcSettingsForm(map[string]string{"client_id": "new-client", "client_secret": ""}))
+	rec := serveForm(srv.handleAuthSave, "/settings/auth", oidcSettingsForm(map[string]string{
+		"issuer_url": "https://AUTH.example.com:443/", "client_id": "new-client", "client_secret": "",
+	}))
 	if !strings.Contains(rec.Body.String(), "OIDC auth settings saved.") {
 		t.Fatalf("save did not report success:\n%s", rec.Body.String())
 	}
@@ -99,6 +105,43 @@ func TestAuthSave_BlankSecretKeepsTheStoredOne(t *testing.T) {
 	}
 	if got := srv.currentConfig().Auth.OIDC.TokenAuthMethod; got != oidcTokenAuthClientBasic {
 		t.Errorf("TokenAuthMethod = %q with client_secret_post unticked, want %q", got, oidcTokenAuthClientBasic)
+	}
+}
+
+// TestAuthSave_NewIssuerNeedsTheSecretAgain: the saved secret only goes to
+// the issuer it was saved for. Otherwise a session alone could point
+// sign-in at a provider of its own and read the secret off the token
+// request, enabled or not, since a later save would keep it for the new one.
+func TestAuthSave_NewIssuerNeedsTheSecretAgain(t *testing.T) {
+	for _, enabled := range []string{"on", ""} {
+		srv := newAuthTestServer(t, false)
+		srv.mu.Lock()
+		srv.cfg.Auth.OIDC = config.OIDCAuthConfig{Enabled: enabled == "on", IssuerURL: "https://auth.example.com", ClientID: "coldarr"}
+		srv.mu.Unlock()
+		if err := srv.connStore.Set(oidcSecretApp, storedOIDCSecret("coldarr", "kept-secret")); err != nil {
+			t.Fatal(err)
+		}
+
+		form := oidcSettingsForm(map[string]string{"enabled": enabled, "issuer_url": "https://auth.evil.example", "client_secret": ""})
+		body := serveForm(srv.handleAuthSave, "/settings/auth", form).Body.String()
+		if !strings.Contains(body, "Enter the client secret again for this issuer") || !strings.Contains(body, `value="https://auth.evil.example"`) {
+			t.Fatalf("enabled=%q: a new issuer with a blank secret = page without the request to type it again, or without the form:\n%s", enabled, body)
+		}
+		if strings.Contains(body, "leave blank to keep it") {
+			t.Errorf("enabled=%q: the refused form offers to keep a secret it won't send to this issuer", enabled)
+		}
+		if got := srv.currentConfig().Auth.OIDC.IssuerURL; got != "https://auth.example.com" {
+			t.Fatalf("enabled=%q: issuer = %q after a refused save, want it unchanged", enabled, got)
+		}
+
+		// Typed again, the secret is saved with the new issuer.
+		form.Set("client_secret", "new-secret")
+		if body := serveForm(srv.handleAuthSave, "/settings/auth", form).Body.String(); !strings.Contains(body, "OIDC auth settings saved.") {
+			t.Fatalf("enabled=%q: save with the secret typed did not report success:\n%s", enabled, body)
+		}
+		if stored, _ := srv.connStore.Get(oidcSecretApp); stored.APIKey != "new-secret" {
+			t.Fatalf("enabled=%q: stored OIDC secret = %+v, want the one typed", enabled, stored)
+		}
 	}
 }
 
