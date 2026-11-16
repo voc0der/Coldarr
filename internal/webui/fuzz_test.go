@@ -52,6 +52,9 @@ func FuzzUntrustedProxy(f *testing.F) {
 			if got.Host != "coldarr.example" || got.URL.Scheme != "http" || requestIsHTTPS(got, effectiveOIDCConfig{}) {
 				t.Fatal("an untrusted peer changed the request origin")
 			}
+			if got.RemoteAddr != "198.51.100.1:1234" {
+				t.Fatalf("an untrusted peer changed the client address to %q", got.RemoteAddr)
+			}
 			for _, name := range []string{"Forwarded", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Forwarded-For", "X-Forwarded-Ssl"} {
 				if len(got.Header.Values(name)) != 0 {
 					t.Fatalf("untrusted header %s survived", name)
@@ -64,6 +67,36 @@ func FuzzUntrustedProxy(f *testing.F) {
 		}
 		if r.Header.Get("X-Forwarded-Ssl") != "on" {
 			t.Fatal("middleware modified the original request")
+		}
+	})
+}
+
+// FuzzForwardedClient: whatever X-Forwarded-For a client sends, a trusted
+// proxy (and any trusted proxies after it) append the address they heard
+// from, and that address - not one the client wrote - is the client's.
+func FuzzForwardedClient(f *testing.F) {
+	f.Add("", "203.0.113.7", uint8(0))
+	f.Add("198.51.100.1, 10.0.0.1", "203.0.113.7", uint8(1))
+	f.Add("unknown, [2001:db8::1]:80", "2001:db8::7", uint8(2))
+	f.Add("203.0.113.7,", "198.51.100.9", uint8(3))
+	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("fd00::/8")}
+	f.Fuzz(func(t *testing.T, sent, client string, hops uint8) {
+		addr, err := netip.ParseAddr(client)
+		if err != nil || addr.Zone() != "" || addrTrusted(addr.Unmap(), proxies) {
+			return
+		}
+		want := addr.Unmap()
+		chain := []string{addr.String()}
+		for i := range int(hops % 4) {
+			chain = append(chain, netip.AddrFrom4([4]byte{10, 0, 0, byte(i + 1)}).String())
+		}
+		header := strings.Join(chain, ", ")
+		if sent != "" {
+			header = sent + ", " + header
+		}
+		got, ok := forwardedClient([]string{header}, proxies)
+		if !ok || got != want {
+			t.Fatalf("X-Forwarded-For %q gave client %v, %v; want %v", header, got, ok, want)
 		}
 	})
 }

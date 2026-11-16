@@ -28,6 +28,15 @@ const (
 	authSessionCookie = "coldarr_session"
 	authSessionTTL    = 12 * time.Hour
 	oidcStateTTL      = 10 * time.Minute
+	// oidcBrowserCookie ties an OIDC login to the browser that started it
+	// (see handleOIDCLogin).
+	oidcBrowserCookie = "coldarr_oidc"
+	// maxOIDCLogins bounds the OIDC logins kept in flight: anyone can start
+	// one. Past it, the oldest is dropped and has to start again.
+	maxOIDCLogins = 10000
+	// maxReturnTo is the longest return path a login keeps (see
+	// cleanReturnTo); none of Coldarr's own pages comes near it.
+	maxReturnTo = 2048
 
 	oidcTokenAuthAuto        = "auto"
 	oidcTokenAuthClientPost  = "client_secret_post"
@@ -56,7 +65,13 @@ type oidcLoginState struct {
 	Verifier string
 	Nonce    string
 	ReturnTo string
-	Expires  time.Time
+	// RedirectURI is the callback address the login asked the provider for.
+	// The token request repeats it, wherever the callback arrives.
+	RedirectURI string
+	// Browser is the login's oidcBrowserCookie value: only the browser that
+	// started the login can finish it.
+	Browser string
+	Expires time.Time
 }
 
 type loginData struct {
@@ -195,6 +210,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, data loginData) {
 // (resolved once at startup - see resolvePassword) and, if it matches,
 // creates the same kind of session OIDC login does. Only reachable while
 // OIDC is disabled; requirePasswordSession is what actually gates access.
+// Failed attempts are logged and limited per client (see signInLimiter).
 func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	if s.effectiveOIDCConfig().Enabled {
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -205,7 +221,23 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	returnTo := cleanReturnTo(r.FormValue("return_to"))
 	attempt := r.FormValue("password")
 
+	client := signInClient(r)
+	if ok, report := s.signIns.allow(client, time.Now()); !ok {
+		if report {
+			log.Printf("auth: refusing password sign-ins from %s: too many failed attempts", clientAddr(r))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(int(signInWindow/time.Second)))
+		s.renderTemplateStatus(w, http.StatusTooManyRequests, "login", "portal_layout", loginData{
+			Title:        "Sign in",
+			PasswordAuth: true,
+			ReturnTo:     returnTo,
+			Error:        "Too many failed sign-in attempts. Wait 15 minutes and try again.",
+		})
+		return
+	}
+
 	if s.password == "" || subtle.ConstantTimeCompare([]byte(attempt), []byte(s.password)) != 1 {
+		log.Printf("auth: wrong password from %s", clientAddr(r))
 		s.renderLogin(w, loginData{
 			Title:        "Sign in",
 			PasswordAuth: true,
@@ -214,11 +246,13 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.signIns.forget(client)
 
 	if err := s.createAuthSession(w, r, effectiveOIDCConfig{}, "admin", "", nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("auth: signed in with the password from %s", clientAddr(r))
 	// cleanReturnTo rejects foreign origins; FuzzReturnTo checks the emitted Location.
 	// codeql[go/unvalidated-url-redirection]
 	http.Redirect(w, r, returnTo, http.StatusFound) //nolint:gosec // cleanReturnTo restricts the target to a same-origin relative path // nosemgrep: go.lang.security.injection.open-redirect.open-redirect
@@ -242,23 +276,48 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = provider
 
-	state, err := randomURLToken(32)
+	state, err := randomURLToken()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	nonce, err := randomURLToken(32)
+	nonce, err := randomURLToken()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
+	// The state only proves a callback answers a login Coldarr started; the
+	// browser cookie proves it's this browser's. Without it, a callback for a
+	// login someone started in their own browser would sign whoever opened
+	// it in as them. Logins started together in several tabs share it.
+	browser := oidcBrowser(r)
+	if browser == "" {
+		if browser, err = randomURLToken(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	s.storeOIDCState(state, oidcLoginState{
-		Verifier: verifier,
-		Nonce:    nonce,
-		ReturnTo: cleanReturnTo(r.URL.Query().Get("return_to")),
-		Expires:  time.Now().Add(oidcStateTTL),
+		Verifier:    verifier,
+		Nonce:       nonce,
+		ReturnTo:    cleanReturnTo(r.URL.Query().Get("return_to")),
+		RedirectURI: oauthCfg.RedirectURL,
+		Browser:     browser,
+		Expires:     time.Now().Add(oidcStateTTL),
+	})
+	// Lax, unlike Strict, comes back on the provider's redirect to the
+	// callback; Secure follows the effective HTTPS request, as the session's.
+	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
+		Name:     cookieName(r, oidcBrowserCookie),
+		Value:    browser,
+		Path:     "/",
+		MaxAge:   int(oidcStateTTL / time.Second),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r, cfg),
 	})
 
 	authURL := oauthCfg.AuthCodeURL(
@@ -279,14 +338,22 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OIDC auth is enabled but not ready: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	if msg := r.URL.Query().Get("error"); msg != "" {
-		http.Error(w, msg, http.StatusUnauthorized)
+	// The state comes first: until it matches a login this browser started,
+	// nothing in the callback is the provider's answer to it - an error
+	// message included, so a link can't put its own words on this page.
+	query := r.URL.Query()
+	state, ok := s.consumeOIDCState(query.Get("state"), oidcBrowser(r))
+	if !ok {
+		http.Error(w, "OIDC login state is missing or expired. Start the sign-in again, in this browser and from the address your identity provider sends you back to.", http.StatusBadRequest)
 		return
 	}
-
-	state, ok := s.consumeOIDCState(r.URL.Query().Get("state"))
-	if !ok {
-		http.Error(w, "OIDC login state is missing or expired", http.StatusBadRequest)
+	if msg := query.Get("error"); msg != "" {
+		http.Error(w, "OIDC provider refused the sign-in: "+msg, http.StatusUnauthorized)
+		return
+	}
+	code := query.Get("code")
+	if code == "" {
+		http.Error(w, "OIDC callback did not include an authorization code", http.StatusBadRequest)
 		return
 	}
 
@@ -295,7 +362,10 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	token, err := oauthCfg.Exchange(r.Context(), r.URL.Query().Get("code"), oauth2.VerifierOption(state.Verifier))
+	// The token request repeats the redirect URI the login went out with,
+	// whatever address the callback arrived at.
+	oauthCfg.RedirectURL = state.RedirectURI
+	token, err := oauthCfg.Exchange(r.Context(), code, oauth2.VerifierOption(state.Verifier))
 	if err != nil {
 		http.Error(w, "exchanging OIDC code: "+err.Error(), http.StatusBadGateway)
 		return
@@ -307,6 +377,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}).Verify(r.Context(), rawIDToken)
+	if err == nil {
+		err = checkAuthorizedParty(idToken, cfg.ClientID)
+	}
 	if err != nil {
 		http.Error(w, "verifying OIDC token: "+err.Error(), http.StatusUnauthorized)
 		return
@@ -336,7 +409,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(authSessionCookie); err == nil {
+	if c, err := r.Cookie(cookieName(r, authSessionCookie)); err == nil {
 		s.authMu.Lock()
 		delete(s.authSessions, c.Value)
 		s.authMu.Unlock()
@@ -344,7 +417,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
 	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
-		Name:     authSessionCookie,
+		Name:     cookieName(r, authSessionCookie),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -502,7 +575,7 @@ func validOIDCTokenAuthMethod(method string) bool {
 }
 
 func (s *Server) currentAuthSession(r *http.Request) bool {
-	c, err := r.Cookie(authSessionCookie)
+	c, err := r.Cookie(cookieName(r, authSessionCookie))
 	if err != nil || c.Value == "" {
 		return false
 	}
@@ -522,7 +595,7 @@ func (s *Server) currentAuthSession(r *http.Request) bool {
 }
 
 func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg effectiveOIDCConfig, userName, email string, groups []string) error {
-	id, err := randomURLToken(32)
+	id, err := randomURLToken()
 	if err != nil {
 		return err
 	}
@@ -541,7 +614,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	// Secure follows the effective HTTPS request; plain HTTP on a LAN is supported.
 	// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // HttpOnly/SameSite are set below; Secure is conditional on requestIsHTTPS since plain-HTTP LAN deployments are supported
-		Name:     authSessionCookie,
+		Name:     cookieName(r, authSessionCookie),
 		Value:    id,
 		Path:     "/",
 		Expires:  expires,
@@ -553,25 +626,60 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, cfg e
 	return nil
 }
 
+// storeOIDCState keeps a login in flight until its callback. Anyone can
+// start one, so at most maxOIDCLogins are kept: past that, the oldest goes.
 func (s *Server) storeOIDCState(state string, loginState oidcLoginState) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	s.cleanupAuthLocked(time.Now())
+	for len(s.oidcStates) >= maxOIDCLogins {
+		oldest := ""
+		for key, kept := range s.oidcStates {
+			if oldest == "" || kept.Expires.Before(s.oidcStates[oldest].Expires) {
+				oldest = key
+			}
+		}
+		delete(s.oidcStates, oldest)
+	}
 	s.oidcStates[state] = loginState
 }
 
-func (s *Server) consumeOIDCState(state string) (oidcLoginState, bool) {
-	if state == "" {
+// consumeOIDCState hands over the login in flight that state names, once,
+// if browser (its oidcBrowserCookie value) is the one that started it.
+// Another browser's callback leaves the login alone: a link someone else
+// made can't cancel it.
+func (s *Server) consumeOIDCState(state, browser string) (oidcLoginState, bool) {
+	if state == "" || browser == "" {
 		return oidcLoginState{}, false
 	}
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	loginState, ok := s.oidcStates[state]
-	delete(s.oidcStates, state)
-	if !ok || time.Now().After(loginState.Expires) {
+	if !ok {
 		return oidcLoginState{}, false
 	}
+	if time.Now().After(loginState.Expires) {
+		delete(s.oidcStates, state)
+		return oidcLoginState{}, false
+	}
+	if subtle.ConstantTimeCompare([]byte(browser), []byte(loginState.Browser)) != 1 {
+		return oidcLoginState{}, false
+	}
+	delete(s.oidcStates, state)
 	return loginState, true
+}
+
+// oidcBrowser is the request's oidcBrowserCookie value, or "" when it has
+// none that Coldarr could have made.
+func oidcBrowser(r *http.Request) string {
+	c, err := r.Cookie(cookieName(r, oidcBrowserCookie))
+	if err != nil {
+		return ""
+	}
+	if raw, err := base64.RawURLEncoding.DecodeString(c.Value); err != nil || len(raw) != urlTokenBytes {
+		return ""
+	}
+	return c.Value
 }
 
 func (s *Server) cleanupAuthLocked(now time.Time) {
@@ -632,8 +740,12 @@ func logGeneratedPassword(password string) {
 	log.Printf("======================================================================")
 }
 
-func randomURLToken(n int) (string, error) {
-	b := make([]byte, n)
+// urlTokenBytes is how many random bytes a token carries: a session ID, an
+// OIDC login's state and nonce, and its browser cookie.
+const urlTokenBytes = 32
+
+func randomURLToken() (string, error) {
+	b := make([]byte, urlTokenBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating random token: %w", err)
 	}
@@ -641,7 +753,9 @@ func randomURLToken(n int) (string, error) {
 }
 
 func cleanReturnTo(raw string) string {
-	if raw == "" {
+	// Logins in flight keep their return path, and anyone can start one: a
+	// path longer than Coldarr's own ever get isn't kept.
+	if raw == "" || len(raw) > maxReturnTo {
 		return "/"
 	}
 	// Require a genuine single-segment path: raw[0] must be '/', and
@@ -678,6 +792,19 @@ func requestIsHTTPS(r *http.Request, cfg effectiveOIDCConfig) bool {
 	return strings.HasPrefix(strings.ToLower(cfg.RedirectURL), "https://")
 }
 
+// cookieName gives a cookie the __Host- prefix when the request came over
+// HTTPS, to Coldarr itself or by a trusted proxy's account. A browser takes
+// such a cookie only over HTTPS, from this host alone, for the whole site,
+// so neither a sibling subdomain nor a plain-HTTP response can plant one or
+// hide it. Unlike requestIsHTTPS, it goes by how the request came, never by
+// settings, so changing them never changes which cookie a request reads.
+func cookieName(r *http.Request, name string) string {
+	if r.TLS != nil || r.URL.Scheme == "https" {
+		return "__Host-" + name
+	}
+	return name
+}
+
 type oidcIdentity struct {
 	Subject  string
 	UserName string
@@ -685,40 +812,65 @@ type oidcIdentity struct {
 	Groups   []string
 }
 
+// checkAuthorizedParty applies OIDC's rules for the client an ID token was
+// issued to, which go-oidc leaves to its caller: an azp claim must name this
+// client, and a token for several audiences must have one. Otherwise a token
+// another client asked for, which merely lists this one among its audiences,
+// would sign its user in here.
+func checkAuthorizedParty(idToken *oidc.IDToken, clientID string) error {
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return fmt.Errorf("reading OIDC token claims: %w", err)
+	}
+	azp, named := claims["azp"]
+	switch {
+	case named:
+		if party, _ := azp.(string); party != clientID {
+			return fmt.Errorf("token was issued to another client (azp)")
+		}
+	case len(idToken.Audience) > 1:
+		return fmt.Errorf("token has several audiences but no authorized party (azp)")
+	}
+	return nil
+}
+
 func oidcIdentityFromToken(ctx context.Context, provider *oidc.Provider, token *oauth2.Token, idToken *oidc.IDToken, groupsClaim string) (oidcIdentity, error) {
-	var idClaims map[string]any
-	if err := idToken.Claims(&idClaims); err != nil {
+	claims := map[string]any{}
+	if err := idToken.Claims(&claims); err != nil {
 		return oidcIdentity{}, fmt.Errorf("reading OIDC token claims: %w", err)
 	}
 
-	userClaims := map[string]any{}
-	userInfo, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
-	if err == nil {
-		_ = userInfo.Claims(&userClaims)
+	// Userinfo isn't signed: it only fills in claims the ID token leaves out,
+	// and only when it's about the user the ID token names.
+	if userInfo, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token)); err == nil {
+		var userClaims map[string]any
+		switch {
+		case userInfo.Subject == "" || userInfo.Subject != idToken.Subject:
+			log.Printf("auth: ignored OIDC userinfo that wasn't about the signed-in user")
+		case userInfo.Claims(&userClaims) == nil:
+			for name, value := range userClaims {
+				if _, signed := claims[name]; !signed {
+					claims[name] = value
+				}
+			}
+		}
 	}
 
 	identity := oidcIdentity{
-		Subject: claimString(idClaims, userClaims, "sub"),
+		Subject: idToken.Subject,
 		UserName: firstNonEmpty(
-			claimString(idClaims, userClaims, "preferred_username"),
-			claimString(idClaims, userClaims, "name"),
-			claimString(idClaims, userClaims, "email"),
-			claimString(idClaims, userClaims, "sub"),
+			stringClaim(claims["preferred_username"]),
+			stringClaim(claims["name"]),
+			stringClaim(claims["email"]),
+			idToken.Subject,
 		),
-		Email:  claimString(idClaims, userClaims, "email"),
-		Groups: claimStringSlice(idClaims, userClaims, groupsClaim),
+		Email:  stringClaim(claims["email"]),
+		Groups: stringSliceClaim(claims[groupsClaim]),
 	}
 	if identity.Subject == "" {
 		return oidcIdentity{}, fmt.Errorf("OIDC token did not include a subject")
 	}
 	return identity, nil
-}
-
-func claimString(primary, fallback map[string]any, name string) string {
-	if s := stringClaim(primary[name]); s != "" {
-		return s
-	}
-	return stringClaim(fallback[name])
 }
 
 func stringClaim(v any) string {
@@ -730,13 +882,6 @@ func stringClaim(v any) string {
 	default:
 		return ""
 	}
-}
-
-func claimStringSlice(primary, fallback map[string]any, name string) []string {
-	if values := stringSliceClaim(primary[name]); len(values) > 0 {
-		return values
-	}
-	return stringSliceClaim(fallback[name])
 }
 
 func stringSliceClaim(v any) []string {

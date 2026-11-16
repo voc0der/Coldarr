@@ -45,6 +45,23 @@ func (s *Server) handleAuthPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "settings_auth", s.authPageData())
 }
 
+// submittedAuthData is the Auth page showing settings that were submitted
+// but not saved, and why.
+func (s *Server) submittedAuthData(authCfg config.OIDCAuthConfig, clientSecretSet bool, problem string) authData {
+	data := s.authPageData()
+	data.Error = problem
+	data.Enabled = authCfg.Enabled
+	data.IssuerURL = authCfg.IssuerURL
+	data.ClientID = authCfg.ClientID
+	data.RedirectURL = authCfg.RedirectURL
+	data.RequiredGroup = authCfg.RequiredGroup
+	data.GroupsClaim = authCfg.GroupsClaim
+	data.ClientSecretPost = authCfg.TokenAuthMethod == oidcTokenAuthClientPost
+	data.AutoLogin = authCfg.AutoLogin
+	data.ClientSecretSet = clientSecretSet
+	return data
+}
+
 func (s *Server) handleAuthSave(w http.ResponseWriter, r *http.Request) {
 	data := s.authPageData()
 	if data.Locked {
@@ -76,25 +93,23 @@ func (s *Server) handleAuthSave(w http.ResponseWriter, r *http.Request) {
 
 	stored, _ := s.connStore.Get(oidcSecretApp)
 	clientSecret := strings.TrimSpace(r.FormValue("client_secret"))
-	if clientSecret == "" {
+	if clientSecret == "" && stored.APIKey != "" {
+		// A saved secret is only sent to the issuer it was saved for, the way
+		// a connection's saved key only goes to its own URL: otherwise a
+		// session alone could point sign-in at a provider of its own and
+		// collect the secret from the token request.
+		if authCfg.IssuerURL != "" && !sameAddress(authCfg.IssuerURL, s.currentConfig().Auth.OIDC.IssuerURL) {
+			s.render(w, "settings_auth", s.submittedAuthData(authCfg, false,
+				"Enter the client secret again for this issuer: a saved secret is only sent to the issuer it was saved for."))
+			return
+		}
 		clientSecret = stored.APIKey
 	}
 
 	effective := effectiveOIDCConfig{OIDCAuthConfig: authCfg, ClientSecret: clientSecret}
 	if authCfg.Enabled {
 		if err := validateEffectiveOIDCConfig(effective); err != nil {
-			data := s.authPageData()
-			data.Error = err.Error()
-			data.Enabled = authCfg.Enabled
-			data.IssuerURL = authCfg.IssuerURL
-			data.ClientID = authCfg.ClientID
-			data.RedirectURL = authCfg.RedirectURL
-			data.RequiredGroup = authCfg.RequiredGroup
-			data.GroupsClaim = authCfg.GroupsClaim
-			data.ClientSecretPost = authCfg.TokenAuthMethod == oidcTokenAuthClientPost
-			data.AutoLogin = authCfg.AutoLogin
-			data.ClientSecretSet = clientSecret != ""
-			s.render(w, "settings_auth", data)
+			s.render(w, "settings_auth", s.submittedAuthData(authCfg, clientSecret != "", err.Error()))
 			return
 		}
 	}

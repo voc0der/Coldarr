@@ -47,14 +47,27 @@ func TestConnectionSave(t *testing.T) {
 		t.Fatalf("stored radarr = %+v, want the trimmed URL and key, enabled", got)
 	}
 	// The key is never sent back to the browser - the form just says it's set.
-	if strings.Contains(body, "key-1") || !strings.Contains(body, "(unchanged - leave blank to keep it)") {
+	if strings.Contains(body, "key-1") || !strings.Contains(body, "(unchanged - leave blank to keep it for this URL)") {
 		t.Error("the saved API key must not be rendered back into the page")
 	}
 
-	// A blank key on a later save keeps the stored one.
-	save("radarr", url.Values{"url": {"http://radarr.lan:7878"}})
+	// A blank key on a later save keeps the stored one - for the same URL,
+	// however it's written.
+	save("radarr", url.Values{"url": {"HTTP://Radarr:7878/"}})
+	if got, _ := srv.connStore.Get("radarr"); got.URL != "HTTP://Radarr:7878/" || got.APIKey != "key-1" {
+		t.Fatalf("stored radarr = %+v, want the URL as typed with the kept key", got)
+	}
+	// Another URL needs the key typed again: the saved one only goes where
+	// it was saved for.
+	if body := save("radarr", url.Values{"url": {"http://radarr.lan:7878"}}); !strings.Contains(body, "Enter the API key again for this URL") {
+		t.Fatalf("a new URL with a blank key should ask for the key:\n%s", body)
+	}
+	if got, _ := srv.connStore.Get("radarr"); got.URL != "HTTP://Radarr:7878/" {
+		t.Fatalf("stored radarr = %+v, want the refused save to change nothing", got)
+	}
+	save("radarr", url.Values{"url": {"http://radarr.lan:7878"}, "api_key": {"key-1"}})
 	if got, _ := srv.connStore.Get("radarr"); got.URL != "http://radarr.lan:7878" || got.APIKey != "key-1" {
-		t.Fatalf("stored radarr = %+v, want the new URL with the kept key", got)
+		t.Fatalf("stored radarr = %+v, want the new URL with the key typed again", got)
 	}
 
 	// Jellyfin is the one connection that can be saved switched off.
@@ -105,6 +118,9 @@ func TestConnectionTest(t *testing.T) {
 	if body := test(url.Values{"url": {radarr.URL}}); !strings.Contains(body, "Connected") {
 		t.Fatalf("expected the saved key to be used:\n%s", body)
 	}
+	if body := test(url.Values{"url": {radarr.URL + "/"}}); !strings.Contains(body, "Connected") {
+		t.Fatalf("expected the saved key used for the same URL written with a trailing slash:\n%s", body)
+	}
 
 	if body := test(url.Values{"url": {radarr.URL}, "api_key": {"wrong"}}); !strings.Contains(body, "Failed:") || !strings.Contains(body, "401") {
 		t.Fatalf("expected the failure shown:\n%s", body)
@@ -112,8 +128,133 @@ func TestConnectionTest(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"typed", "saved", "wrong"}; strings.Join(keys, ",") != strings.Join(want, ",") {
+	if want := []string{"typed", "saved", "saved", "wrong"}; strings.Join(keys, ",") != strings.Join(want, ",") {
 		t.Fatalf("keys sent = %v, want %v", keys, want)
+	}
+}
+
+// TestConnectionTest_SavedSecretsOnlyGoToTheirOwnURL: testing another URL
+// without typing the secrets would send the saved ones there, so a session
+// alone - a borrowed browser, a script injected into a page - could point a
+// test at its own server and collect them. Each saved secret only goes to
+// the URL it was saved for.
+func TestConnectionTest_SavedSecretsOnlyGoToTheirOwnURL(t *testing.T) {
+	var mu sync.Mutex
+	var heard []string
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		heard = append(heard, r.Header.Get("X-Api-Key")+r.Header.Get("Authorization")+r.Header.Get("X-Emby-Token")+r.Form.Get("password"))
+		mu.Unlock()
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(collector.Close)
+
+	srv := newSettingsTestServer(t)
+	for app, conn := range map[string]secrets.Connection{
+		"radarr":      {URL: "http://radarr:7878", APIKey: "radarr-key"},
+		"jellyfin":    {URL: "http://jellyfin:8096", APIKey: "jellyfin-key", Enabled: true},
+		"qbittorrent": {URL: "http://qbittorrent:8080", APIKey: "qbit-key", Username: "admin", Password: "qbit-pass"},
+	} {
+		if err := srv.connStore.Set(app, conn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	test := func(app string, form url.Values) string {
+		t.Helper()
+		return serveForm(srv.handleConnectionTest, "/settings/connections/"+app+"/test", form, "app", app).Body.String()
+	}
+
+	for app, want := range map[string]string{
+		"radarr":      "Enter the API key again for this URL: a saved API key is only sent to the URL it was saved for.",
+		"jellyfin":    "Enter the API key again for this URL",
+		"qbittorrent": "Enter the API key again for this URL, or tick Forget the saved API key",
+	} {
+		if body := test(app, url.Values{"url": {collector.URL}, "username": {"admin"}}); !strings.Contains(body, want) {
+			t.Errorf("%s test at another URL with the secrets blank = page without %q:\n%s", app, want, body)
+		}
+	}
+	if body := test("qbittorrent", url.Values{"url": {collector.URL}, "username": {"admin"}, "clear_api_key": {"on"}}); !strings.Contains(body, "Enter the password again for this URL") {
+		t.Errorf("qBittorrent test at another URL with the password blank = page not asking for it:\n%s", body)
+	}
+	mu.Lock()
+	if len(heard) != 0 {
+		t.Fatalf("the other URL heard %q, want nothing: no saved secret goes there", heard)
+	}
+	mu.Unlock()
+
+	// What's typed for the other URL goes there, and nothing saved with it;
+	// qBittorrent with its key forgotten and no login sends no secret at all.
+	test("radarr", url.Values{"url": {collector.URL}, "api_key": {"typed"}})
+	test("qbittorrent", url.Values{"url": {collector.URL}, "username": {""}, "clear_api_key": {"on"}})
+	mu.Lock()
+	defer mu.Unlock()
+	if all := strings.Join(heard, ","); !strings.Contains(all, "typed") || strings.Contains(all, "key") || strings.Contains(all, "pass") {
+		t.Fatalf("the other URL heard %q, want the typed key and no saved secret", heard)
+	}
+}
+
+// TestConnectionSave_QbittorrentSecretsStayWithTheirURL: a save for another
+// URL asks for each saved secret it would otherwise keep, and changes
+// nothing until it has them - or until it no longer needs them.
+func TestConnectionSave_QbittorrentSecretsStayWithTheirURL(t *testing.T) {
+	srv := newSettingsTestServer(t)
+	saved := secrets.Connection{URL: "http://qbittorrent:8080", APIKey: "qbit-key", Username: "admin", Password: "qbit-pass", Enabled: true}
+	if err := srv.connStore.Set("qbittorrent", saved); err != nil {
+		t.Fatal(err)
+	}
+	save := func(form url.Values) string {
+		t.Helper()
+		return serveForm(srv.handleConnectionSave, "/settings/connections/qbittorrent", form, "app", "qbittorrent").Body.String()
+	}
+
+	if body := save(url.Values{"url": {"http://elsewhere:8080"}, "username": {"admin"}}); !strings.Contains(body, "Enter the API key again for this URL, or tick Forget the saved API key") {
+		t.Fatalf("a new URL with the saved key left blank should ask for it:\n%s", body)
+	}
+	if body := save(url.Values{"url": {"http://elsewhere:8080"}, "username": {"admin"}, "clear_api_key": {"on"}}); !strings.Contains(body, "Enter the password again for this URL") {
+		t.Fatalf("a new URL with the saved password left blank should ask for it:\n%s", body)
+	}
+	if got, _ := srv.connStore.Get("qbittorrent"); got != saved {
+		t.Fatalf("stored = %+v after refused saves, want it unchanged", got)
+	}
+
+	save(url.Values{"url": {"http://elsewhere:8080"}, "username": {""}, "clear_api_key": {"on"}})
+	if got, _ := srv.connStore.Get("qbittorrent"); got != (secrets.Connection{URL: "http://elsewhere:8080", Enabled: true}) {
+		t.Fatalf("stored = %+v, want the new URL with no saved secret left", got)
+	}
+}
+
+func TestSameAddress(t *testing.T) {
+	same := [][2]string{
+		{"http://radarr:7878", " http://radarr:7878/ "},
+		{"HTTP://Radarr:7878", "http://radarr:7878"},
+		{"http://radarr", "http://radarr:80"},
+		{"https://auth.example.com", "https://auth.example.com:443/"},
+		{"http://apps.lan/radarr/", "http://apps.lan/radarr"},
+		{"http://user:pass@radarr:7878", "http://radarr:7878"}, // still sent to radarr
+		{"http://radarr:7878%zz", "http://radarr:7878%zz"},     // no URL, but the same text
+	}
+	different := [][2]string{
+		{"http://radarr:7878", "http://radarr.lan:7878"},
+		{"http://radarr:7878", "http://radarr:7879"},
+		{"http://radarr:7878", "https://radarr:7878"},
+		{"http://apps.lan/radarr", "http://apps.lan/evil"},
+		{"http://apps.lan/radarr", "http://apps.lan/Radarr"},
+		{"http://radarr:7878/?a=1", "http://radarr:7878/?a=2"},
+		{"http://radarr:7878@evil.example", "http://radarr:7878"},
+		{"radarr:7878", "radarr:7879"},
+		{"http://radarr:7878", ""},
+		{"http://[::1", "http://[::1]"},
+	}
+	for _, pair := range same {
+		if !sameAddress(pair[0], pair[1]) || !sameAddress(pair[1], pair[0]) {
+			t.Errorf("sameAddress(%q, %q) = false, want true", pair[0], pair[1])
+		}
+	}
+	for _, pair := range different {
+		if sameAddress(pair[0], pair[1]) || sameAddress(pair[1], pair[0]) {
+			t.Errorf("sameAddress(%q, %q) = true, want false", pair[0], pair[1])
+		}
 	}
 }
 
@@ -228,7 +369,7 @@ func TestConnectionSave_KeepsTheExternalURL(t *testing.T) {
 
 	for _, form := range []url.Values{
 		{"url": {"http://radarr:7878"}, "api_key": {"key-1"}}, // first save, key typed
-		{"url": {"http://radarr.lan:7878"}},                   // later save, key kept
+		{"url": {"http://radarr:7878"}},                       // later save, key kept
 	} {
 		body := serveForm(srv.handleConnectionSave, "/settings/connections/radarr", form, "app", "radarr").Body.String()
 		got, _ := srv.connStore.Get("radarr")

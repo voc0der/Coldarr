@@ -27,7 +27,7 @@
     </div>
     <div>
       <label for="key-{{.App}}">API key{{if .UsesLogin}} <span class="hint">(optional - qBittorrent 5.2+)</span>{{end}}</label>
-      <input type="password" id="key-{{.App}}" name="api_key" placeholder="{{if .APIKeySet}}(unchanged - leave blank to keep it){{else}}API key{{end}}">
+      <input type="password" id="key-{{.App}}" name="api_key" placeholder="{{if .APIKeySet}}(unchanged - leave blank to keep it for this URL){{else}}API key{{end}}">
       {{if and .UsesLogin .APIKeySet}}
       <div class="checkbox-row">
         <input type="checkbox" id="clear-key-{{.App}}" name="clear_api_key">
@@ -42,7 +42,7 @@
     </div>
     <div>
       <label for="pass-{{.App}}">Password</label>
-      <input type="password" id="pass-{{.App}}" name="password" autocomplete="new-password" placeholder="{{if .PasswordSet}}(unchanged - leave blank to keep it){{else}}Password{{end}}">
+      <input type="password" id="pass-{{.App}}" name="password" autocomplete="new-password" placeholder="{{if .PasswordSet}}(unchanged - leave blank to keep it for this URL){{else}}Password{{end}}">
       <p class="hint">An API key, a WebUI username and password, or neither if qBittorrent skips authentication for Coldarr's address (Options &gt; WebUI). Leave the username blank to sign in without one.</p>
     </div>
     {{end}}

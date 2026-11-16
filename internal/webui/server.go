@@ -88,6 +88,8 @@ type Server struct {
 	authMu       sync.Mutex
 	authSessions map[string]authSession
 	oidcStates   map[string]oidcLoginState
+	// signIns limits failed password sign-ins per client.
+	signIns signInLimiter
 	// password gates the GUI whenever OIDC is disabled - resolved once in
 	// New() from COLDARR_PASSWORD/COLDARR_PASSWORD_FILE (or generated), so
 	// it's never reachable with zero protection just because nobody set
@@ -138,7 +140,7 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		return nil, err
 	}
 
-	if !s.effectiveOIDCConfig().Enabled {
+	if oidcCfg := s.effectiveOIDCConfig(); !oidcCfg.Enabled {
 		password, generated, err := resolvePassword()
 		if err != nil {
 			return nil, err
@@ -147,6 +149,10 @@ func New(cfgPath string, cfg *config.Config, connStore *secrets.Store) (*Server,
 		if generated {
 			logGeneratedPassword(password)
 		}
+	} else if oidcCfg.RedirectURL == "" {
+		// A Host header can name anything, so an identity provider that
+		// matches redirect URIs loosely could send a sign-in elsewhere.
+		log.Printf("auth: OIDC sign-ins build their callback address from each request's Host header - set COLDARR_OIDC_REDIRECT_URL, or the Redirect URL under Settings > Auth, to Coldarr's public address")
 	}
 
 	return s, nil
@@ -592,11 +598,17 @@ func (s *Server) renderPartial(w http.ResponseWriter, page, partial string, data
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, page, name string, data any) {
+	s.renderTemplateStatus(w, http.StatusOK, page, name, data)
+}
+
+// renderTemplateStatus is renderTemplate answering with status.
+func (s *Server) renderTemplateStatus(w http.ResponseWriter, status int, page, name string, data any) {
 	var buf bytes.Buffer
 	if err := s.pages[page].ExecuteTemplate(&buf, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = buf.WriteTo(w)
 }
