@@ -42,7 +42,7 @@ jobs:
           cache-from: type=gha
 
       - name: Scan amd64 image before publishing
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        uses: anchore/scan-action@11983a512817154c80a9db660c1a184be7513ed6 # v7.4.3
         with:
           image: docker:coldarr:scan-amd64
           severity-cutoff: high
@@ -61,7 +61,7 @@ jobs:
           cache-from: type=gha
 
       - name: Scan arm64 image before publishing
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        uses: anchore/scan-action@11983a512817154c80a9db660c1a184be7513ed6 # v7.4.3
         with:
           image: docker:coldarr:scan-arm64
           severity-cutoff: high
